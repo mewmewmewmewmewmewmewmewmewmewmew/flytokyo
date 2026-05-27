@@ -135,22 +135,6 @@ function streetColor(type) {
 
 // ─── Shaders ─────────────────────────────────────────────────────────────────
 
-// Vertex: surfaces (needs normal for lambert shading)
-const SURF_VERT = /* glsl */`
-  attribute vec3 color;
-  varying vec3  vCol;
-  varying float vDist;
-  varying vec3  vNorm;
-  void main() {
-    vCol  = color;
-    vNorm = normalMatrix * normal;
-    vec4 mv = modelViewMatrix * vec4(position, 1.0);
-    vDist = length(mv.xyz);
-    gl_Position = projectionMatrix * mv;
-  }
-`;
-
-// Vertex: lines / streets (no normals needed)
 const LINE_VERT = /* glsl */`
   attribute vec3 color;
   varying vec3  vCol;
@@ -163,26 +147,21 @@ const LINE_VERT = /* glsl */`
   }
 `;
 
-// Fragment: transparent surface with lambert + distance fade
-const SURF_FRAG = /* glsl */`
+// EdgesGeometry layer — 80% base opacity, distance fade
+const EDGES_FRAG = /* glsl */`
   varying vec3  vCol;
   varying float vDist;
-  varying vec3  vNorm;
   uniform float uNear;
   uniform float uFar;
   void main() {
-    vec3  L     = normalize(vec3(0.5, 1.0, 0.3));
-    float diff  = max(dot(normalize(vNorm), L), 0.0);
-    float light = 0.55 + 0.45 * diff;
-    float fade  = 1.0 - smoothstep(uNear, uFar, vDist);
-    float a     = 0.45 * fade;
-    if (a < 0.01) discard;
-    gl_FragColor = vec4(vCol * light, a);
+    float fade = 1.0 - smoothstep(uNear, uFar, vDist);
+    if (fade < 0.01) discard;
+    gl_FragColor = vec4(vCol, 0.8 * fade);
   }
 `;
 
-// Fragment: lines — full opacity close, fade to zero with distance
-const EDGE_FRAG = /* glsl */`
+// WireframeGeometry layer — 100% opacity, same distance fade
+const WIRE_FRAG = /* glsl */`
   varying vec3  vCol;
   varying float vDist;
   uniform float uNear;
@@ -194,7 +173,7 @@ const EDGE_FRAG = /* glsl */`
   }
 `;
 
-// Fragment: streets — slightly softer falloff
+// Streets — slightly earlier fade-in
 const STREET_FRAG = /* glsl */`
   varying vec3  vCol;
   varying float vDist;
@@ -213,13 +192,12 @@ function fadeUniforms() {
 
 function createMaterials() {
   return {
-    surface: new THREE.ShaderMaterial({
-      vertexShader: SURF_VERT, fragmentShader: SURF_FRAG,
+    edges: new THREE.ShaderMaterial({
+      vertexShader: LINE_VERT, fragmentShader: EDGES_FRAG,
       uniforms: fadeUniforms(), transparent: true, depthWrite: false,
-      side: THREE.DoubleSide,
     }),
-    edge: new THREE.ShaderMaterial({
-      vertexShader: LINE_VERT, fragmentShader: EDGE_FRAG,
+    wireframe: new THREE.ShaderMaterial({
+      vertexShader: LINE_VERT, fragmentShader: WIRE_FRAG,
       uniforms: fadeUniforms(), transparent: true, depthWrite: false,
     }),
     street: new THREE.ShaderMaterial({
@@ -231,81 +209,104 @@ function createMaterials() {
 
 // ─── Geometry builders ───────────────────────────────────────────────────────
 
-function buildSurfaceMesh(buildings, mat) {
-  const pos = [], norm = [], col = [], idx = [];
+// Solid prism geometry for a single building — used as input to
+// EdgesGeometry and WireframeGeometry which analyse the triangle topology.
+function buildSingleBuildingGeo(ring, height) {
+  const pos = [], norm = [], idx = [];
   let v = 0;
+  const n = ring.length;
 
-  for (const { ring, height } of buildings) {
-    const n   = ring.length;
-    const rc  = heightColor(height);
-    const wc  = rc.clone().multiplyScalar(0.55);
+  // Roof
+  const flat = ring.flatMap(([x, z]) => [x, z]);
+  const tris = earcut(flat);
+  if (!tris.length) return null;
 
-    // Roof — triangulated with earcut
-    const flat = ring.flatMap(([x, z]) => [x, z]);
-    const tris = earcut(flat);
-    if (!tris.length) continue;
+  const rb = v;
+  for (const [x, z] of ring) { pos.push(x, height, z); norm.push(0, 1, 0); v++; }
+  for (const i of tris) idx.push(rb + i);
 
-    const rb = v;
-    for (const [x, z] of ring) {
-      pos.push(x, height, z); norm.push(0, 1, 0); col.push(rc.r, rc.g, rc.b); v++;
-    }
-    for (const i of tris) idx.push(rb + i);
-
-    // Walls
-    for (let i = 0; i < n; i++) {
-      const j = (i + 1) % n;
-      const [x0, z0] = ring[i], [x1, z1] = ring[j];
-      const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz) || 1;
-      const b = v;
-      pos.push(x0, 0, z0,  x1, 0, z1,  x1, height, z1,  x0, height, z0);
-      for (let k = 0; k < 4; k++) { norm.push(dz / len, 0, -dx / len); col.push(wc.r, wc.g, wc.b); }
-      idx.push(b, b+1, b+2,  b, b+2, b+3);
-      v += 4;
-    }
+  // Walls — each as two triangles so EdgesGeometry sees the quad edges
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const [x0, z0] = ring[i], [x1, z1] = ring[j];
+    const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz) || 1;
+    const b = v;
+    pos.push(x0, 0, z0,  x1, 0, z1,  x1, height, z1,  x0, height, z0);
+    for (let k = 0; k < 4; k++) norm.push(dz / len, 0, -dx / len);
+    idx.push(b, b+1, b+2,  b, b+2, b+3);
+    v += 4;
   }
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos,  3));
   geo.setAttribute('normal',   new THREE.Float32BufferAttribute(norm, 3));
-  geo.setAttribute('color',    new THREE.Float32BufferAttribute(col,  3));
   geo.setIndex(idx);
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.renderOrder = 1;
-  return mesh;
+  return geo;
 }
 
-function buildEdgeLines(buildings, mat) {
-  const pos = [], col = [];
+// Merge all EdgesGeometry outputs into one LineSegments.
+// EdgesGeometry suppresses coplanar edges (the earcut diagonals on flat roofs
+// and the quad-split diagonal on each wall) — leaving only real corners.
+function buildEdgesGeoMesh(buildings, mat) {
+  const allPos = [], allCol = [];
 
   for (const { ring, height } of buildings) {
-    // Edges are a brightened version of the building colour
-    const bc = heightColor(height);
-    const r = Math.min(bc.r * 2.2 + 0.25, 1);
-    const g = Math.min(bc.g * 2.2 + 0.25, 1);
-    const b = Math.min(bc.b * 2.2 + 0.25, 1);
+    const base = buildSingleBuildingGeo(ring, height);
+    if (!base) continue;
 
-    const n = ring.length;
-    for (let i = 0; i < n; i++) {
-      const j = (i + 1) % n;
-      const [x0, z0] = ring[i], [x1, z1] = ring[j];
+    const edgesGeo = new THREE.EdgesGeometry(base);
+    const posAttr  = edgesGeo.getAttribute('position');
 
-      // Roof perimeter
-      pos.push(x0, height, z0,  x1, height, z1);
-      col.push(r, g, b,  r, g, b);
+    const c = heightColor(height);
+    // Brighten so architectural outlines pop against the wireframe layer
+    const r = Math.min(c.r * 2.0 + 0.3, 1);
+    const g = Math.min(c.g * 2.0 + 0.3, 1);
+    const b = Math.min(c.b * 2.0 + 0.3, 1);
 
-      // Ground perimeter
-      pos.push(x0, 0, z0,  x1, 0, z1);
-      col.push(r, g, b,  r, g, b);
-
-      // Vertical corner pillar at vertex i
-      pos.push(x0, 0, z0,  x0, height, z0);
-      col.push(r, g, b,  r, g, b);
+    for (let i = 0; i < posAttr.count; i++) {
+      allPos.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
+      allCol.push(r, g, b);
     }
+
+    base.dispose();
+    edgesGeo.dispose();
   }
 
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  geo.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(allPos, 3));
+  geo.setAttribute('color',    new THREE.Float32BufferAttribute(allCol, 3));
+  const lines = new THREE.LineSegments(geo, mat);
+  lines.renderOrder = 1;
+  return lines;
+}
+
+// Merge all WireframeGeometry outputs into one LineSegments.
+// WireframeGeometry draws every triangle edge — including the earcut diagonals
+// and the quad-split diagonal on walls — giving the full triangulation texture.
+function buildWireframeGeoMesh(buildings, mat) {
+  const allPos = [], allCol = [];
+
+  for (const { ring, height } of buildings) {
+    const base = buildSingleBuildingGeo(ring, height);
+    if (!base) continue;
+
+    const wireGeo = new THREE.WireframeGeometry(base);
+    const posAttr = wireGeo.getAttribute('position');
+
+    const c = heightColor(height);
+
+    for (let i = 0; i < posAttr.count; i++) {
+      allPos.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
+      allCol.push(c.r, c.g, c.b);
+    }
+
+    base.dispose();
+    wireGeo.dispose();
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(allPos, 3));
+  geo.setAttribute('color',    new THREE.Float32BufferAttribute(allCol, 3));
   const lines = new THREE.LineSegments(geo, mat);
   lines.renderOrder = 2;
   return lines;
@@ -393,8 +394,8 @@ class TileManager {
 
       const group = new THREE.Group();
       if (bldgs.length) {
-        group.add(buildSurfaceMesh(bldgs, this.mats.surface));
-        group.add(buildEdgeLines(bldgs, this.mats.edge));
+        group.add(buildEdgesGeoMesh(bldgs, this.mats.edges));
+        group.add(buildWireframeGeoMesh(bldgs, this.mats.wireframe));
         this.buildings += bldgs.length;
       }
       if (strs.length) {
