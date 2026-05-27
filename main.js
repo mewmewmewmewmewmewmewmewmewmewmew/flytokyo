@@ -4,7 +4,7 @@ import earcut from 'earcut';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-const CENTER_LAT = 35.6595;   // Shibuya Scramble Crossing
+const CENTER_LAT = 35.6595;
 const CENTER_LON = 139.7004;
 
 const M_PER_DEG_LAT = 111_320;
@@ -16,7 +16,7 @@ const LOAD_RADIUS = 1;
 
 const FADE_NEAR   = 80;
 const FADE_FAR    = 500;
-const METRO_DEPTH = -7;   // ≈ 2 floors underground
+const METRO_DEPTH = -7;
 
 // ─── Coordinate helpers ──────────────────────────────────────────────────────
 
@@ -40,8 +40,8 @@ function latLonToTile(lat, lon) {
 
 function tileToBBox(tx, ty) {
   return {
-    south: ty * TILE_LAT,       north: (ty + 1) * TILE_LAT,
-    west:  tx * TILE_LON,       east:  (tx + 1) * TILE_LON,
+    south: ty * TILE_LAT,  north: (ty + 1) * TILE_LAT,
+    west:  tx * TILE_LON,  east:  (tx + 1) * TILE_LON,
   };
 }
 
@@ -56,7 +56,6 @@ async function fetchOSMBbox(bbox) {
     `way["railway"](${south},${west},${north},${east});`,
     ');out body;>;out skel qt;',
   ].join('');
-
   const res = await fetch('https://overpass-api.de/api/interpreter', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -70,9 +69,8 @@ async function fetchOSMBbox(bbox) {
 
 function buildNodeMap(osm) {
   const map = new Map();
-  for (const el of osm.elements) {
+  for (const el of osm.elements)
     if (el.type === 'node') map.set(el.id, project(el.lat, el.lon));
-  }
   return map;
 }
 
@@ -103,7 +101,7 @@ function extractHeight(tags) {
 }
 
 const HIGHWAY_SKIP = new Set([
-  'proposed', 'construction', 'elevator', 'steps', 'corridor', 'platform', 'raceway',
+  'proposed','construction','elevator','steps','corridor','platform','raceway',
 ]);
 
 function parseStreets(osm, nodeMap) {
@@ -118,7 +116,7 @@ function parseStreets(osm, nodeMap) {
   return out;
 }
 
-const RAILWAY_TYPES = new Set(['rail', 'subway', 'light_rail', 'monorail', 'tram']);
+const RAILWAY_TYPES = new Set(['rail','subway','light_rail','monorail','tram']);
 
 function parseRailways(osm, nodeMap) {
   const out = [];
@@ -127,7 +125,6 @@ function parseRailways(osm, nodeMap) {
     if (!RAILWAY_TYPES.has(el.tags.railway)) continue;
     const coords = el.nodes.map(id => nodeMap.get(id)).filter(Boolean);
     if (coords.length < 2) continue;
-    // Subways are underground unless explicitly bridged; other rail requires tunnel=yes
     const isBridge = el.tags.bridge === 'yes' || el.tags.bridge === 'viaduct';
     const isTunnel = el.tags.tunnel === 'yes' || (el.tags.railway === 'subway' && !isBridge);
     out.push({ id: el.id, coords, type: el.tags.railway, isTunnel });
@@ -135,25 +132,23 @@ function parseRailways(osm, nodeMap) {
   return out;
 }
 
-// ─── Colour palette (light theme) ────────────────────────────────────────────
+// ─── Colour palette ───────────────────────────────────────────────────────────
 
-// Light grey (short) → medium blue (tall)
 function heightColor(h) {
   const t = Math.min(h / 150, 1);
   return new THREE.Color().setHSL(
     220 / 360,
-    t * 0.55,        // 0% sat (neutral grey) → 55% sat (blue)
-    0.78 - t * 0.26, // 78% lit (light grey)  → 52% lit (medium blue)
+    t * 0.55,
+    0.78 - t * 0.26,
   );
 }
 
-// Darker edge lines follow the same grey→blue hue
 function wireColor(h) {
   const t = Math.min(h / 150, 1);
   return new THREE.Color().setHSL(
     220 / 360,
     t * 0.60,
-    0.32 - t * 0.12, // 32% → 20% lightness
+    0.32 - t * 0.12,
   );
 }
 
@@ -167,14 +162,13 @@ function streetColor(type) {
   return new THREE.Color(0x6a7490);
 }
 
-// Per-type rail colours matching Tokyo line conventions
 function railColor(type) {
   switch (type) {
-    case 'rail':       return new THREE.Color(0x80b830); // JR green (Yamanote)
-    case 'subway':     return new THREE.Color(0x7744cc); // metro purple
-    case 'light_rail': return new THREE.Color(0x00aacc); // light rail cyan
-    case 'tram':       return new THREE.Color(0xcc8800); // tram amber
-    case 'monorail':   return new THREE.Color(0x009988); // monorail teal
+    case 'rail':       return new THREE.Color(0x80b830);
+    case 'subway':     return new THREE.Color(0x7744cc);
+    case 'light_rail': return new THREE.Color(0x00aacc);
+    case 'tram':       return new THREE.Color(0xcc8800);
+    case 'monorail':   return new THREE.Color(0x009988);
     default:           return new THREE.Color(0x667799);
   }
 }
@@ -248,7 +242,6 @@ const STREET_FRAG = /* glsl */`
   }
 `;
 
-// Metro: 50% opacity, ignores depth so it shows through the opaque ground plane
 const METRO_FRAG = /* glsl */`
   varying vec3  vCol;
   varying float vDist;
@@ -257,7 +250,7 @@ const METRO_FRAG = /* glsl */`
   void main() {
     float fade = 1.0 - smoothstep(uNear * 0.5, uFar, vDist);
     if (fade < 0.01) discard;
-    gl_FragColor = vec4(vCol, 0.5 * fade);
+    gl_FragColor = vec4(vCol, 0.30 * fade);
   }
 `;
 
@@ -298,7 +291,6 @@ function buildSingleBuildingGeo(ring, height) {
   const pos = [], norm = [], idx = [];
   let v = 0;
   const n = ring.length;
-
   const flat = ring.flatMap(([x, z]) => [x, z]);
   const tris = earcut(flat);
   if (!tris.length) return null;
@@ -333,7 +325,6 @@ function buildSurfaceMesh(buildings, mat) {
     const n  = ring.length;
     const rc = heightColor(height);
     const wc = rc.clone().multiplyScalar(0.55);
-
     const flat = ring.flatMap(([x, z]) => [x, z]);
     const tris = earcut(flat);
     if (!tris.length) continue;
@@ -372,16 +363,13 @@ function buildEdgesGeoMesh(buildings, mat) {
   for (const { ring, height } of buildings) {
     const base = buildSingleBuildingGeo(ring, height);
     if (!base) continue;
-
     const edgesGeo = new THREE.EdgesGeometry(base);
-    const posAttr = edgesGeo.getAttribute('position');
+    const posAttr  = edgesGeo.getAttribute('position');
     const c = wireColor(height);
-
     for (let i = 0; i < posAttr.count; i++) {
       allPos.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
       allCol.push(c.r, c.g, c.b);
     }
-
     base.dispose();
     edgesGeo.dispose();
   }
@@ -396,7 +384,6 @@ function buildEdgesGeoMesh(buildings, mat) {
 
 function buildStreetLines(streets, mat) {
   const pos = [], col = [];
-
   for (const { coords, highway } of streets) {
     const c = streetColor(highway);
     for (let i = 0; i < coords.length - 1; i++) {
@@ -405,7 +392,6 @@ function buildStreetLines(streets, mat) {
       col.push(c.r, c.g, c.b,  c.r, c.g, c.b);
     }
   }
-
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geo.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
@@ -416,7 +402,6 @@ function buildStreetLines(streets, mat) {
 
 function buildRailLines(rails, yLevel, mat) {
   const pos = [], col = [];
-
   for (const { coords, type } of rails) {
     const c = railColor(type);
     for (let i = 0; i < coords.length - 1; i++) {
@@ -425,7 +410,6 @@ function buildRailLines(rails, yLevel, mat) {
       col.push(c.r, c.g, c.b,   c.r, c.g, c.b);
     }
   }
-
   if (!pos.length) return null;
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -433,14 +417,11 @@ function buildRailLines(rails, yLevel, mat) {
   return new THREE.LineSegments(geo, mat);
 }
 
-// Tube geometry for underground metro — clearly distinguishable from road lines
 function buildMetroTubes(rails, mat) {
   const geoms = [];
 
   for (const { coords, type } of rails) {
     if (coords.length < 2) continue;
-
-    // Build 3D points at metro depth, skipping duplicate positions
     const pts = [];
     for (const [x, z] of coords) {
       const v = new THREE.Vector3(x, METRO_DEPTH, z);
@@ -448,11 +429,9 @@ function buildMetroTubes(rails, mat) {
     }
     if (pts.length < 2) continue;
 
-    const curve     = new THREE.CatmullRomCurve3(pts);
-    const tubularSegs = Math.max(pts.length * 2, 4);
-    const geo       = new THREE.TubeGeometry(curve, tubularSegs, 2.5, 8, false);
+    const curve = new THREE.CatmullRomCurve3(pts);
+    const geo   = new THREE.TubeGeometry(curve, Math.max(pts.length * 2, 4), 2.5, 8, false);
 
-    // Colour every vertex with the rail-type colour
     const c      = railColor(type);
     const count  = geo.getAttribute('position').count;
     const colBuf = new Float32Array(count * 3);
@@ -464,13 +443,23 @@ function buildMetroTubes(rails, mat) {
   }
 
   if (!geoms.length) return null;
-
   const merged = mergeGeometries(geoms);
   geoms.forEach(g => g.dispose());
-
   const mesh = new THREE.Mesh(merged, mat);
   mesh.renderOrder = 3;
   return mesh;
+}
+
+// ─── Collision ───────────────────────────────────────────────────────────────
+
+function pointInPolygon(px, pz, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, zi] = ring[i], [xj, zj] = ring[j];
+    if ((zi > pz) !== (zj > pz) && px < (xj - xi) * (pz - zi) / (zj - zi) + xi)
+      inside = !inside;
+  }
+  return inside;
 }
 
 // ─── Tile manager ────────────────────────────────────────────────────────────
@@ -479,16 +468,17 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 class TileManager {
   constructor(scene, mats, statusEl) {
-    this.scene     = scene;
-    this.mats      = mats;
-    this.statusEl  = statusEl;
-    this.tiles     = new Map();
-    this.queue     = [];
-    this.seenIds   = new Set();
-    this.buildings = 0;
-    this.streets   = 0;
-    this.rails     = 0;
-    this.busy      = false;
+    this.scene      = scene;
+    this.mats       = mats;
+    this.statusEl   = statusEl;
+    this.tiles      = new Map();
+    this.queue      = [];
+    this.seenIds    = new Set();
+    this.buildings  = 0;
+    this.streets    = 0;
+    this.rails      = 0;
+    this.busy       = false;
+    this.footprints = [];   // { ring, minX, maxX, minZ, maxZ }
   }
 
   key(tx, ty) { return `${tx}_${ty}`; }
@@ -504,11 +494,9 @@ class TileManager {
     const { lat, lon } = worldToGeo(camX, camZ);
     const { tx, ty }   = latLonToTile(lat, lon);
     this.request(tx, ty);
-    for (let dy = -LOAD_RADIUS; dy <= LOAD_RADIUS; dy++) {
-      for (let dx = -LOAD_RADIUS; dx <= LOAD_RADIUS; dx++) {
+    for (let dy = -LOAD_RADIUS; dy <= LOAD_RADIUS; dy++)
+      for (let dx = -LOAD_RADIUS; dx <= LOAD_RADIUS; dx++)
         if (dx || dy) this.request(tx + dx, ty + dy);
-      }
-    }
     if (!this.busy && this.queue.length) this._process();
   }
 
@@ -535,8 +523,17 @@ class TileManager {
       const rails = parseRailways(osm, nodeMap)
         .filter(r => { if (this.seenIds.has(r.id)) return false; this.seenIds.add(r.id); return true; });
 
-      const group = new THREE.Group();
+      // Register footprints for collision
+      for (const { ring } of bldgs) {
+        const xs = ring.map(p => p[0]), zs = ring.map(p => p[1]);
+        this.footprints.push({
+          ring,
+          minX: Math.min(...xs), maxX: Math.max(...xs),
+          minZ: Math.min(...zs), maxZ: Math.max(...zs),
+        });
+      }
 
+      const group = new THREE.Group();
       if (bldgs.length) {
         group.add(buildSurfaceMesh(bldgs, this.mats.surface));
         group.add(buildEdgesGeoMesh(bldgs, this.mats.wireframe));
@@ -565,6 +562,14 @@ class TileManager {
     }
   }
 
+  isInBuilding(x, z) {
+    for (const fp of this.footprints) {
+      if (x < fp.minX || x > fp.maxX || z < fp.minZ || z > fp.maxZ) continue;
+      if (pointInPolygon(x, z, fp.ring)) return true;
+    }
+    return false;
+  }
+
   _updateStatus() {
     const queued = this.queue.length;
     let text = `${this.buildings.toLocaleString()} buildings · ${this.streets.toLocaleString()} streets`;
@@ -577,20 +582,17 @@ class TileManager {
 }
 
 // ─── First-person controls ───────────────────────────────────────────────────
-// Left-drag: look around (yaw + pitch with coast damping).
-// W/S: walk forward / backward.
-// A/D: strafe left / right at half speed.
 
-function createFPSControls(camera, domElement) {
+function createFPSControls(camera, domElement, collision) {
   let yaw   = 0;
   let pitch = 0;
   let yawVel   = 0;
   let pitchVel = 0;
 
-  const LOOK_SPEED  = 0.00175;
-  const MOVE_SPEED  = 0.30;
+  const LOOK_SPEED   = 0.00175;
+  const MOVE_SPEED   = 0.30;
   const STRAFE_SPEED = 0.15;
-  const DAMP        = 0.85;
+  const DAMP         = 0.85;
 
   const keys = new Set();
   window.addEventListener('keydown', e => keys.add(e.code));
@@ -606,27 +608,36 @@ function createFPSControls(camera, domElement) {
     camera.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
   }
 
-  // _right = _fwd × up = (-fwd.z, 0, fwd.x)
   function getHorizDirs() {
     _fwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
     _fwd.y = 0; _fwd.normalize();
     _right.set(-_fwd.z, 0, _fwd.x);
   }
 
+  // Try full move, then axis-only fallbacks for wall sliding
+  function tryMove(dx, dz) {
+    const cx = camera.position.x, cz = camera.position.z;
+    const blocked = collision.fn && collision.fn(cx + dx, cz + dz);
+    if (!blocked) {
+      camera.position.x += dx;
+      camera.position.z += dz;
+    } else {
+      if (!collision.fn(cx + dx, cz))       camera.position.x += dx;
+      else if (!collision.fn(cx, cz + dz))  camera.position.z += dz;
+    }
+  }
+
   domElement.addEventListener('mousedown', e => {
     if (e.button !== 0) return;
     isDragging = true;
-    lastX = e.clientX;
-    lastY = e.clientY;
+    lastX = e.clientX; lastY = e.clientY;
     e.preventDefault();
   }, { passive: false });
 
   window.addEventListener('mousemove', e => {
     if (!isDragging) return;
-    const dx = e.clientX - lastX;
-    const dy = e.clientY - lastY;
-    lastX = e.clientX;
-    lastY = e.clientY;
+    const dx = e.clientX - lastX, dy = e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY;
     yawVel   = -dx * LOOK_SPEED;
     pitchVel = -dy * LOOK_SPEED;
     yaw   += yawVel;
@@ -638,17 +649,14 @@ function createFPSControls(camera, domElement) {
   window.addEventListener('mouseup', e => { if (e.button === 0) isDragging = false; });
   domElement.addEventListener('contextmenu', e => e.preventDefault());
 
-  // Touch: single finger = look
   let touchLast = null;
   domElement.addEventListener('touchstart', e => {
-    if (e.touches.length === 1)
-      touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    if (e.touches.length === 1) touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
     e.preventDefault();
   }, { passive: false });
   domElement.addEventListener('touchmove', e => {
     if (e.touches.length === 1 && touchLast) {
-      const dx = e.touches[0].clientX - touchLast.x;
-      const dy = e.touches[0].clientY - touchLast.y;
+      const dx = e.touches[0].clientX - touchLast.x, dy = e.touches[0].clientY - touchLast.y;
       touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
       yawVel = -dx * LOOK_SPEED; pitchVel = -dy * LOOK_SPEED;
       yaw   += yawVel;
@@ -663,8 +671,7 @@ function createFPSControls(camera, domElement) {
   const dispatcher = Object.assign(new THREE.EventDispatcher(), {
     update() {
       if (!isDragging && (Math.abs(yawVel) > 0.000001 || Math.abs(pitchVel) > 0.000001)) {
-        yawVel   *= DAMP;
-        pitchVel *= DAMP;
+        yawVel *= DAMP; pitchVel *= DAMP;
         yaw   += yawVel;
         pitch  = Math.max(-Math.PI * 0.499, Math.min(Math.PI * 0.499, pitch + pitchVel));
         applyRotation();
@@ -673,10 +680,10 @@ function createFPSControls(camera, domElement) {
       if (keys.has('KeyW') || keys.has('KeyS') || keys.has('KeyA') || keys.has('KeyD')) {
         getHorizDirs();
         let moved = false;
-        if (keys.has('KeyW')) { camera.position.addScaledVector(_fwd,    MOVE_SPEED);   moved = true; }
-        if (keys.has('KeyS')) { camera.position.addScaledVector(_fwd,   -MOVE_SPEED);   moved = true; }
-        if (keys.has('KeyD')) { camera.position.addScaledVector(_right,  STRAFE_SPEED); moved = true; }
-        if (keys.has('KeyA')) { camera.position.addScaledVector(_right, -STRAFE_SPEED); moved = true; }
+        if (keys.has('KeyW')) { tryMove( _fwd.x * MOVE_SPEED,    _fwd.z * MOVE_SPEED);   moved = true; }
+        if (keys.has('KeyS')) { tryMove(-_fwd.x * MOVE_SPEED,   -_fwd.z * MOVE_SPEED);   moved = true; }
+        if (keys.has('KeyD')) { tryMove( _right.x * STRAFE_SPEED, _right.z * STRAFE_SPEED); moved = true; }
+        if (keys.has('KeyA')) { tryMove(-_right.x * STRAFE_SPEED,-_right.z * STRAFE_SPEED); moved = true; }
         if (moved) dispatcher.dispatchEvent({ type: 'change' });
       }
     },
@@ -687,17 +694,16 @@ function createFPSControls(camera, domElement) {
 
 // ─── Scene setup ─────────────────────────────────────────────────────────────
 
-function initScene() {
+function initScene(collision) {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.setSize(innerWidth, innerHeight);
   renderer.setClearColor(0xf0f2f8);
   document.body.appendChild(renderer.domElement);
 
-  const scene = new THREE.Scene();
-
+  const scene  = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(90, innerWidth / innerHeight, 0.5, 2000);
-  camera.position.set(0, 1.6, 0);    // centre of Scramble Crossing
+  camera.position.set(0, 1.6, 0);
 
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(8000, 8000),
@@ -707,7 +713,7 @@ function initScene() {
   ground.position.y = -0.05;
   scene.add(ground);
 
-  const controls = createFPSControls(camera, renderer.domElement);
+  const controls = createFPSControls(camera, renderer.domElement, collision);
 
   window.addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
@@ -729,12 +735,18 @@ function initScene() {
 async function main() {
   const loadMsg  = document.getElementById('load-msg');
   const statusEl = document.getElementById('status');
-  const { scene, camera, controls } = initScene();
+
+  // Mutable ref so controls (created first) can call collision once tiles arrive
+  const collision = { fn: null };
+  const { scene, camera, controls } = initScene(collision);
 
   loadMsg.textContent = 'Fetching Shibuya from OpenStreetMap…';
 
   const mats    = createMaterials();
   const manager = new TileManager(scene, mats, statusEl);
+
+  // Wire collision after manager exists
+  collision.fn = (x, z) => manager.isInBuilding(x, z);
 
   manager.update(0, 0);
 
