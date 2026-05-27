@@ -455,10 +455,10 @@ function createFPSControls(camera, domElement) {
   let yawVel   = 0;
   let pitchVel = 0;
 
-  const LOOK_SPEED = 0.0025;
-  const MOVE_SPEED = 0.30;   // m/frame (~18 m/s at 60 fps)
-  const TURN_SPEED = 0.032;  // rad/frame (~110°/s at 60 fps)
-  const DAMP       = 0.85;
+  const LOOK_SPEED  = 0.00175;  // 30% slower than before
+  const MOVE_SPEED  = 0.30;     // m/frame (~18 m/s at 60 fps)
+  const STRAFE_SPEED = 0.15;    // half speed for A/D
+  const DAMP        = 0.85;
 
   const keys = new Set();
   window.addEventListener('keydown', e => keys.add(e.code));
@@ -467,15 +467,17 @@ function createFPSControls(camera, domElement) {
   let isDragging = false;
   let lastX = 0, lastY = 0;
 
-  const _fwd = new THREE.Vector3();
+  const _fwd   = new THREE.Vector3();
+  const _right = new THREE.Vector3();
 
   function applyRotation() {
     camera.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
   }
 
-  function getHorizFwd() {
+  function getHorizDirs() {
     _fwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
     _fwd.y = 0; _fwd.normalize();
+    _right.set(_fwd.z, 0, -_fwd.x); // 90° CW in XZ plane
   }
 
   domElement.addEventListener('mousedown', e => {
@@ -538,12 +540,12 @@ function createFPSControls(camera, domElement) {
 
       // WASD
       let moved = false;
-      if (keys.has('KeyA')) { yaw += TURN_SPEED; applyRotation(); moved = true; }
-      if (keys.has('KeyD')) { yaw -= TURN_SPEED; applyRotation(); moved = true; }
-      if (keys.has('KeyW') || keys.has('KeyS')) {
-        getHorizFwd();
-        camera.position.addScaledVector(_fwd, keys.has('KeyW') ? MOVE_SPEED : -MOVE_SPEED);
-        moved = true;
+      if (keys.has('KeyW') || keys.has('KeyS') || keys.has('KeyA') || keys.has('KeyD')) {
+        getHorizDirs();
+        if (keys.has('KeyW')) { camera.position.addScaledVector(_fwd,   MOVE_SPEED);   moved = true; }
+        if (keys.has('KeyS')) { camera.position.addScaledVector(_fwd,  -MOVE_SPEED);   moved = true; }
+        if (keys.has('KeyD')) { camera.position.addScaledVector(_right,  STRAFE_SPEED); moved = true; }
+        if (keys.has('KeyA')) { camera.position.addScaledVector(_right, -STRAFE_SPEED); moved = true; }
       }
       if (moved) dispatcher.dispatchEvent({ type: 'change' });
     },
