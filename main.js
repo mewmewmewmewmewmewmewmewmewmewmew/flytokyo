@@ -125,15 +125,48 @@ function heightColor(h) {
 
 function streetColor(type) {
   if (['motorway','motorway_link','trunk','trunk_link','primary','primary_link'].includes(type))
-    return new THREE.Color(0x5a6890);
+    return new THREE.Color(0x99aadd);
   if (['secondary','secondary_link','tertiary','tertiary_link'].includes(type))
-    return new THREE.Color(0x404f70);
+    return new THREE.Color(0x7788bb);
   if (['pedestrian','footway','path','cycleway'].includes(type))
-    return new THREE.Color(0x283248);
-  return new THREE.Color(0x323c58);
+    return new THREE.Color(0x556688);
+  return new THREE.Color(0x667799);
 }
 
 // ─── Shaders ─────────────────────────────────────────────────────────────────
+
+// Vertex: surfaces (needs normal for lambert shading)
+const SURF_VERT = /* glsl */`
+  attribute vec3 color;
+  varying vec3  vCol;
+  varying float vDist;
+  varying vec3  vNorm;
+  void main() {
+    vCol  = color;
+    vNorm = normalMatrix * normal;
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    vDist = length(mv.xyz);
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+// Fragment: transparent surface fill + lambert shading + distance fade
+const SURF_FRAG = /* glsl */`
+  varying vec3  vCol;
+  varying float vDist;
+  varying vec3  vNorm;
+  uniform float uNear;
+  uniform float uFar;
+  void main() {
+    vec3  L     = normalize(vec3(0.5, 1.0, 0.3));
+    float diff  = max(dot(normalize(vNorm), L), 0.0);
+    float light = 0.55 + 0.45 * diff;
+    float fade  = 1.0 - smoothstep(uNear, uFar, vDist);
+    float a     = 0.40 * fade;
+    if (a < 0.01) discard;
+    gl_FragColor = vec4(vCol * light, a);
+  }
+`;
 
 const LINE_VERT = /* glsl */`
   attribute vec3 color;
@@ -144,19 +177,6 @@ const LINE_VERT = /* glsl */`
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     vDist = length(mv.xyz);
     gl_Position = projectionMatrix * mv;
-  }
-`;
-
-// EdgesGeometry layer — 80% base opacity, distance fade
-const EDGES_FRAG = /* glsl */`
-  varying vec3  vCol;
-  varying float vDist;
-  uniform float uNear;
-  uniform float uFar;
-  void main() {
-    float fade = 1.0 - smoothstep(uNear, uFar, vDist);
-    if (fade < 0.01) discard;
-    gl_FragColor = vec4(vCol, 0.8 * fade);
   }
 `;
 
@@ -192,9 +212,10 @@ function fadeUniforms() {
 
 function createMaterials() {
   return {
-    edges: new THREE.ShaderMaterial({
-      vertexShader: LINE_VERT, fragmentShader: EDGES_FRAG,
+    surface: new THREE.ShaderMaterial({
+      vertexShader: SURF_VERT, fragmentShader: SURF_FRAG,
       uniforms: fadeUniforms(), transparent: true, depthWrite: false,
+      side: THREE.DoubleSide,
     }),
     wireframe: new THREE.ShaderMaterial({
       vertexShader: LINE_VERT, fragmentShader: WIRE_FRAG,
@@ -244,40 +265,47 @@ function buildSingleBuildingGeo(ring, height) {
   return geo;
 }
 
-// Merge all EdgesGeometry outputs into one LineSegments.
-// EdgesGeometry suppresses coplanar edges (the earcut diagonals on flat roofs
-// and the quad-split diagonal on each wall) — leaving only real corners.
-function buildEdgesGeoMesh(buildings, mat) {
-  const allPos = [], allCol = [];
+// Transparent surface fill — one merged Mesh for all buildings in a tile.
+// The WireframeGeometry layer drawn on top provides all the visible outlines.
+function buildSurfaceMesh(buildings, mat) {
+  const pos = [], norm = [], col = [], idx = [];
+  let v = 0;
 
   for (const { ring, height } of buildings) {
-    const base = buildSingleBuildingGeo(ring, height);
-    if (!base) continue;
+    const n  = ring.length;
+    const rc = heightColor(height);
+    const wc = rc.clone().multiplyScalar(0.55);
 
-    const edgesGeo = new THREE.EdgesGeometry(base);
-    const posAttr  = edgesGeo.getAttribute('position');
+    const flat = ring.flatMap(([x, z]) => [x, z]);
+    const tris = earcut(flat);
+    if (!tris.length) continue;
 
-    const c = heightColor(height);
-    // Brighten so architectural outlines pop against the wireframe layer
-    const r = Math.min(c.r * 2.0 + 0.3, 1);
-    const g = Math.min(c.g * 2.0 + 0.3, 1);
-    const b = Math.min(c.b * 2.0 + 0.3, 1);
-
-    for (let i = 0; i < posAttr.count; i++) {
-      allPos.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
-      allCol.push(r, g, b);
+    const rb = v;
+    for (const [x, z] of ring) {
+      pos.push(x, height, z); norm.push(0, 1, 0); col.push(rc.r, rc.g, rc.b); v++;
     }
+    for (const i of tris) idx.push(rb + i);
 
-    base.dispose();
-    edgesGeo.dispose();
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const [x0, z0] = ring[i], [x1, z1] = ring[j];
+      const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz) || 1;
+      const b = v;
+      pos.push(x0, 0, z0,  x1, 0, z1,  x1, height, z1,  x0, height, z0);
+      for (let k = 0; k < 4; k++) { norm.push(dz / len, 0, -dx / len); col.push(wc.r, wc.g, wc.b); }
+      idx.push(b, b+1, b+2,  b, b+2, b+3);
+      v += 4;
+    }
   }
 
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(allPos, 3));
-  geo.setAttribute('color',    new THREE.Float32BufferAttribute(allCol, 3));
-  const lines = new THREE.LineSegments(geo, mat);
-  lines.renderOrder = 1;
-  return lines;
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos,  3));
+  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(norm, 3));
+  geo.setAttribute('color',    new THREE.Float32BufferAttribute(col,  3));
+  geo.setIndex(idx);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 1;
+  return mesh;
 }
 
 // Merge all WireframeGeometry outputs into one LineSegments.
@@ -394,7 +422,7 @@ class TileManager {
 
       const group = new THREE.Group();
       if (bldgs.length) {
-        group.add(buildEdgesGeoMesh(bldgs, this.mats.edges));
+        group.add(buildSurfaceMesh(bldgs, this.mats.surface));
         group.add(buildWireframeGeoMesh(bldgs, this.mats.wireframe));
         this.buildings += bldgs.length;
       }
@@ -452,14 +480,9 @@ function initScene() {
   controls.screenSpacePanning = false; // right-drag pans on ground plane
   controls.minDistance     = 2;
   controls.maxDistance     = 400;
-  controls.maxPolarAngle   = Math.PI * 0.88;   // don't go below ground
-  controls.minPolarAngle   = 0.05;
+  controls.maxPolarAngle   = Math.PI;     // allow looking straight up at the sky
+  controls.minPolarAngle   = 0;
   controls.update();
-
-  // Keep camera above street level
-  controls.addEventListener('change', () => {
-    if (camera.position.y < 1.0) camera.position.y = 1.0;
-  });
 
   window.addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
