@@ -9,8 +9,8 @@ const CENTER_LON = 139.7004;
 const M_PER_DEG_LAT = 111_320;
 const M_PER_DEG_LON = 111_320 * Math.cos(CENTER_LAT * Math.PI / 180);
 
-const TILE_LAT    = 0.005;   // ≈ 556 m per tile
-const TILE_LON    = 0.006;   // ≈ 540 m per tile
+const TILE_LAT    = 0.005;
+const TILE_LON    = 0.006;
 const LOAD_RADIUS = 1;
 
 const FADE_NEAR = 80;
@@ -115,21 +115,28 @@ function parseStreets(osm, nodeMap) {
   return out;
 }
 
-// ─── Colour palette ──────────────────────────────────────────────────────────
+// ─── Colour palette (light theme) ────────────────────────────────────────────
 
+// Building surface: near-white for short, light blue-grey for tall
 function heightColor(h) {
   const t = Math.min(h / 160, 1);
-  return new THREE.Color().setHSL((230 + t * 70) / 360, 0.35 + t * 0.35, 0.14 + t * 0.50);
+  return new THREE.Color().setHSL((220 + t * 15) / 360, 0.06 + t * 0.08, 0.86 - t * 0.10);
+}
+
+// Wireframe lines: dark blue-grey for contrast on light surfaces
+function wireColor(h) {
+  const t = Math.min(h / 160, 1);
+  return new THREE.Color().setHSL((220 + t * 15) / 360, 0.20, 0.22 + t * 0.05);
 }
 
 function streetColor(type) {
   if (['motorway','motorway_link','trunk','trunk_link','primary','primary_link'].includes(type))
-    return new THREE.Color(0x99aadd);
+    return new THREE.Color(0x3d4a6a);
   if (['secondary','secondary_link','tertiary','tertiary_link'].includes(type))
-    return new THREE.Color(0x7788bb);
+    return new THREE.Color(0x5a6280);
   if (['pedestrian','footway','path','cycleway'].includes(type))
-    return new THREE.Color(0x556688);
-  return new THREE.Color(0x667799);
+    return new THREE.Color(0x8090a8);
+  return new THREE.Color(0x6a7490);
 }
 
 // ─── Shaders ─────────────────────────────────────────────────────────────────
@@ -157,7 +164,7 @@ const SURF_FRAG = /* glsl */`
   void main() {
     vec3  L     = normalize(vec3(0.5, 1.0, 0.3));
     float diff  = max(dot(normalize(vNorm), L), 0.0);
-    float light = 0.55 + 0.45 * diff;
+    float light = 0.60 + 0.40 * diff;
     float fade  = 1.0 - smoothstep(uNear, uFar, vDist);
     float a     = 0.80 * fade;
     if (a < 0.01) discard;
@@ -174,6 +181,18 @@ const LINE_VERT = /* glsl */`
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     vDist = length(mv.xyz);
     gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const WIRE_FRAG = /* glsl */`
+  varying vec3  vCol;
+  varying float vDist;
+  uniform float uNear;
+  uniform float uFar;
+  void main() {
+    float fade = 1.0 - smoothstep(uNear, uFar, vDist);
+    if (fade < 0.01) discard;
+    gl_FragColor = vec4(vCol, fade);
   }
 `;
 
@@ -200,6 +219,10 @@ function createMaterials() {
       uniforms: fadeUniforms(), transparent: true, depthWrite: false,
       side: THREE.DoubleSide,
     }),
+    wireframe: new THREE.ShaderMaterial({
+      vertexShader: LINE_VERT, fragmentShader: WIRE_FRAG,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
+    }),
     street: new THREE.ShaderMaterial({
       vertexShader: LINE_VERT, fragmentShader: STREET_FRAG,
       uniforms: fadeUniforms(), transparent: true, depthWrite: false,
@@ -209,6 +232,39 @@ function createMaterials() {
 
 // ─── Geometry builders ───────────────────────────────────────────────────────
 
+// Solid prism used as input to WireframeGeometry
+function buildSingleBuildingGeo(ring, height) {
+  const pos = [], norm = [], idx = [];
+  let v = 0;
+  const n = ring.length;
+
+  const flat = ring.flatMap(([x, z]) => [x, z]);
+  const tris = earcut(flat);
+  if (!tris.length) return null;
+
+  const rb = v;
+  for (const [x, z] of ring) { pos.push(x, height, z); norm.push(0, 1, 0); v++; }
+  for (const i of tris) idx.push(rb + i);
+
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const [x0, z0] = ring[i], [x1, z1] = ring[j];
+    const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz) || 1;
+    const b = v;
+    pos.push(x0, 0, z0,  x1, 0, z1,  x1, height, z1,  x0, height, z0);
+    for (let k = 0; k < 4; k++) norm.push(dz / len, 0, -dx / len);
+    idx.push(b, b+1, b+2,  b, b+2, b+3);
+    v += 4;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos,  3));
+  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(norm, 3));
+  geo.setIndex(idx);
+  return geo;
+}
+
+// Transparent surface fill — one merged Mesh per tile
 function buildSurfaceMesh(buildings, mat) {
   const pos = [], norm = [], col = [], idx = [];
   let v = 0;
@@ -248,6 +304,35 @@ function buildSurfaceMesh(buildings, mat) {
   const mesh = new THREE.Mesh(geo, mat);
   mesh.renderOrder = 1;
   return mesh;
+}
+
+// WireframeGeometry over every building — dark lines at 100% near opacity
+function buildWireframeGeoMesh(buildings, mat) {
+  const allPos = [], allCol = [];
+
+  for (const { ring, height } of buildings) {
+    const base = buildSingleBuildingGeo(ring, height);
+    if (!base) continue;
+
+    const wireGeo = new THREE.WireframeGeometry(base);
+    const posAttr = wireGeo.getAttribute('position');
+    const c = wireColor(height);
+
+    for (let i = 0; i < posAttr.count; i++) {
+      allPos.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
+      allCol.push(c.r, c.g, c.b);
+    }
+
+    base.dispose();
+    wireGeo.dispose();
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(allPos, 3));
+  geo.setAttribute('color',    new THREE.Float32BufferAttribute(allCol, 3));
+  const lines = new THREE.LineSegments(geo, mat);
+  lines.renderOrder = 2;
+  return lines;
 }
 
 function buildStreetLines(streets, mat) {
@@ -332,6 +417,7 @@ class TileManager {
       const group = new THREE.Group();
       if (bldgs.length) {
         group.add(buildSurfaceMesh(bldgs, this.mats.surface));
+        group.add(buildWireframeGeoMesh(bldgs, this.mats.wireframe));
         this.buildings += bldgs.length;
       }
       if (strs.length) {
@@ -358,43 +444,42 @@ class TileManager {
 }
 
 // ─── First-person controls ───────────────────────────────────────────────────
-// Left-drag: look around in place (yaw + pitch).
-// Right-drag: walk — forward/back on dy, strafe on dx.
-// Scroll: move forward along look direction.
-// Velocity decays after release for a smooth coast.
+// Left-drag: look around (yaw + pitch with coast damping).
+// W/S: walk forward / backward.
+// A/D: turn left / right.
 
 function createFPSControls(camera, domElement) {
-  let yaw   = 0;   // Y-axis rotation (horizontal look)
-  let pitch = 0;   // X-axis rotation (vertical look)
+  let yaw   = 0;
+  let pitch = 0;
   let yawVel   = 0;
   let pitchVel = 0;
 
   const LOOK_SPEED = 0.0025;
-  const PAN_SPEED  = 0.15;
-  const SCROLL_SPD = 0.08;
+  const MOVE_SPEED = 0.30;   // m/frame (~18 m/s at 60 fps)
+  const TURN_SPEED = 0.032;  // rad/frame (~110°/s at 60 fps)
   const DAMP       = 0.85;
 
+  const keys = new Set();
+  window.addEventListener('keydown', e => keys.add(e.code));
+  window.addEventListener('keyup',   e => keys.delete(e.code));
+
   let isDragging = false;
-  let dragButton = -1;
   let lastX = 0, lastY = 0;
 
-  const _fwd   = new THREE.Vector3();
-  const _right = new THREE.Vector3();
+  const _fwd = new THREE.Vector3();
 
   function applyRotation() {
     camera.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
   }
 
-  function horizDirs() {
+  function getHorizFwd() {
     _fwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
     _fwd.y = 0; _fwd.normalize();
-    _right.set(1, 0, 0).applyQuaternion(camera.quaternion);
-    _right.y = 0; _right.normalize();
   }
 
   domElement.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
     isDragging = true;
-    dragButton = e.button;
     lastX = e.clientX;
     lastY = e.clientY;
     e.preventDefault();
@@ -406,30 +491,15 @@ function createFPSControls(camera, domElement) {
     const dy = e.clientY - lastY;
     lastX = e.clientX;
     lastY = e.clientY;
-
-    if (dragButton === 0) {
-      yawVel   = -dx * LOOK_SPEED;
-      pitchVel = -dy * LOOK_SPEED;
-      yaw   += yawVel;
-      pitch  = Math.max(-Math.PI * 0.499, Math.min(Math.PI * 0.499, pitch + pitchVel));
-      applyRotation();
-    } else if (dragButton === 2) {
-      horizDirs();
-      camera.position.addScaledVector(_fwd,  -dy * PAN_SPEED);
-      camera.position.addScaledVector(_right,  dx * PAN_SPEED);
-    }
+    yawVel   = -dx * LOOK_SPEED;
+    pitchVel = -dy * LOOK_SPEED;
+    yaw   += yawVel;
+    pitch  = Math.max(-Math.PI * 0.499, Math.min(Math.PI * 0.499, pitch + pitchVel));
+    applyRotation();
     dispatcher.dispatchEvent({ type: 'change' });
   });
 
-  window.addEventListener('mouseup', () => { isDragging = false; });
-
-  domElement.addEventListener('wheel', e => {
-    horizDirs();
-    camera.position.addScaledVector(_fwd, -e.deltaY * SCROLL_SPD);
-    dispatcher.dispatchEvent({ type: 'change' });
-    e.preventDefault();
-  }, { passive: false });
-
+  window.addEventListener('mouseup', e => { if (e.button === 0) isDragging = false; });
   domElement.addEventListener('contextmenu', e => e.preventDefault());
 
   // Touch: single finger = look
@@ -439,14 +509,12 @@ function createFPSControls(camera, domElement) {
       touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
     e.preventDefault();
   }, { passive: false });
-
   domElement.addEventListener('touchmove', e => {
     if (e.touches.length === 1 && touchLast) {
       const dx = e.touches[0].clientX - touchLast.x;
       const dy = e.touches[0].clientY - touchLast.y;
       touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-      yawVel   = -dx * LOOK_SPEED;
-      pitchVel = -dy * LOOK_SPEED;
+      yawVel = -dx * LOOK_SPEED; pitchVel = -dy * LOOK_SPEED;
       yaw   += yawVel;
       pitch  = Math.max(-Math.PI * 0.499, Math.min(Math.PI * 0.499, pitch + pitchVel));
       applyRotation();
@@ -454,18 +522,29 @@ function createFPSControls(camera, domElement) {
     }
     e.preventDefault();
   }, { passive: false });
-
   domElement.addEventListener('touchend', () => { touchLast = null; });
 
   const dispatcher = Object.assign(new THREE.EventDispatcher(), {
     update() {
-      if (isDragging) return;
-      if (Math.abs(yawVel) < 0.000001 && Math.abs(pitchVel) < 0.000001) return;
-      yawVel   *= DAMP;
-      pitchVel *= DAMP;
-      yaw   += yawVel;
-      pitch  = Math.max(-Math.PI * 0.499, Math.min(Math.PI * 0.499, pitch + pitchVel));
-      applyRotation();
+      // Look coast after drag release
+      if (!isDragging && (Math.abs(yawVel) > 0.000001 || Math.abs(pitchVel) > 0.000001)) {
+        yawVel   *= DAMP;
+        pitchVel *= DAMP;
+        yaw   += yawVel;
+        pitch  = Math.max(-Math.PI * 0.499, Math.min(Math.PI * 0.499, pitch + pitchVel));
+        applyRotation();
+      }
+
+      // WASD
+      let moved = false;
+      if (keys.has('KeyA')) { yaw += TURN_SPEED; applyRotation(); moved = true; }
+      if (keys.has('KeyD')) { yaw -= TURN_SPEED; applyRotation(); moved = true; }
+      if (keys.has('KeyW') || keys.has('KeyS')) {
+        getHorizFwd();
+        camera.position.addScaledVector(_fwd, keys.has('KeyW') ? MOVE_SPEED : -MOVE_SPEED);
+        moved = true;
+      }
+      if (moved) dispatcher.dispatchEvent({ type: 'change' });
     },
   });
 
@@ -478,17 +557,17 @@ function initScene() {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.setSize(innerWidth, innerHeight);
-  renderer.setClearColor(0x050810);
+  renderer.setClearColor(0xf0f2f8);
   document.body.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
 
   const camera = new THREE.PerspectiveCamera(90, innerWidth / innerHeight, 0.5, 2000);
-  camera.position.set(0, 1.6, 50);   // eye level, 50 m south of the crossing
+  camera.position.set(0, 1.6, 50);
 
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(8000, 8000),
-    new THREE.MeshBasicMaterial({ color: 0x080e1a }),
+    new THREE.MeshBasicMaterial({ color: 0xd8dce8 }),
   );
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.05;

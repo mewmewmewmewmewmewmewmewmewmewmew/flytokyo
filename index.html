@@ -6,7 +6,7 @@
   <title>Tokyo 3D</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #050810; overflow: hidden; font-family: system-ui, sans-serif; color: #c8cfe8; }
+    body { background: #f0f2f8; overflow: hidden; font-family: system-ui, sans-serif; color: #1a1e30; }
     canvas { display: block; }
 
     #overlay {
@@ -48,7 +48,7 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      background: #050810;
+      background: #f0f2f8;
       gap: 18px;
       z-index: 10;
       transition: opacity 0.7s ease;
@@ -58,8 +58,8 @@
     .spinner {
       width: 34px;
       height: 34px;
-      border: 2px solid #ffffff14;
-      border-top-color: #7c8cff;
+      border: 2px solid #c0c4d8;
+      border-top-color: #4455aa;
       border-radius: 50%;
       animation: spin 0.75s linear infinite;
     }
@@ -89,11 +89,11 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v0.6</div>
+  <div id="version">v0.7</div>
 
   <div id="hint">
-    Drag · Look &nbsp;|&nbsp; Right-drag · Walk<br>
-    Scroll · Move
+    Drag · Look &nbsp;|&nbsp; W/S · Walk<br>
+    A/D · Turn
   </div>
 
   <script type="importmap">
