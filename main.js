@@ -126,7 +126,9 @@ function parseRailways(osm, nodeMap) {
     if (!RAILWAY_TYPES.has(el.tags.railway)) continue;
     const coords = el.nodes.map(id => nodeMap.get(id)).filter(Boolean);
     if (coords.length < 2) continue;
-    const isTunnel = el.tags.tunnel === 'yes';
+    // Subways are underground unless explicitly bridged; other rail requires tunnel=yes
+    const isBridge = el.tags.bridge === 'yes' || el.tags.bridge === 'viaduct';
+    const isTunnel = el.tags.tunnel === 'yes' || (el.tags.railway === 'subway' && !isBridge);
     out.push({ id: el.id, coords, type: el.tags.railway, isTunnel });
   }
   return out;
@@ -654,7 +656,7 @@ function initScene() {
   const scene = new THREE.Scene();
 
   const camera = new THREE.PerspectiveCamera(90, innerWidth / innerHeight, 0.5, 2000);
-  camera.position.set(0, 1.6, 50);
+  camera.position.set(0, 1.6, 0);    // centre of Scramble Crossing
 
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(8000, 8000),
