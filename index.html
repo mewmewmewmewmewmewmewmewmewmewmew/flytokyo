@@ -6,7 +6,7 @@
   <title>Tokyo 3D</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #080c14; overflow: hidden; font-family: system-ui, sans-serif; color: #c8cfe8; }
+    body { background: #050810; overflow: hidden; font-family: system-ui, sans-serif; color: #c8cfe8; }
     canvas { display: block; }
 
     #overlay {
@@ -48,7 +48,7 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      background: #080c14;
+      background: #050810;
       gap: 18px;
       z-index: 10;
       transition: opacity 0.7s ease;
@@ -71,17 +71,17 @@
 <body>
   <div id="loading">
     <div class="spinner"></div>
-    <div id="load-msg">Connecting to OpenStreetMap…</div>
+    <div id="load-msg">Loading…</div>
   </div>
 
   <div id="overlay">
-    <h1>Tokyo · Nishi-Shinjuku</h1>
+    <h1>Tokyo · Shibuya</h1>
     <div id="status"></div>
   </div>
 
   <div id="hint">
-    Drag · Orbit &nbsp;|&nbsp; Scroll · Zoom<br>
-    Right-drag · Pan
+    Drag · Look &nbsp;|&nbsp; Right-drag · Walk<br>
+    Scroll · Zoom
   </div>
 
   <script type="importmap">

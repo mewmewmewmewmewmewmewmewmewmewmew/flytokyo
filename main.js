@@ -2,26 +2,22 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import earcut from 'earcut';
 
-// ---------------------------------------------------------------------------
-// Target area: Nishi-Shinjuku skyscraper district, Tokyo
-// ---------------------------------------------------------------------------
+// ─── Config ──────────────────────────────────────────────────────────────────
 
-const BBOX = {
-  south: 35.6855,
-  west:  139.6905,
-  north: 35.6955,
-  east:  139.7030,
-};
-
-const CENTER_LAT = (BBOX.south + BBOX.north) / 2;
-const CENTER_LON = (BBOX.west  + BBOX.east)  / 2;
+const CENTER_LAT = 35.6595;   // Shibuya Scramble Crossing
+const CENTER_LON = 139.7004;
 
 const M_PER_DEG_LAT = 111_320;
 const M_PER_DEG_LON = 111_320 * Math.cos(CENTER_LAT * Math.PI / 180);
 
-// ---------------------------------------------------------------------------
-// Coordinate projection  (lat/lon → local X/Z in metres, Y is up)
-// ---------------------------------------------------------------------------
+const TILE_LAT    = 0.005;   // ≈ 556 m per tile
+const TILE_LON    = 0.006;   // ≈ 540 m per tile
+const LOAD_RADIUS = 1;       // tiles in each direction from camera
+
+const FADE_NEAR = 80;        // m – full opacity inside this
+const FADE_FAR  = 500;       // m – fully transparent beyond this
+
+// ─── Coordinate helpers ──────────────────────────────────────────────────────
 
 function project(lat, lon) {
   return [
@@ -30,19 +26,33 @@ function project(lat, lon) {
   ];
 }
 
-// ---------------------------------------------------------------------------
-// Overpass API – buildings + streets in one request
-// ---------------------------------------------------------------------------
+function worldToGeo(x, z) {
+  return {
+    lat: CENTER_LAT - z / M_PER_DEG_LAT,
+    lon: CENTER_LON + x / M_PER_DEG_LON,
+  };
+}
 
-async function fetchOSM() {
-  const { south, west, north, east } = BBOX;
+function latLonToTile(lat, lon) {
+  return { tx: Math.floor(lon / TILE_LON), ty: Math.floor(lat / TILE_LAT) };
+}
+
+function tileToBBox(tx, ty) {
+  return {
+    south: ty * TILE_LAT,       north: (ty + 1) * TILE_LAT,
+    west:  tx * TILE_LON,       east:  (tx + 1) * TILE_LON,
+  };
+}
+
+// ─── Overpass ────────────────────────────────────────────────────────────────
+
+async function fetchOSMBbox(bbox) {
+  const { south, west, north, east } = bbox;
   const query = [
-    '[out:json][timeout:30];',
-    '(',
+    '[out:json][timeout:30];(',
     `way["building"](${south},${west},${north},${east});`,
     `way["highway"](${south},${west},${north},${east});`,
-    ');',
-    'out body;>;out skel qt;',
+    ');out body;>;out skel qt;',
   ].join('');
 
   const res = await fetch('https://overpass-api.de/api/interpreter', {
@@ -50,13 +60,11 @@ async function fetchOSM() {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: 'data=' + encodeURIComponent(query),
   });
-  if (!res.ok) throw new Error(`Overpass returned HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
-// ---------------------------------------------------------------------------
-// Shared node map  (built once, used by both buildings and streets)
-// ---------------------------------------------------------------------------
+// ─── OSM parsing ─────────────────────────────────────────────────────────────
 
 function buildNodeMap(osm) {
   const map = new Map();
@@ -66,34 +74,24 @@ function buildNodeMap(osm) {
   return map;
 }
 
-// ---------------------------------------------------------------------------
-// Buildings
-// ---------------------------------------------------------------------------
-
 function parseBuildings(osm, nodeMap) {
-  const buildings = [];
+  const out = [];
   for (const el of osm.elements) {
     if (el.type !== 'way' || !el.tags?.building) continue;
-
     const ring = el.nodes.map(id => nodeMap.get(id)).filter(Boolean);
-
     if (ring.length > 1) {
       const [ax, az] = ring[0], [bx, bz] = ring[ring.length - 1];
       if (ax === bx && az === bz) ring.pop();
     }
     if (ring.length < 3) continue;
-
-    buildings.push({ ring, height: extractHeight(el.tags) });
+    out.push({ id: el.id, ring, height: extractHeight(el.tags) });
   }
-  return buildings;
+  return out;
 }
 
 function extractHeight(tags) {
   for (const key of ['height', 'building:height']) {
-    if (tags[key]) {
-      const v = parseFloat(tags[key]);
-      if (v > 0) return v;
-    }
+    if (tags[key]) { const v = parseFloat(tags[key]); if (v > 0) return v; }
   }
   if (tags['building:levels']) {
     const l = parseInt(tags['building:levels'], 10);
@@ -102,153 +100,365 @@ function extractHeight(tags) {
   return 10;
 }
 
-function heightColor(h) {
-  const t = Math.min(h / 160, 1);
-  const hue = (230 + t * 70) / 360;
-  return new THREE.Color().setHSL(hue, 0.35 + t * 0.35, 0.14 + t * 0.50);
-}
-
-function buildCityMesh(buildings) {
-  const positions = [], normals = [], colors = [], indices = [];
-  let vtx = 0;
-
-  for (const { ring, height } of buildings) {
-    const n = ring.length;
-    const roofCol = heightColor(height);
-    const wallCol = roofCol.clone().multiplyScalar(0.6);
-
-    const flat = ring.flatMap(([x, z]) => [x, z]);
-    const tris = earcut(flat);
-    if (tris.length === 0) continue;
-
-    const roofBase = vtx;
-    for (const [x, z] of ring) {
-      positions.push(x, height, z);
-      normals.push(0, 1, 0);
-      colors.push(roofCol.r, roofCol.g, roofCol.b);
-      vtx++;
-    }
-    for (const i of tris) indices.push(roofBase + i);
-
-    for (let i = 0; i < n; i++) {
-      const j = (i + 1) % n;
-      const [x0, z0] = ring[i], [x1, z1] = ring[j];
-      const dx = x1 - x0, dz = z1 - z0;
-      const len = Math.hypot(dx, dz) || 1;
-      const base = vtx;
-      positions.push(x0, 0, z0, x1, 0, z1, x1, height, z1, x0, height, z0);
-      for (let k = 0; k < 4; k++) {
-        normals.push(dz / len, 0, -dx / len);
-        colors.push(wallCol.r, wallCol.g, wallCol.b);
-      }
-      indices.push(base, base+1, base+2, base, base+2, base+3);
-      vtx += 4;
-    }
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals,   3));
-  geo.setAttribute('color',    new THREE.Float32BufferAttribute(colors,    3));
-  geo.setIndex(indices);
-  return new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
-}
-
-// ---------------------------------------------------------------------------
-// Streets
-// ---------------------------------------------------------------------------
-
-// Types to skip – not real navigable roads
 const HIGHWAY_SKIP = new Set([
   'proposed', 'construction', 'elevator', 'steps', 'corridor', 'platform', 'raceway',
 ]);
 
 function parseStreets(osm, nodeMap) {
-  const streets = [];
+  const out = [];
   for (const el of osm.elements) {
     if (el.type !== 'way' || !el.tags?.highway) continue;
     if (HIGHWAY_SKIP.has(el.tags.highway)) continue;
-
     const coords = el.nodes.map(id => nodeMap.get(id)).filter(Boolean);
     if (coords.length < 2) continue;
-
-    streets.push({ coords, highway: el.tags.highway });
+    out.push({ id: el.id, coords, highway: el.tags.highway });
   }
-  return streets;
+  return out;
 }
 
-function streetColor(highway) {
-  switch (highway) {
-    case 'motorway': case 'motorway_link':
-    case 'trunk':    case 'trunk_link':
-    case 'primary':  case 'primary_link':
-      return new THREE.Color(0x5a6890);
-    case 'secondary': case 'secondary_link':
-    case 'tertiary':  case 'tertiary_link':
-      return new THREE.Color(0x404f70);
-    case 'pedestrian': case 'footway': case 'path': case 'cycleway':
-      return new THREE.Color(0x283248);
-    default: // residential, service, unclassified, living_street …
-      return new THREE.Color(0x323c58);
-  }
+// ─── Colour palette ──────────────────────────────────────────────────────────
+
+function heightColor(h) {
+  const t = Math.min(h / 160, 1);
+  return new THREE.Color().setHSL((230 + t * 70) / 360, 0.35 + t * 0.35, 0.14 + t * 0.50);
 }
 
-function buildStreetLines(streets) {
-  const positions = [], colors = [];
+function streetColor(type) {
+  if (['motorway','motorway_link','trunk','trunk_link','primary','primary_link'].includes(type))
+    return new THREE.Color(0x5a6890);
+  if (['secondary','secondary_link','tertiary','tertiary_link'].includes(type))
+    return new THREE.Color(0x404f70);
+  if (['pedestrian','footway','path','cycleway'].includes(type))
+    return new THREE.Color(0x283248);
+  return new THREE.Color(0x323c58);
+}
 
-  for (const { coords, highway } of streets) {
-    const col = streetColor(highway);
-    for (let i = 0; i < coords.length - 1; i++) {
-      const [x0, z0] = coords[i], [x1, z1] = coords[i + 1];
-      positions.push(x0, 0.3, z0, x1, 0.3, z1);
-      colors.push(col.r, col.g, col.b, col.r, col.g, col.b);
+// ─── Shaders ─────────────────────────────────────────────────────────────────
+
+// Vertex: surfaces (needs normal for lambert shading)
+const SURF_VERT = /* glsl */`
+  attribute vec3 color;
+  varying vec3  vCol;
+  varying float vDist;
+  varying vec3  vNorm;
+  void main() {
+    vCol  = color;
+    vNorm = normalMatrix * normal;
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    vDist = length(mv.xyz);
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+// Vertex: lines / streets (no normals needed)
+const LINE_VERT = /* glsl */`
+  attribute vec3 color;
+  varying vec3  vCol;
+  varying float vDist;
+  void main() {
+    vCol = color;
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    vDist = length(mv.xyz);
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+// Fragment: transparent surface with lambert + distance fade
+const SURF_FRAG = /* glsl */`
+  varying vec3  vCol;
+  varying float vDist;
+  varying vec3  vNorm;
+  uniform float uNear;
+  uniform float uFar;
+  void main() {
+    vec3  L     = normalize(vec3(0.5, 1.0, 0.3));
+    float diff  = max(dot(normalize(vNorm), L), 0.0);
+    float light = 0.55 + 0.45 * diff;
+    float fade  = 1.0 - smoothstep(uNear, uFar, vDist);
+    float a     = 0.45 * fade;
+    if (a < 0.01) discard;
+    gl_FragColor = vec4(vCol * light, a);
+  }
+`;
+
+// Fragment: lines — full opacity close, fade to zero with distance
+const EDGE_FRAG = /* glsl */`
+  varying vec3  vCol;
+  varying float vDist;
+  uniform float uNear;
+  uniform float uFar;
+  void main() {
+    float fade = 1.0 - smoothstep(uNear, uFar, vDist);
+    if (fade < 0.01) discard;
+    gl_FragColor = vec4(vCol, fade);
+  }
+`;
+
+// Fragment: streets — slightly softer falloff
+const STREET_FRAG = /* glsl */`
+  varying vec3  vCol;
+  varying float vDist;
+  uniform float uNear;
+  uniform float uFar;
+  void main() {
+    float fade = 1.0 - smoothstep(uNear * 0.5, uFar, vDist);
+    if (fade < 0.01) discard;
+    gl_FragColor = vec4(vCol, 0.9 * fade);
+  }
+`;
+
+function fadeUniforms() {
+  return { uNear: { value: FADE_NEAR }, uFar: { value: FADE_FAR } };
+}
+
+function createMaterials() {
+  return {
+    surface: new THREE.ShaderMaterial({
+      vertexShader: SURF_VERT, fragmentShader: SURF_FRAG,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+    edge: new THREE.ShaderMaterial({
+      vertexShader: LINE_VERT, fragmentShader: EDGE_FRAG,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
+    }),
+    street: new THREE.ShaderMaterial({
+      vertexShader: LINE_VERT, fragmentShader: STREET_FRAG,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
+    }),
+  };
+}
+
+// ─── Geometry builders ───────────────────────────────────────────────────────
+
+function buildSurfaceMesh(buildings, mat) {
+  const pos = [], norm = [], col = [], idx = [];
+  let v = 0;
+
+  for (const { ring, height } of buildings) {
+    const n   = ring.length;
+    const rc  = heightColor(height);
+    const wc  = rc.clone().multiplyScalar(0.55);
+
+    // Roof — triangulated with earcut
+    const flat = ring.flatMap(([x, z]) => [x, z]);
+    const tris = earcut(flat);
+    if (!tris.length) continue;
+
+    const rb = v;
+    for (const [x, z] of ring) {
+      pos.push(x, height, z); norm.push(0, 1, 0); col.push(rc.r, rc.g, rc.b); v++;
+    }
+    for (const i of tris) idx.push(rb + i);
+
+    // Walls
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const [x0, z0] = ring[i], [x1, z1] = ring[j];
+      const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz) || 1;
+      const b = v;
+      pos.push(x0, 0, z0,  x1, 0, z1,  x1, height, z1,  x0, height, z0);
+      for (let k = 0; k < 4; k++) { norm.push(dz / len, 0, -dx / len); col.push(wc.r, wc.g, wc.b); }
+      idx.push(b, b+1, b+2,  b, b+2, b+3);
+      v += 4;
     }
   }
 
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geo.setAttribute('color',    new THREE.Float32BufferAttribute(colors,    3));
-  return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true }));
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos,  3));
+  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(norm, 3));
+  geo.setAttribute('color',    new THREE.Float32BufferAttribute(col,  3));
+  geo.setIndex(idx);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 1;
+  return mesh;
 }
 
-// ---------------------------------------------------------------------------
-// Three.js scene setup
-// ---------------------------------------------------------------------------
+function buildEdgeLines(buildings, mat) {
+  const pos = [], col = [];
+
+  for (const { ring, height } of buildings) {
+    // Edges are a brightened version of the building colour
+    const bc = heightColor(height);
+    const r = Math.min(bc.r * 2.2 + 0.25, 1);
+    const g = Math.min(bc.g * 2.2 + 0.25, 1);
+    const b = Math.min(bc.b * 2.2 + 0.25, 1);
+
+    const n = ring.length;
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const [x0, z0] = ring[i], [x1, z1] = ring[j];
+
+      // Roof perimeter
+      pos.push(x0, height, z0,  x1, height, z1);
+      col.push(r, g, b,  r, g, b);
+
+      // Ground perimeter
+      pos.push(x0, 0, z0,  x1, 0, z1);
+      col.push(r, g, b,  r, g, b);
+
+      // Vertical corner pillar at vertex i
+      pos.push(x0, 0, z0,  x0, height, z0);
+      col.push(r, g, b,  r, g, b);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
+  const lines = new THREE.LineSegments(geo, mat);
+  lines.renderOrder = 2;
+  return lines;
+}
+
+function buildStreetLines(streets, mat) {
+  const pos = [], col = [];
+
+  for (const { coords, highway } of streets) {
+    const c = streetColor(highway);
+    for (let i = 0; i < coords.length - 1; i++) {
+      const [x0, z0] = coords[i], [x1, z1] = coords[i + 1];
+      pos.push(x0, 0.2, z0,  x1, 0.2, z1);
+      col.push(c.r, c.g, c.b,  c.r, c.g, c.b);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
+  const lines = new THREE.LineSegments(geo, mat);
+  lines.renderOrder = 0;
+  return lines;
+}
+
+// ─── Tile manager ────────────────────────────────────────────────────────────
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+class TileManager {
+  constructor(scene, mats, statusEl) {
+    this.scene     = scene;
+    this.mats      = mats;
+    this.statusEl  = statusEl;
+    this.tiles     = new Map();   // key → 'queued' | 'loading' | 'done' | 'failed'
+    this.queue     = [];
+    this.seenIds   = new Set();   // dedup OSM way IDs across tiles
+    this.buildings = 0;
+    this.streets   = 0;
+    this.busy      = false;
+  }
+
+  key(tx, ty) { return `${tx}_${ty}`; }
+
+  request(tx, ty) {
+    const k = this.key(tx, ty);
+    if (this.tiles.has(k)) return;
+    this.tiles.set(k, 'queued');
+    this.queue.push({ tx, ty, k });
+  }
+
+  // Sort so center-of-interest tile (first added) stays first
+  update(camX, camZ) {
+    const { lat, lon } = worldToGeo(camX, camZ);
+    const { tx, ty }   = latLonToTile(lat, lon);
+    this.request(tx, ty);                          // center first
+    for (let dy = -LOAD_RADIUS; dy <= LOAD_RADIUS; dy++) {
+      for (let dx = -LOAD_RADIUS; dx <= LOAD_RADIUS; dx++) {
+        if (dx || dy) this.request(tx + dx, ty + dy);
+      }
+    }
+    if (!this.busy && this.queue.length) this._process();
+  }
+
+  async _process() {
+    this.busy = true;
+    while (this.queue.length) {
+      const { tx, ty, k } = this.queue.shift();
+      this.tiles.set(k, 'loading');
+      await this._loadTile(tx, ty, k);
+      if (this.queue.length) await sleep(350);
+    }
+    this.busy = false;
+  }
+
+  async _loadTile(tx, ty, k) {
+    try {
+      const osm     = await fetchOSMBbox(tileToBBox(tx, ty));
+      const nodeMap = buildNodeMap(osm);
+
+      const bldgs = parseBuildings(osm, nodeMap)
+        .filter(b => { if (this.seenIds.has(b.id)) return false; this.seenIds.add(b.id); return true; });
+      const strs  = parseStreets(osm, nodeMap)
+        .filter(s => { if (this.seenIds.has(s.id)) return false; this.seenIds.add(s.id); return true; });
+
+      const group = new THREE.Group();
+      if (bldgs.length) {
+        group.add(buildSurfaceMesh(bldgs, this.mats.surface));
+        group.add(buildEdgeLines(bldgs, this.mats.edge));
+        this.buildings += bldgs.length;
+      }
+      if (strs.length) {
+        group.add(buildStreetLines(strs, this.mats.street));
+        this.streets += strs.length;
+      }
+      this.scene.add(group);
+      this.tiles.set(k, 'done');
+      this._updateStatus();
+    } catch (err) {
+      console.warn(`Tile ${tx},${ty}:`, err.message);
+      this.tiles.set(k, 'failed');
+    }
+  }
+
+  _updateStatus() {
+    const queued = this.queue.length;
+    let text = `${this.buildings.toLocaleString()} buildings · ${this.streets.toLocaleString()} streets`;
+    if (queued) text += ` · ${queued} tile${queued > 1 ? 's' : ''} queued`;
+    this.statusEl.textContent = text;
+  }
+
+  get hasData() { return this.buildings > 0; }
+}
+
+// ─── Scene setup ─────────────────────────────────────────────────────────────
 
 function initScene() {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.setSize(innerWidth, innerHeight);
-  renderer.setClearColor(0x080c14);
+  renderer.setClearColor(0x050810);
   document.body.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  scene.fog = new THREE.Fog(0x080c14, 900, 2200);
 
-  const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 1, 5000);
-  camera.position.set(-200, 450, 600);
+  // Wide FOV for pedestrian / fisheye feel
+  const camera = new THREE.PerspectiveCamera(90, innerWidth / innerHeight, 0.5, 2000);
+  camera.position.set(0, 1.6, 50);   // eye level, 50 m south of the crossing
 
-  scene.add(new THREE.AmbientLight(0x8090c0, 0.9));
-  const sun = new THREE.DirectionalLight(0xffeedd, 1.1);
-  sun.position.set(300, 500, 200);
-  scene.add(sun);
-
+  // Dark ground slab
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(4000, 4000),
-    new THREE.MeshLambertMaterial({ color: 0x0b101e }),
+    new THREE.PlaneGeometry(8000, 8000),
+    new THREE.MeshBasicMaterial({ color: 0x080e1a }),
   );
   ground.rotation.x = -Math.PI / 2;
-  ground.position.y = -0.1;
+  ground.position.y = -0.05;
   scene.add(ground);
 
   const controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.set(0, 40, 0);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.07;
-  controls.maxPolarAngle = Math.PI / 2.05;
-  controls.minDistance = 40;
-  controls.maxDistance = 2500;
+  controls.target.set(0, 1.6, 0);     // looking at the crossing
+  controls.enableDamping   = true;
+  controls.dampingFactor   = 0.08;
+  controls.screenSpacePanning = false; // right-drag pans on ground plane
+  controls.minDistance     = 2;
+  controls.maxDistance     = 400;
+  controls.maxPolarAngle   = Math.PI * 0.88;   // don't go below ground
+  controls.minPolarAngle   = 0.05;
   controls.update();
+
+  // Keep camera above street level
+  controls.addEventListener('change', () => {
+    if (camera.position.y < 1.0) camera.position.y = 1.0;
+  });
 
   window.addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
@@ -262,43 +472,43 @@ function initScene() {
     renderer.render(scene, camera);
   })();
 
-  return scene;
+  return { scene, camera, controls };
 }
 
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
+// ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const scene   = initScene();
-  const loadMsg = document.getElementById('load-msg');
-  const status  = document.getElementById('status');
+  const loadMsg  = document.getElementById('load-msg');
+  const statusEl = document.getElementById('status');
+  const { scene, camera, controls } = initScene();
 
-  try {
-    loadMsg.textContent = 'Fetching buildings + streets from OpenStreetMap…';
-    const osm = await fetchOSM();
+  loadMsg.textContent = 'Fetching Shibuya from OpenStreetMap…';
 
-    loadMsg.textContent = 'Building 3D geometry…';
-    const nodeMap  = buildNodeMap(osm);
-    const buildings = parseBuildings(osm, nodeMap);
-    const streets   = parseStreets(osm, nodeMap);
+  const mats    = createMaterials();
+  const manager = new TileManager(scene, mats, statusEl);
 
-    if (buildings.length === 0) throw new Error('No buildings found in this area.');
+  // Kick off the 3×3 tile ring around Shibuya Scramble
+  manager.update(0, 0);
 
-    scene.add(buildCityMesh(buildings));
-    scene.add(buildStreetLines(streets));
+  // Watch for camera movement and load new tiles (throttled to every 2 s)
+  let lastCheck = 0;
+  controls.addEventListener('change', () => {
+    const now = Date.now();
+    if (now - lastCheck > 2000) {
+      lastCheck = now;
+      manager.update(camera.position.x, camera.position.z);
+    }
+  });
 
-    status.textContent =
-      `${buildings.length.toLocaleString()} buildings · ${streets.length.toLocaleString()} streets`;
-  } catch (err) {
-    loadMsg.textContent = `Failed: ${err.message}`;
-    console.error(err);
-    return;
-  }
-
-  const loading = document.getElementById('loading');
-  loading.classList.add('fade-out');
-  setTimeout(() => loading.remove(), 800);
+  // Hide splash as soon as first buildings are visible
+  const poll = setInterval(() => {
+    if (manager.hasData) {
+      clearInterval(poll);
+      const loading = document.getElementById('loading');
+      loading.classList.add('fade-out');
+      setTimeout(() => loading.remove(), 800);
+    }
+  }, 200);
 }
 
 main();
