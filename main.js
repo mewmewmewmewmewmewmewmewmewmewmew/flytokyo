@@ -134,14 +134,24 @@ function parseRailways(osm, nodeMap) {
 
 // ─── Colour palette (light theme) ────────────────────────────────────────────
 
+// Warm sand (short) → olive → teal → indigo (tall)
 function heightColor(h) {
-  const t = Math.min(h / 160, 1);
-  return new THREE.Color().setHSL((220 + t * 15) / 360, 0.06 + t * 0.08, 0.86 - t * 0.10);
+  const t = Math.min(h / 150, 1);
+  return new THREE.Color().setHSL(
+    (30 + t * 205) / 360,
+    0.40 + t * 0.05,
+    0.75 - t * 0.22,
+  );
 }
 
+// Darker, more saturated version of the same hue for edge lines
 function wireColor(h) {
-  const t = Math.min(h / 160, 1);
-  return new THREE.Color().setHSL((220 + t * 15) / 360, 0.20, 0.22 + t * 0.05);
+  const t = Math.min(h / 150, 1);
+  return new THREE.Color().setHSL(
+    (30 + t * 205) / 360,
+    0.55,
+    0.28 - t * 0.05,
+  );
 }
 
 function streetColor(type) {
@@ -154,9 +164,16 @@ function streetColor(type) {
   return new THREE.Color(0x6a7490);
 }
 
-// Surface JR = dark green, underground metro = indigo
-function railColor(isTunnel) {
-  return isTunnel ? new THREE.Color(0x5540a0) : new THREE.Color(0x3a6a40);
+// Per-type rail colours matching Tokyo line conventions
+function railColor(type) {
+  switch (type) {
+    case 'rail':       return new THREE.Color(0x80b830); // JR green (Yamanote)
+    case 'subway':     return new THREE.Color(0x7744cc); // metro purple
+    case 'light_rail': return new THREE.Color(0x00aacc); // light rail cyan
+    case 'tram':       return new THREE.Color(0xcc8800); // tram amber
+    case 'monorail':   return new THREE.Color(0x009988); // monorail teal
+    default:           return new THREE.Color(0x667799);
+  }
 }
 
 // ─── Shaders ─────────────────────────────────────────────────────────────────
@@ -394,11 +411,11 @@ function buildStreetLines(streets, mat) {
   return lines;
 }
 
-function buildRailLines(rails, yLevel, isTunnel, mat) {
+function buildRailLines(rails, yLevel, mat) {
   const pos = [], col = [];
-  const c = railColor(isTunnel);
 
-  for (const { coords } of rails) {
+  for (const { coords, type } of rails) {
+    const c = railColor(type);
     for (let i = 0; i < coords.length - 1; i++) {
       const [x0, z0] = coords[i], [x1, z1] = coords[i + 1];
       pos.push(x0, yLevel, z0,  x1, yLevel, z1);
@@ -410,9 +427,7 @@ function buildRailLines(rails, yLevel, isTunnel, mat) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geo.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
-  const lines = new THREE.LineSegments(geo, mat);
-  lines.renderOrder = isTunnel ? 3 : 0;
-  return lines;
+  return new THREE.LineSegments(geo, mat);
 }
 
 // ─── Tile manager ────────────────────────────────────────────────────────────
@@ -491,10 +506,10 @@ class TileManager {
       if (rails.length) {
         const surface = rails.filter(r => !r.isTunnel);
         const tunnel  = rails.filter(r =>  r.isTunnel);
-        const sl = buildRailLines(surface, 0.3,        false, this.mats.rail);
-        const tl = buildRailLines(tunnel,  METRO_DEPTH, true,  this.mats.metro);
-        if (sl) group.add(sl);
-        if (tl) group.add(tl);
+        const sl = buildRailLines(surface, 0.3,         this.mats.rail);
+        const tl = buildRailLines(tunnel,  METRO_DEPTH, this.mats.metro);
+        if (sl) { sl.renderOrder = 0; group.add(sl); }
+        if (tl) { tl.renderOrder = 3; group.add(tl); }
         this.rails += rails.length;
       }
 
