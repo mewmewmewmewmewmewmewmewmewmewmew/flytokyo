@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -136,23 +137,23 @@ function parseRailways(osm, nodeMap) {
 
 // ─── Colour palette (light theme) ────────────────────────────────────────────
 
-// Warm sand (short) → olive → teal → indigo (tall)
+// Light grey (short) → medium blue (tall)
 function heightColor(h) {
   const t = Math.min(h / 150, 1);
   return new THREE.Color().setHSL(
-    (30 + t * 205) / 360,
-    0.40 + t * 0.05,
-    0.75 - t * 0.22,
+    220 / 360,
+    t * 0.55,        // 0% sat (neutral grey) → 55% sat (blue)
+    0.78 - t * 0.26, // 78% lit (light grey)  → 52% lit (medium blue)
   );
 }
 
-// Darker, more saturated version of the same hue for edge lines
+// Darker edge lines follow the same grey→blue hue
 function wireColor(h) {
   const t = Math.min(h / 150, 1);
   return new THREE.Color().setHSL(
-    (30 + t * 205) / 360,
-    0.55,
-    0.28 - t * 0.05,
+    220 / 360,
+    t * 0.60,
+    0.32 - t * 0.12, // 32% → 20% lightness
   );
 }
 
@@ -286,7 +287,7 @@ function createMaterials() {
     metro: new THREE.ShaderMaterial({
       vertexShader: LINE_VERT, fragmentShader: METRO_FRAG,
       uniforms: fadeUniforms(), transparent: true, depthWrite: false,
-      depthTest: false,   // render through the opaque ground plane
+      depthTest: false, side: THREE.DoubleSide,
     }),
   };
 }
@@ -432,6 +433,46 @@ function buildRailLines(rails, yLevel, mat) {
   return new THREE.LineSegments(geo, mat);
 }
 
+// Tube geometry for underground metro — clearly distinguishable from road lines
+function buildMetroTubes(rails, mat) {
+  const geoms = [];
+
+  for (const { coords, type } of rails) {
+    if (coords.length < 2) continue;
+
+    // Build 3D points at metro depth, skipping duplicate positions
+    const pts = [];
+    for (const [x, z] of coords) {
+      const v = new THREE.Vector3(x, METRO_DEPTH, z);
+      if (!pts.length || v.distanceTo(pts[pts.length - 1]) > 0.1) pts.push(v);
+    }
+    if (pts.length < 2) continue;
+
+    const curve     = new THREE.CatmullRomCurve3(pts);
+    const tubularSegs = Math.max(pts.length * 2, 4);
+    const geo       = new THREE.TubeGeometry(curve, tubularSegs, 2.5, 8, false);
+
+    // Colour every vertex with the rail-type colour
+    const c      = railColor(type);
+    const count  = geo.getAttribute('position').count;
+    const colBuf = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      colBuf[i * 3] = c.r; colBuf[i * 3 + 1] = c.g; colBuf[i * 3 + 2] = c.b;
+    }
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colBuf, 3));
+    geoms.push(geo);
+  }
+
+  if (!geoms.length) return null;
+
+  const merged = mergeGeometries(geoms);
+  geoms.forEach(g => g.dispose());
+
+  const mesh = new THREE.Mesh(merged, mat);
+  mesh.renderOrder = 3;
+  return mesh;
+}
+
 // ─── Tile manager ────────────────────────────────────────────────────────────
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -508,10 +549,10 @@ class TileManager {
       if (rails.length) {
         const surface = rails.filter(r => !r.isTunnel);
         const tunnel  = rails.filter(r =>  r.isTunnel);
-        const sl = buildRailLines(surface, 0.3,         this.mats.rail);
-        const tl = buildRailLines(tunnel,  METRO_DEPTH, this.mats.metro);
+        const sl = buildRailLines(surface, 0.3, this.mats.rail);
+        const tl = buildMetroTubes(tunnel, this.mats.metro);
         if (sl) { sl.renderOrder = 0; group.add(sl); }
-        if (tl) { tl.renderOrder = 3; group.add(tl); }
+        if (tl) group.add(tl);
         this.rails += rails.length;
       }
 
