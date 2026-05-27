@@ -13,8 +13,9 @@ const TILE_LAT    = 0.005;
 const TILE_LON    = 0.006;
 const LOAD_RADIUS = 1;
 
-const FADE_NEAR = 80;
-const FADE_FAR  = 500;
+const FADE_NEAR   = 80;
+const FADE_FAR    = 500;
+const METRO_DEPTH = -7;   // ≈ 2 floors underground
 
 // ─── Coordinate helpers ──────────────────────────────────────────────────────
 
@@ -51,6 +52,7 @@ async function fetchOSMBbox(bbox) {
     '[out:json][timeout:30];(',
     `way["building"](${south},${west},${north},${east});`,
     `way["highway"](${south},${west},${north},${east});`,
+    `way["railway"](${south},${west},${north},${east});`,
     ');out body;>;out skel qt;',
   ].join('');
 
@@ -115,15 +117,28 @@ function parseStreets(osm, nodeMap) {
   return out;
 }
 
+const RAILWAY_TYPES = new Set(['rail', 'subway', 'light_rail', 'monorail', 'tram']);
+
+function parseRailways(osm, nodeMap) {
+  const out = [];
+  for (const el of osm.elements) {
+    if (el.type !== 'way' || !el.tags?.railway) continue;
+    if (!RAILWAY_TYPES.has(el.tags.railway)) continue;
+    const coords = el.nodes.map(id => nodeMap.get(id)).filter(Boolean);
+    if (coords.length < 2) continue;
+    const isTunnel = el.tags.tunnel === 'yes';
+    out.push({ id: el.id, coords, type: el.tags.railway, isTunnel });
+  }
+  return out;
+}
+
 // ─── Colour palette (light theme) ────────────────────────────────────────────
 
-// Building surface: near-white for short, light blue-grey for tall
 function heightColor(h) {
   const t = Math.min(h / 160, 1);
   return new THREE.Color().setHSL((220 + t * 15) / 360, 0.06 + t * 0.08, 0.86 - t * 0.10);
 }
 
-// Wireframe lines: dark blue-grey for contrast on light surfaces
 function wireColor(h) {
   const t = Math.min(h / 160, 1);
   return new THREE.Color().setHSL((220 + t * 15) / 360, 0.20, 0.22 + t * 0.05);
@@ -137,6 +152,11 @@ function streetColor(type) {
   if (['pedestrian','footway','path','cycleway'].includes(type))
     return new THREE.Color(0x8090a8);
   return new THREE.Color(0x6a7490);
+}
+
+// Surface JR = dark green, underground metro = indigo
+function railColor(isTunnel) {
+  return isTunnel ? new THREE.Color(0x5540a0) : new THREE.Color(0x3a6a40);
 }
 
 // ─── Shaders ─────────────────────────────────────────────────────────────────
@@ -208,6 +228,19 @@ const STREET_FRAG = /* glsl */`
   }
 `;
 
+// Metro: 50% opacity, ignores depth so it shows through the opaque ground plane
+const METRO_FRAG = /* glsl */`
+  varying vec3  vCol;
+  varying float vDist;
+  uniform float uNear;
+  uniform float uFar;
+  void main() {
+    float fade = 1.0 - smoothstep(uNear * 0.5, uFar, vDist);
+    if (fade < 0.01) discard;
+    gl_FragColor = vec4(vCol, 0.5 * fade);
+  }
+`;
+
 function fadeUniforms() {
   return { uNear: { value: FADE_NEAR }, uFar: { value: FADE_FAR } };
 }
@@ -227,12 +260,20 @@ function createMaterials() {
       vertexShader: LINE_VERT, fragmentShader: STREET_FRAG,
       uniforms: fadeUniforms(), transparent: true, depthWrite: false,
     }),
+    rail: new THREE.ShaderMaterial({
+      vertexShader: LINE_VERT, fragmentShader: STREET_FRAG,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
+    }),
+    metro: new THREE.ShaderMaterial({
+      vertexShader: LINE_VERT, fragmentShader: METRO_FRAG,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
+      depthTest: false,   // render through the opaque ground plane
+    }),
   };
 }
 
 // ─── Geometry builders ───────────────────────────────────────────────────────
 
-// Solid prism used as input to WireframeGeometry
 function buildSingleBuildingGeo(ring, height) {
   const pos = [], norm = [], idx = [];
   let v = 0;
@@ -264,7 +305,6 @@ function buildSingleBuildingGeo(ring, height) {
   return geo;
 }
 
-// Transparent surface fill — one merged Mesh per tile
 function buildSurfaceMesh(buildings, mat) {
   const pos = [], norm = [], col = [], idx = [];
   let v = 0;
@@ -306,7 +346,6 @@ function buildSurfaceMesh(buildings, mat) {
   return mesh;
 }
 
-// EdgesGeometry over every building — only real architectural edges, no triangulation diagonals
 function buildEdgesGeoMesh(buildings, mat) {
   const allPos = [], allCol = [];
 
@@ -335,7 +374,6 @@ function buildEdgesGeoMesh(buildings, mat) {
   return lines;
 }
 
-
 function buildStreetLines(streets, mat) {
   const pos = [], col = [];
 
@@ -356,6 +394,27 @@ function buildStreetLines(streets, mat) {
   return lines;
 }
 
+function buildRailLines(rails, yLevel, isTunnel, mat) {
+  const pos = [], col = [];
+  const c = railColor(isTunnel);
+
+  for (const { coords } of rails) {
+    for (let i = 0; i < coords.length - 1; i++) {
+      const [x0, z0] = coords[i], [x1, z1] = coords[i + 1];
+      pos.push(x0, yLevel, z0,  x1, yLevel, z1);
+      col.push(c.r, c.g, c.b,   c.r, c.g, c.b);
+    }
+  }
+
+  if (!pos.length) return null;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
+  const lines = new THREE.LineSegments(geo, mat);
+  lines.renderOrder = isTunnel ? 3 : 0;
+  return lines;
+}
+
 // ─── Tile manager ────────────────────────────────────────────────────────────
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -370,6 +429,7 @@ class TileManager {
     this.seenIds   = new Set();
     this.buildings = 0;
     this.streets   = 0;
+    this.rails     = 0;
     this.busy      = false;
   }
 
@@ -414,8 +474,11 @@ class TileManager {
         .filter(b => { if (this.seenIds.has(b.id)) return false; this.seenIds.add(b.id); return true; });
       const strs  = parseStreets(osm, nodeMap)
         .filter(s => { if (this.seenIds.has(s.id)) return false; this.seenIds.add(s.id); return true; });
+      const rails = parseRailways(osm, nodeMap)
+        .filter(r => { if (this.seenIds.has(r.id)) return false; this.seenIds.add(r.id); return true; });
 
       const group = new THREE.Group();
+
       if (bldgs.length) {
         group.add(buildSurfaceMesh(bldgs, this.mats.surface));
         group.add(buildEdgesGeoMesh(bldgs, this.mats.wireframe));
@@ -425,6 +488,16 @@ class TileManager {
         group.add(buildStreetLines(strs, this.mats.street));
         this.streets += strs.length;
       }
+      if (rails.length) {
+        const surface = rails.filter(r => !r.isTunnel);
+        const tunnel  = rails.filter(r =>  r.isTunnel);
+        const sl = buildRailLines(surface, 0.3,        false, this.mats.rail);
+        const tl = buildRailLines(tunnel,  METRO_DEPTH, true,  this.mats.metro);
+        if (sl) group.add(sl);
+        if (tl) group.add(tl);
+        this.rails += rails.length;
+      }
+
       this.scene.add(group);
       this.tiles.set(k, 'done');
       this._updateStatus();
@@ -437,6 +510,7 @@ class TileManager {
   _updateStatus() {
     const queued = this.queue.length;
     let text = `${this.buildings.toLocaleString()} buildings · ${this.streets.toLocaleString()} streets`;
+    if (this.rails) text += ` · ${this.rails} rail segments`;
     if (queued) text += ` · ${queued} tile${queued > 1 ? 's' : ''} queued`;
     this.statusEl.textContent = text;
   }
@@ -447,7 +521,7 @@ class TileManager {
 // ─── First-person controls ───────────────────────────────────────────────────
 // Left-drag: look around (yaw + pitch with coast damping).
 // W/S: walk forward / backward.
-// A/D: turn left / right.
+// A/D: strafe left / right at half speed.
 
 function createFPSControls(camera, domElement) {
   let yaw   = 0;
@@ -455,9 +529,9 @@ function createFPSControls(camera, domElement) {
   let yawVel   = 0;
   let pitchVel = 0;
 
-  const LOOK_SPEED  = 0.00175;  // 30% slower than before
-  const MOVE_SPEED  = 0.30;     // m/frame (~18 m/s at 60 fps)
-  const STRAFE_SPEED = 0.15;    // half speed for A/D
+  const LOOK_SPEED  = 0.00175;
+  const MOVE_SPEED  = 0.30;
+  const STRAFE_SPEED = 0.15;
   const DAMP        = 0.85;
 
   const keys = new Set();
@@ -474,10 +548,11 @@ function createFPSControls(camera, domElement) {
     camera.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
   }
 
+  // _right = _fwd × up = (-fwd.z, 0, fwd.x)
   function getHorizDirs() {
     _fwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
     _fwd.y = 0; _fwd.normalize();
-    _right.set(_fwd.z, 0, -_fwd.x); // 90° CW in XZ plane
+    _right.set(-_fwd.z, 0, _fwd.x);
   }
 
   domElement.addEventListener('mousedown', e => {
@@ -529,7 +604,6 @@ function createFPSControls(camera, domElement) {
 
   const dispatcher = Object.assign(new THREE.EventDispatcher(), {
     update() {
-      // Look coast after drag release
       if (!isDragging && (Math.abs(yawVel) > 0.000001 || Math.abs(pitchVel) > 0.000001)) {
         yawVel   *= DAMP;
         pitchVel *= DAMP;
@@ -538,16 +612,15 @@ function createFPSControls(camera, domElement) {
         applyRotation();
       }
 
-      // WASD
-      let moved = false;
       if (keys.has('KeyW') || keys.has('KeyS') || keys.has('KeyA') || keys.has('KeyD')) {
         getHorizDirs();
-        if (keys.has('KeyW')) { camera.position.addScaledVector(_fwd,   MOVE_SPEED);   moved = true; }
-        if (keys.has('KeyS')) { camera.position.addScaledVector(_fwd,  -MOVE_SPEED);   moved = true; }
+        let moved = false;
+        if (keys.has('KeyW')) { camera.position.addScaledVector(_fwd,    MOVE_SPEED);   moved = true; }
+        if (keys.has('KeyS')) { camera.position.addScaledVector(_fwd,   -MOVE_SPEED);   moved = true; }
         if (keys.has('KeyD')) { camera.position.addScaledVector(_right,  STRAFE_SPEED); moved = true; }
         if (keys.has('KeyA')) { camera.position.addScaledVector(_right, -STRAFE_SPEED); moved = true; }
+        if (moved) dispatcher.dispatchEvent({ type: 'change' });
       }
-      if (moved) dispatcher.dispatchEvent({ type: 'change' });
     },
   });
 
