@@ -306,16 +306,16 @@ function buildSurfaceMesh(buildings, mat) {
   return mesh;
 }
 
-// WireframeGeometry over every building — dark lines at 100% near opacity
-function buildWireframeGeoMesh(buildings, mat) {
+// EdgesGeometry over every building — only real architectural edges, no triangulation diagonals
+function buildEdgesGeoMesh(buildings, mat) {
   const allPos = [], allCol = [];
 
   for (const { ring, height } of buildings) {
     const base = buildSingleBuildingGeo(ring, height);
     if (!base) continue;
 
-    const wireGeo = new THREE.WireframeGeometry(base);
-    const posAttr = wireGeo.getAttribute('position');
+    const edgesGeo = new THREE.EdgesGeometry(base);
+    const posAttr = edgesGeo.getAttribute('position');
     const c = wireColor(height);
 
     for (let i = 0; i < posAttr.count; i++) {
@@ -324,7 +324,7 @@ function buildWireframeGeoMesh(buildings, mat) {
     }
 
     base.dispose();
-    wireGeo.dispose();
+    edgesGeo.dispose();
   }
 
   const geo = new THREE.BufferGeometry();
@@ -334,6 +334,7 @@ function buildWireframeGeoMesh(buildings, mat) {
   lines.renderOrder = 2;
   return lines;
 }
+
 
 function buildStreetLines(streets, mat) {
   const pos = [], col = [];
@@ -417,7 +418,7 @@ class TileManager {
       const group = new THREE.Group();
       if (bldgs.length) {
         group.add(buildSurfaceMesh(bldgs, this.mats.surface));
-        group.add(buildWireframeGeoMesh(bldgs, this.mats.wireframe));
+        group.add(buildEdgesGeoMesh(bldgs, this.mats.wireframe));
         this.buildings += bldgs.length;
       }
       if (strs.length) {
