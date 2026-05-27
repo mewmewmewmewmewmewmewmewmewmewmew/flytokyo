@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import earcut from 'earcut';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -12,10 +11,10 @@ const M_PER_DEG_LON = 111_320 * Math.cos(CENTER_LAT * Math.PI / 180);
 
 const TILE_LAT    = 0.005;   // ≈ 556 m per tile
 const TILE_LON    = 0.006;   // ≈ 540 m per tile
-const LOAD_RADIUS = 1;       // tiles in each direction from camera
+const LOAD_RADIUS = 1;
 
-const FADE_NEAR = 80;        // m – full opacity inside this
-const FADE_FAR  = 500;       // m – fully transparent beyond this
+const FADE_NEAR = 80;
+const FADE_FAR  = 500;
 
 // ─── Coordinate helpers ──────────────────────────────────────────────────────
 
@@ -135,7 +134,6 @@ function streetColor(type) {
 
 // ─── Shaders ─────────────────────────────────────────────────────────────────
 
-// Vertex: surfaces (needs normal for lambert shading)
 const SURF_VERT = /* glsl */`
   attribute vec3 color;
   varying vec3  vCol;
@@ -150,7 +148,6 @@ const SURF_VERT = /* glsl */`
   }
 `;
 
-// Fragment: transparent surface fill + lambert shading + distance fade
 const SURF_FRAG = /* glsl */`
   varying vec3  vCol;
   varying float vDist;
@@ -162,7 +159,7 @@ const SURF_FRAG = /* glsl */`
     float diff  = max(dot(normalize(vNorm), L), 0.0);
     float light = 0.55 + 0.45 * diff;
     float fade  = 1.0 - smoothstep(uNear, uFar, vDist);
-    float a     = 0.40 * fade;
+    float a     = 0.80 * fade;
     if (a < 0.01) discard;
     gl_FragColor = vec4(vCol * light, a);
   }
@@ -180,20 +177,6 @@ const LINE_VERT = /* glsl */`
   }
 `;
 
-// WireframeGeometry layer — 100% opacity, same distance fade
-const WIRE_FRAG = /* glsl */`
-  varying vec3  vCol;
-  varying float vDist;
-  uniform float uNear;
-  uniform float uFar;
-  void main() {
-    float fade = 1.0 - smoothstep(uNear, uFar, vDist);
-    if (fade < 0.01) discard;
-    gl_FragColor = vec4(vCol, fade);
-  }
-`;
-
-// Streets — slightly earlier fade-in
 const STREET_FRAG = /* glsl */`
   varying vec3  vCol;
   varying float vDist;
@@ -217,10 +200,6 @@ function createMaterials() {
       uniforms: fadeUniforms(), transparent: true, depthWrite: false,
       side: THREE.DoubleSide,
     }),
-    wireframe: new THREE.ShaderMaterial({
-      vertexShader: LINE_VERT, fragmentShader: WIRE_FRAG,
-      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
-    }),
     street: new THREE.ShaderMaterial({
       vertexShader: LINE_VERT, fragmentShader: STREET_FRAG,
       uniforms: fadeUniforms(), transparent: true, depthWrite: false,
@@ -230,43 +209,6 @@ function createMaterials() {
 
 // ─── Geometry builders ───────────────────────────────────────────────────────
 
-// Solid prism geometry for a single building — used as input to
-// EdgesGeometry and WireframeGeometry which analyse the triangle topology.
-function buildSingleBuildingGeo(ring, height) {
-  const pos = [], norm = [], idx = [];
-  let v = 0;
-  const n = ring.length;
-
-  // Roof
-  const flat = ring.flatMap(([x, z]) => [x, z]);
-  const tris = earcut(flat);
-  if (!tris.length) return null;
-
-  const rb = v;
-  for (const [x, z] of ring) { pos.push(x, height, z); norm.push(0, 1, 0); v++; }
-  for (const i of tris) idx.push(rb + i);
-
-  // Walls — each as two triangles so EdgesGeometry sees the quad edges
-  for (let i = 0; i < n; i++) {
-    const j = (i + 1) % n;
-    const [x0, z0] = ring[i], [x1, z1] = ring[j];
-    const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz) || 1;
-    const b = v;
-    pos.push(x0, 0, z0,  x1, 0, z1,  x1, height, z1,  x0, height, z0);
-    for (let k = 0; k < 4; k++) norm.push(dz / len, 0, -dx / len);
-    idx.push(b, b+1, b+2,  b, b+2, b+3);
-    v += 4;
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos,  3));
-  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(norm, 3));
-  geo.setIndex(idx);
-  return geo;
-}
-
-// Transparent surface fill — one merged Mesh for all buildings in a tile.
-// The WireframeGeometry layer drawn on top provides all the visible outlines.
 function buildSurfaceMesh(buildings, mat) {
   const pos = [], norm = [], col = [], idx = [];
   let v = 0;
@@ -308,38 +250,6 @@ function buildSurfaceMesh(buildings, mat) {
   return mesh;
 }
 
-// Merge all WireframeGeometry outputs into one LineSegments.
-// WireframeGeometry draws every triangle edge — including the earcut diagonals
-// and the quad-split diagonal on walls — giving the full triangulation texture.
-function buildWireframeGeoMesh(buildings, mat) {
-  const allPos = [], allCol = [];
-
-  for (const { ring, height } of buildings) {
-    const base = buildSingleBuildingGeo(ring, height);
-    if (!base) continue;
-
-    const wireGeo = new THREE.WireframeGeometry(base);
-    const posAttr = wireGeo.getAttribute('position');
-
-    const c = heightColor(height);
-
-    for (let i = 0; i < posAttr.count; i++) {
-      allPos.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
-      allCol.push(c.r, c.g, c.b);
-    }
-
-    base.dispose();
-    wireGeo.dispose();
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(allPos, 3));
-  geo.setAttribute('color',    new THREE.Float32BufferAttribute(allCol, 3));
-  const lines = new THREE.LineSegments(geo, mat);
-  lines.renderOrder = 2;
-  return lines;
-}
-
 function buildStreetLines(streets, mat) {
   const pos = [], col = [];
 
@@ -369,9 +279,9 @@ class TileManager {
     this.scene     = scene;
     this.mats      = mats;
     this.statusEl  = statusEl;
-    this.tiles     = new Map();   // key → 'queued' | 'loading' | 'done' | 'failed'
+    this.tiles     = new Map();
     this.queue     = [];
-    this.seenIds   = new Set();   // dedup OSM way IDs across tiles
+    this.seenIds   = new Set();
     this.buildings = 0;
     this.streets   = 0;
     this.busy      = false;
@@ -386,11 +296,10 @@ class TileManager {
     this.queue.push({ tx, ty, k });
   }
 
-  // Sort so center-of-interest tile (first added) stays first
   update(camX, camZ) {
     const { lat, lon } = worldToGeo(camX, camZ);
     const { tx, ty }   = latLonToTile(lat, lon);
-    this.request(tx, ty);                          // center first
+    this.request(tx, ty);
     for (let dy = -LOAD_RADIUS; dy <= LOAD_RADIUS; dy++) {
       for (let dx = -LOAD_RADIUS; dx <= LOAD_RADIUS; dx++) {
         if (dx || dy) this.request(tx + dx, ty + dy);
@@ -423,7 +332,6 @@ class TileManager {
       const group = new THREE.Group();
       if (bldgs.length) {
         group.add(buildSurfaceMesh(bldgs, this.mats.surface));
-        group.add(buildWireframeGeoMesh(bldgs, this.mats.wireframe));
         this.buildings += bldgs.length;
       }
       if (strs.length) {
@@ -449,6 +357,121 @@ class TileManager {
   get hasData() { return this.buildings > 0; }
 }
 
+// ─── First-person controls ───────────────────────────────────────────────────
+// Left-drag: look around in place (yaw + pitch).
+// Right-drag: walk — forward/back on dy, strafe on dx.
+// Scroll: move forward along look direction.
+// Velocity decays after release for a smooth coast.
+
+function createFPSControls(camera, domElement) {
+  let yaw   = 0;   // Y-axis rotation (horizontal look)
+  let pitch = 0;   // X-axis rotation (vertical look)
+  let yawVel   = 0;
+  let pitchVel = 0;
+
+  const LOOK_SPEED = 0.0025;
+  const PAN_SPEED  = 0.15;
+  const SCROLL_SPD = 0.08;
+  const DAMP       = 0.85;
+
+  let isDragging = false;
+  let dragButton = -1;
+  let lastX = 0, lastY = 0;
+
+  const _fwd   = new THREE.Vector3();
+  const _right = new THREE.Vector3();
+
+  function applyRotation() {
+    camera.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
+  }
+
+  function horizDirs() {
+    _fwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
+    _fwd.y = 0; _fwd.normalize();
+    _right.set(1, 0, 0).applyQuaternion(camera.quaternion);
+    _right.y = 0; _right.normalize();
+  }
+
+  domElement.addEventListener('mousedown', e => {
+    isDragging = true;
+    dragButton = e.button;
+    lastX = e.clientX;
+    lastY = e.clientY;
+    e.preventDefault();
+  }, { passive: false });
+
+  window.addEventListener('mousemove', e => {
+    if (!isDragging) return;
+    const dx = e.clientX - lastX;
+    const dy = e.clientY - lastY;
+    lastX = e.clientX;
+    lastY = e.clientY;
+
+    if (dragButton === 0) {
+      yawVel   = -dx * LOOK_SPEED;
+      pitchVel = -dy * LOOK_SPEED;
+      yaw   += yawVel;
+      pitch  = Math.max(-Math.PI * 0.499, Math.min(Math.PI * 0.499, pitch + pitchVel));
+      applyRotation();
+    } else if (dragButton === 2) {
+      horizDirs();
+      camera.position.addScaledVector(_fwd,  -dy * PAN_SPEED);
+      camera.position.addScaledVector(_right,  dx * PAN_SPEED);
+    }
+    dispatcher.dispatchEvent({ type: 'change' });
+  });
+
+  window.addEventListener('mouseup', () => { isDragging = false; });
+
+  domElement.addEventListener('wheel', e => {
+    horizDirs();
+    camera.position.addScaledVector(_fwd, -e.deltaY * SCROLL_SPD);
+    dispatcher.dispatchEvent({ type: 'change' });
+    e.preventDefault();
+  }, { passive: false });
+
+  domElement.addEventListener('contextmenu', e => e.preventDefault());
+
+  // Touch: single finger = look
+  let touchLast = null;
+  domElement.addEventListener('touchstart', e => {
+    if (e.touches.length === 1)
+      touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    e.preventDefault();
+  }, { passive: false });
+
+  domElement.addEventListener('touchmove', e => {
+    if (e.touches.length === 1 && touchLast) {
+      const dx = e.touches[0].clientX - touchLast.x;
+      const dy = e.touches[0].clientY - touchLast.y;
+      touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      yawVel   = -dx * LOOK_SPEED;
+      pitchVel = -dy * LOOK_SPEED;
+      yaw   += yawVel;
+      pitch  = Math.max(-Math.PI * 0.499, Math.min(Math.PI * 0.499, pitch + pitchVel));
+      applyRotation();
+      dispatcher.dispatchEvent({ type: 'change' });
+    }
+    e.preventDefault();
+  }, { passive: false });
+
+  domElement.addEventListener('touchend', () => { touchLast = null; });
+
+  const dispatcher = Object.assign(new THREE.EventDispatcher(), {
+    update() {
+      if (isDragging) return;
+      if (Math.abs(yawVel) < 0.000001 && Math.abs(pitchVel) < 0.000001) return;
+      yawVel   *= DAMP;
+      pitchVel *= DAMP;
+      yaw   += yawVel;
+      pitch  = Math.max(-Math.PI * 0.499, Math.min(Math.PI * 0.499, pitch + pitchVel));
+      applyRotation();
+    },
+  });
+
+  return dispatcher;
+}
+
 // ─── Scene setup ─────────────────────────────────────────────────────────────
 
 function initScene() {
@@ -460,11 +483,9 @@ function initScene() {
 
   const scene = new THREE.Scene();
 
-  // Wide FOV for pedestrian / fisheye feel
   const camera = new THREE.PerspectiveCamera(90, innerWidth / innerHeight, 0.5, 2000);
   camera.position.set(0, 1.6, 50);   // eye level, 50 m south of the crossing
 
-  // Dark ground slab
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(8000, 8000),
     new THREE.MeshBasicMaterial({ color: 0x080e1a }),
@@ -473,16 +494,7 @@ function initScene() {
   ground.position.y = -0.05;
   scene.add(ground);
 
-  const controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.set(0, 1.6, 0);     // looking at the crossing
-  controls.enableDamping   = true;
-  controls.dampingFactor   = 0.08;
-  controls.screenSpacePanning = false; // right-drag pans on ground plane
-  controls.minDistance     = 2;
-  controls.maxDistance     = 400;
-  controls.maxPolarAngle   = Math.PI;     // allow looking straight up at the sky
-  controls.minPolarAngle   = 0;
-  controls.update();
+  const controls = createFPSControls(camera, renderer.domElement);
 
   window.addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
@@ -511,10 +523,8 @@ async function main() {
   const mats    = createMaterials();
   const manager = new TileManager(scene, mats, statusEl);
 
-  // Kick off the 3×3 tile ring around Shibuya Scramble
   manager.update(0, 0);
 
-  // Watch for camera movement and load new tiles (throttled to every 2 s)
   let lastCheck = 0;
   controls.addEventListener('change', () => {
     const now = Date.now();
@@ -524,7 +534,6 @@ async function main() {
     }
   });
 
-  // Hide splash as soon as first buildings are visible
   const poll = setInterval(() => {
     if (manager.hasData) {
       clearInterval(poll);
