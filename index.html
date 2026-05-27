@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tokyo 3D</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #080c14; overflow: hidden; font-family: system-ui, sans-serif; color: #c8cfe8; }
+    canvas { display: block; }
+
+    #overlay {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      pointer-events: none;
+      user-select: none;
+    }
+    #overlay h1 {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      opacity: 0.9;
+    }
+    #status {
+      font-size: 12px;
+      margin-top: 5px;
+      opacity: 0.45;
+    }
+
+    #hint {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      font-size: 11px;
+      opacity: 0.35;
+      text-align: right;
+      line-height: 1.7;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    #loading {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #080c14;
+      gap: 18px;
+      z-index: 10;
+      transition: opacity 0.7s ease;
+    }
+    #loading.fade-out { opacity: 0; pointer-events: none; }
+
+    .spinner {
+      width: 34px;
+      height: 34px;
+      border: 2px solid #ffffff14;
+      border-top-color: #7c8cff;
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #load-msg { font-size: 13px; opacity: 0.55; }
+  </style>
+</head>
+<body>
+  <div id="loading">
+    <div class="spinner"></div>
+    <div id="load-msg">Connecting to OpenStreetMap…</div>
+  </div>
+
+  <div id="overlay">
+    <h1>Tokyo · Nishi-Shinjuku</h1>
+    <div id="status"></div>
+  </div>
+
+  <div id="hint">
+    Drag · Orbit &nbsp;|&nbsp; Scroll · Zoom<br>
+    Right-drag · Pan
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three":          "https://esm.sh/three@0.165.0",
+      "three/addons/":  "https://esm.sh/three@0.165.0/examples/jsm/",
+      "earcut":         "https://esm.sh/earcut@3.0.0"
+    }
+  }
+  </script>
+  <script type="module" src="main.js"></script>
+</body>
+</html>
