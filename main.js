@@ -16,7 +16,6 @@ const BBOX = {
 const CENTER_LAT = (BBOX.south + BBOX.north) / 2;
 const CENTER_LON = (BBOX.west  + BBOX.east)  / 2;
 
-// Metres per degree at this latitude
 const M_PER_DEG_LAT = 111_320;
 const M_PER_DEG_LON = 111_320 * Math.cos(CENTER_LAT * Math.PI / 180);
 
@@ -26,20 +25,23 @@ const M_PER_DEG_LON = 111_320 * Math.cos(CENTER_LAT * Math.PI / 180);
 
 function project(lat, lon) {
   return [
-    (lon - CENTER_LON) * M_PER_DEG_LON,   // x  east  → +x
-    -(lat - CENTER_LAT) * M_PER_DEG_LAT,  // z  south → +z
+    (lon - CENTER_LON) * M_PER_DEG_LON,
+    -(lat - CENTER_LAT) * M_PER_DEG_LAT,
   ];
 }
 
 // ---------------------------------------------------------------------------
-// Overpass API – fetch all building ways inside the bounding box
+// Overpass API – buildings + streets in one request
 // ---------------------------------------------------------------------------
 
 async function fetchOSM() {
   const { south, west, north, east } = BBOX;
   const query = [
     '[out:json][timeout:30];',
-    `(way["building"](${south},${west},${north},${east}););`,
+    '(',
+    `way["building"](${south},${west},${north},${east});`,
+    `way["highway"](${south},${west},${north},${east});`,
+    ');',
     'out body;>;out skel qt;',
   ].join('');
 
@@ -53,92 +55,68 @@ async function fetchOSM() {
 }
 
 // ---------------------------------------------------------------------------
-// Parse raw OSM JSON → array of { ring, height }
+// Shared node map  (built once, used by both buildings and streets)
 // ---------------------------------------------------------------------------
 
-function parseBuildings(osm) {
-  // Build node-id → projected [x, z]
-  const nodeMap = new Map();
+function buildNodeMap(osm) {
+  const map = new Map();
   for (const el of osm.elements) {
-    if (el.type === 'node') {
-      nodeMap.set(el.id, project(el.lat, el.lon));
-    }
+    if (el.type === 'node') map.set(el.id, project(el.lat, el.lon));
   }
+  return map;
+}
 
+// ---------------------------------------------------------------------------
+// Buildings
+// ---------------------------------------------------------------------------
+
+function parseBuildings(osm, nodeMap) {
   const buildings = [];
-
   for (const el of osm.elements) {
     if (el.type !== 'way' || !el.tags?.building) continue;
 
-    const ring = [];
-    for (const id of el.nodes) {
-      const pt = nodeMap.get(id);
-      if (pt) ring.push(pt);
-    }
+    const ring = el.nodes.map(id => nodeMap.get(id)).filter(Boolean);
 
-    // OSM ways close back to the first node – drop the duplicate
     if (ring.length > 1) {
-      const [ax, az] = ring[0];
-      const [bx, bz] = ring[ring.length - 1];
+      const [ax, az] = ring[0], [bx, bz] = ring[ring.length - 1];
       if (ax === bx && az === bz) ring.pop();
     }
-
     if (ring.length < 3) continue;
 
     buildings.push({ ring, height: extractHeight(el.tags) });
   }
-
   return buildings;
 }
 
 function extractHeight(tags) {
-  // Prefer explicit height in metres
   for (const key of ['height', 'building:height']) {
     if (tags[key]) {
       const v = parseFloat(tags[key]);
       if (v > 0) return v;
     }
   }
-  // Fall back to storey count (3.5 m per floor)
   if (tags['building:levels']) {
     const l = parseInt(tags['building:levels'], 10);
     if (l > 0) return l * 3.5;
   }
-  return 10; // default: 2-3 storey assumption
+  return 10;
 }
-
-// ---------------------------------------------------------------------------
-// Colour by height – deep-blue low buildings, bright violet skyscrapers
-// ---------------------------------------------------------------------------
 
 function heightColor(h) {
   const t = Math.min(h / 160, 1);
-  // hue sweeps 230° (blue) → 300° (magenta/violet)
   const hue = (230 + t * 70) / 360;
-  const sat = 0.35 + t * 0.35;
-  const lgt = 0.14 + t * 0.50;
-  return new THREE.Color().setHSL(hue, sat, lgt);
+  return new THREE.Color().setHSL(hue, 0.35 + t * 0.35, 0.14 + t * 0.50);
 }
 
-// ---------------------------------------------------------------------------
-// Build one merged BufferGeometry for all buildings (single draw call)
-// ---------------------------------------------------------------------------
-
 function buildCityMesh(buildings) {
-  const positions = [];
-  const normals   = [];
-  const colors    = [];
-  const indices   = [];
+  const positions = [], normals = [], colors = [], indices = [];
   let vtx = 0;
 
   for (const { ring, height } of buildings) {
     const n = ring.length;
-
     const roofCol = heightColor(height);
     const wallCol = roofCol.clone().multiplyScalar(0.6);
 
-    // ---- Roof -------------------------------------------------------
-    // Triangulate the horizontal footprint polygon with earcut
     const flat = ring.flatMap(([x, z]) => [x, z]);
     const tris = earcut(flat);
     if (tris.length === 0) continue;
@@ -152,33 +130,18 @@ function buildCityMesh(buildings) {
     }
     for (const i of tris) indices.push(roofBase + i);
 
-    // ---- Walls ------------------------------------------------------
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
-      const [x0, z0] = ring[i];
-      const [x1, z1] = ring[j];
-
-      // Per-wall outward normal (90° rotation of edge direction in XZ)
+      const [x0, z0] = ring[i], [x1, z1] = ring[j];
       const dx = x1 - x0, dz = z1 - z0;
       const len = Math.hypot(dx, dz) || 1;
-      const nx = dz / len, nz = -dx / len;
-
       const base = vtx;
-      // Four corners: bottom-left, bottom-right, top-right, top-left
-      positions.push(
-        x0, 0,      z0,
-        x1, 0,      z1,
-        x1, height, z1,
-        x0, height, z0,
-      );
+      positions.push(x0, 0, z0, x1, 0, z1, x1, height, z1, x0, height, z0);
       for (let k = 0; k < 4; k++) {
-        normals.push(nx, 0, nz);
+        normals.push(dz / len, 0, -dx / len);
         colors.push(wallCol.r, wallCol.g, wallCol.b);
       }
-      indices.push(
-        base,   base+1, base+2,
-        base,   base+2, base+3,
-      );
+      indices.push(base, base+1, base+2, base, base+2, base+3);
       vtx += 4;
     }
   }
@@ -188,10 +151,64 @@ function buildCityMesh(buildings) {
   geo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals,   3));
   geo.setAttribute('color',    new THREE.Float32BufferAttribute(colors,    3));
   geo.setIndex(indices);
+  return new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+}
 
-  // DoubleSide so roofs and walls render regardless of polygon winding in OSM
-  const mat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
-  return new THREE.Mesh(geo, mat);
+// ---------------------------------------------------------------------------
+// Streets
+// ---------------------------------------------------------------------------
+
+// Types to skip – not real navigable roads
+const HIGHWAY_SKIP = new Set([
+  'proposed', 'construction', 'elevator', 'steps', 'corridor', 'platform', 'raceway',
+]);
+
+function parseStreets(osm, nodeMap) {
+  const streets = [];
+  for (const el of osm.elements) {
+    if (el.type !== 'way' || !el.tags?.highway) continue;
+    if (HIGHWAY_SKIP.has(el.tags.highway)) continue;
+
+    const coords = el.nodes.map(id => nodeMap.get(id)).filter(Boolean);
+    if (coords.length < 2) continue;
+
+    streets.push({ coords, highway: el.tags.highway });
+  }
+  return streets;
+}
+
+function streetColor(highway) {
+  switch (highway) {
+    case 'motorway': case 'motorway_link':
+    case 'trunk':    case 'trunk_link':
+    case 'primary':  case 'primary_link':
+      return new THREE.Color(0x5a6890);
+    case 'secondary': case 'secondary_link':
+    case 'tertiary':  case 'tertiary_link':
+      return new THREE.Color(0x404f70);
+    case 'pedestrian': case 'footway': case 'path': case 'cycleway':
+      return new THREE.Color(0x283248);
+    default: // residential, service, unclassified, living_street …
+      return new THREE.Color(0x323c58);
+  }
+}
+
+function buildStreetLines(streets) {
+  const positions = [], colors = [];
+
+  for (const { coords, highway } of streets) {
+    const col = streetColor(highway);
+    for (let i = 0; i < coords.length - 1; i++) {
+      const [x0, z0] = coords[i], [x1, z1] = coords[i + 1];
+      positions.push(x0, 0.3, z0, x1, 0.3, z1);
+      colors.push(col.r, col.g, col.b, col.r, col.g, col.b);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('color',    new THREE.Float32BufferAttribute(colors,    3));
+  return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true }));
 }
 
 // ---------------------------------------------------------------------------
@@ -211,13 +228,11 @@ function initScene() {
   const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 1, 5000);
   camera.position.set(-200, 450, 600);
 
-  // Ambient fills shadows; directional gives shape
   scene.add(new THREE.AmbientLight(0x8090c0, 0.9));
   const sun = new THREE.DirectionalLight(0xffeedd, 1.1);
   sun.position.set(300, 500, 200);
   scene.add(sun);
 
-  // Dark ground plane
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(4000, 4000),
     new THREE.MeshLambertMaterial({ color: 0x0b101e }),
@@ -260,18 +275,21 @@ async function main() {
   const status  = document.getElementById('status');
 
   try {
-    loadMsg.textContent = 'Fetching buildings from OpenStreetMap…';
+    loadMsg.textContent = 'Fetching buildings + streets from OpenStreetMap…';
     const osm = await fetchOSM();
 
     loadMsg.textContent = 'Building 3D geometry…';
-    const buildings = parseBuildings(osm);
+    const nodeMap  = buildNodeMap(osm);
+    const buildings = parseBuildings(osm, nodeMap);
+    const streets   = parseStreets(osm, nodeMap);
 
     if (buildings.length === 0) throw new Error('No buildings found in this area.');
 
-    const mesh = buildCityMesh(buildings);
-    scene.add(mesh);
+    scene.add(buildCityMesh(buildings));
+    scene.add(buildStreetLines(streets));
 
-    status.textContent = `${buildings.length.toLocaleString()} buildings`;
+    status.textContent =
+      `${buildings.length.toLocaleString()} buildings · ${streets.length.toLocaleString()} streets`;
   } catch (err) {
     loadMsg.textContent = `Failed: ${err.message}`;
     console.error(err);
