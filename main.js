@@ -366,33 +366,80 @@ function roundRectPath(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-// Billboarded text label rendered to a canvas texture. depthTest stays on so labels
-// are correctly occluded by buildings in front of them.
-function makeLabelSprite(text, kind) {
-  const fontSize = 44, padX = 14, padY = 9;
+// Render label text to a canvas. `bg` draws a rounded pill behind it (for floating
+// POI labels); `stroke` outlines the glyphs so signage reads on any wall colour.
+function renderLabelCanvas(text, { bg, stroke, fg = '#fff' }) {
+  const fontSize = 48, padX = 16, padY = 12;
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
-  const font = `600 ${fontSize}px system-ui, sans-serif`;
+  const font = `700 ${fontSize}px system-ui, sans-serif`;
   ctx.font = font;
   const textW = ctx.measureText(text).width;
   canvas.width  = Math.ceil(textW + padX * 2);
   canvas.height = Math.ceil(fontSize + padY * 2);
   ctx.font = font;                 // reset — resizing the canvas clears context state
   ctx.textBaseline = 'middle';
-  roundRectPath(ctx, 0, 0, canvas.width, canvas.height, 14);
-  ctx.fillStyle = kind === 'poi' ? 'rgba(40,70,140,0.85)' : 'rgba(20,24,40,0.80)';
-  ctx.fill();
-  ctx.fillStyle = '#fff';
-  ctx.fillText(text, padX, canvas.height / 2 + 1);
-
+  if (bg) { roundRectPath(ctx, 0, 0, canvas.width, canvas.height, 14); ctx.fillStyle = bg; ctx.fill(); }
+  const tx = padX, ty = canvas.height / 2 + 1;
+  if (stroke) { ctx.lineWidth = 7; ctx.lineJoin = 'round'; ctx.strokeStyle = stroke; ctx.strokeText(text, tx, ty); }
+  ctx.fillStyle = fg;
+  ctx.fillText(text, tx, ty);
   const tex = new THREE.CanvasTexture(canvas);
   tex.minFilter  = THREE.LinearFilter;
   tex.colorSpace = THREE.SRGBColorSpace;
+  return { tex, aspect: canvas.width / canvas.height };
+}
+
+// Floating, camera-facing label — used for point POIs which have no surface.
+function makeLabelSprite(text) {
+  const { tex, aspect } = renderLabelCanvas(text, { bg: 'rgba(40,70,140,0.85)' });
   const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
-  const worldH = kind === 'poi' ? 4 : 5.5;
-  spr.scale.set(worldH * canvas.width / canvas.height, worldH, 1);
+  const h = 4;
+  spr.scale.set(h * aspect, h, 1);
   spr.renderOrder = 5;
   return spr;
+}
+
+// A name laid flat onto the building's longest wall so it reads as signage on the
+// facade rather than a floating tag.
+function makeBuildingLabel(ring, topY, text) {
+  // Longest footprint edge = most prominent facade.
+  let bi = 0, best = -1;
+  for (let i = 0; i < ring.length; i++) {
+    const [x0, z0] = ring[i], [x1, z1] = ring[(i + 1) % ring.length];
+    const len = Math.hypot(x1 - x0, z1 - z0);
+    if (len > best) { best = len; bi = i; }
+  }
+  if (best < 5) return null;   // too small a wall to carry a readable sign
+
+  const [x0, z0] = ring[bi], [x1, z1] = ring[(bi + 1) % ring.length];
+  const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
+  const ex = (x1 - x0) / best, ez = (z1 - z0) / best;
+  let nx = -ez, nz = ex;                                   // wall normal (horizontal)
+  let cx = 0, cz = 0;
+  for (const [x, z] of ring) { cx += x; cz += z; }
+  cx /= ring.length; cz /= ring.length;
+  // Flip the normal if it points toward the interior — we want it facing out.
+  if ((mx + nx - cx) ** 2 + (mz + nz - cz) ** 2 < (mx - cx) ** 2 + (mz - cz) ** 2) { nx = -nx; nz = -nz; }
+
+  const base    = terrain ? terrain.sample(mx, mz) : 0;
+  const facadeH = Math.max(topY - base, 3);
+
+  const { tex, aspect } = renderLabelCanvas(text, { stroke: 'rgba(0,0,0,0.6)' });
+  let h = Math.min(facadeH * 0.28, 10);
+  let w = h * aspect;
+  if (w > best * 0.9) { const f = best * 0.9 / w; w *= f; h *= f; }   // fit within the wall
+  const cy = Math.max(base + h / 2 + 0.5, base + Math.min(facadeH * 0.62, facadeH - h / 2 - 0.5));
+
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(w, h),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide }),
+  );
+  const off = 0.4;   // sit just proud of the wall to avoid z-fighting
+  mesh.position.set(mx + nx * off, cy, mz + nz * off);
+  mesh.lookAt(mesh.position.x + nx, mesh.position.y, mesh.position.z + nz);  // face outward, upright
+  mesh.renderOrder = 5;
+  return mesh;
 }
 
 // ─── Shaders ─────────────────────────────────────────────────────────────────
@@ -1014,17 +1061,14 @@ class TileManager {
         minZ: Math.min(...zs), maxZ: Math.max(...zs),
       });
       if (name) {
-        let cx = 0, cz = 0;
-        for (const [x, z] of ring) { cx += x; cz += z; }
-        const spr = makeLabelSprite(truncateLabel(name), 'bldg');
-        spr.position.set(cx / ring.length, bTop + 3, cz / ring.length);
-        this.labelGroup.add(spr);
+        const label = makeBuildingLabel(ring, bTop, truncateLabel(name));
+        if (label) this.labelGroup.add(label);
       }
     }
 
     // POI labels (points) at head height above the ground.
     for (const p of pois) {
-      const spr = makeLabelSprite(truncateLabel(p.name), 'poi');
+      const spr = makeLabelSprite(truncateLabel(p.name));
       const y = (terrain ? terrain.sample(p.x, p.z) : 0) + 4;
       spr.position.set(p.x, y, p.z);
       this.labelGroup.add(spr);
