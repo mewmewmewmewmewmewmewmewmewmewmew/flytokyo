@@ -619,6 +619,18 @@ class TileManager {
           group.add(tl.mesh);
           for (const c of tl.curves) this.metroCurves.push(c);
         }
+        // Surface trains: curve points at car-centre height above the track line
+        // (track at y=0.3, car half-height ≈1.6 → centre at y=1.9)
+        for (const { coords } of surface) {
+          if (coords.length < 2) continue;
+          const pts = [];
+          for (const [x, z] of coords) {
+            const v = new THREE.Vector3(x, 1.9, z);
+            if (!pts.length || v.distanceTo(pts[pts.length - 1]) > 0.1) pts.push(v);
+          }
+          if (pts.length >= 2)
+            this.metroCurves.push(new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5));
+        }
         this.rails += rails.length;
       }
 

@@ -8,22 +8,32 @@ const COUPLER = 1.2;   // gap between cars
 const NUM_CARS = 8;
 
 const TRAIN_SPEED   = 15;   // m/s (~54 km/h)
-const MIN_CURVE_LEN = 200;  // skip very short fragments (metres)
+const MIN_CURVE_LEN = 150;  // skip very short fragments (metres)
+
+// Pre-allocated rotation helper
+const _fwd = new THREE.Vector3(0, 0, 1);
 
 // ─── Materials ───────────────────────────────────────────────────────────────
 const matBody  = new THREE.MeshLambertMaterial({ color: 0x1e9c52 });
 const matFace  = new THREE.MeshLambertMaterial({ color: 0x166e3a });
+const matRoof  = new THREE.MeshLambertMaterial({ color: 0xd8e8d0 });
 const matWin   = new THREE.MeshLambertMaterial({ color: 0xb8dff7, transparent: true, opacity: 0.75 });
 const matWheel = new THREE.MeshLambertMaterial({ color: 0x444444 });
 
 // ─── Single car mesh ─────────────────────────────────────────────────────────
-// lookAt() makes the object's +Z axis face the target, so +Z = direction of travel.
-// All along-track dimensions use Z; cross-track dimensions use X.
+// The car travels along +Z (getTangentAt → setFromUnitVectors aligns local +Z to tangent).
+// Cross-track dimension → X, height → Y, along-track length → Z.
 function buildCar() {
   const group = new THREE.Group();
 
   // Body
   group.add(obj(new THREE.BoxGeometry(CAR_W, CAR_H, CAR_L), matBody));
+
+  // Roof panel (slightly narrower and lower so it's visible as a separate piece)
+  const roofGeo = new THREE.BoxGeometry(CAR_W - 0.2, 0.15, CAR_L - 0.4);
+  const roof = obj(roofGeo, matRoof);
+  roof.position.y = CAR_H / 2 + 0.075;
+  group.add(roof);
 
   // End-caps (front = +Z, rear = -Z)
   const capGeo = new THREE.BoxGeometry(CAR_W, CAR_H, 0.3);
@@ -36,7 +46,7 @@ function buildCar() {
   // Window strips on ±X sides
   const winH   = CAR_H * 0.35;
   const winL   = CAR_L * 0.88;
-  const winGeo = new THREE.BoxGeometry(0.05, winH, winL);
+  const winGeo = new THREE.BoxGeometry(0.08, winH, winL);
   const wL = obj(winGeo, matWin);
   const wR = obj(winGeo, matWin);
   wL.position.set( CAR_W / 2 + 0.01, CAR_H * 0.12, 0);
@@ -44,11 +54,11 @@ function buildCar() {
   group.add(wL, wR);
 
   // Bogies (wheel assemblies)
-  const bogieGeo = new THREE.BoxGeometry(CAR_W * 0.9, 0.4, 2.5);
+  const bogieGeo = new THREE.BoxGeometry(CAR_W * 0.9, 0.5, 2.8);
   const b1 = obj(bogieGeo, matWheel);
   const b2 = obj(bogieGeo, matWheel);
-  b1.position.set(0, -CAR_H / 2 - 0.2,  CAR_L * 0.32);
-  b2.position.set(0, -CAR_H / 2 - 0.2, -CAR_L * 0.32);
+  b1.position.set(0, -CAR_H / 2 - 0.25,  CAR_L * 0.32);
+  b2.position.set(0, -CAR_H / 2 - 0.25, -CAR_L * 0.32);
   group.add(b1, b2);
 
   return group;
@@ -79,14 +89,13 @@ class Train {
     const carSpacing = (CAR_L + COUPLER) / this.length;
 
     for (let i = 0; i < this.cars.length; i++) {
-      const ct  = ((this.t - i * carSpacing) % 1 + 1) % 1;
-      const pos = this.curve.getPointAt(ct);
-      // Sample 1m ahead for orientation
-      const ct2   = (ct + Math.min(0.005, 1 / this.length)) % 1;
-      const ahead = this.curve.getPointAt(ct2);
+      const ct      = ((this.t - i * carSpacing) % 1 + 1) % 1;
+      const pos     = this.curve.getPointAt(ct);
+      const tangent = this.curve.getTangentAt(ct);
 
       this.cars[i].position.copy(pos);
-      this.cars[i].lookAt(ahead);
+      // Align local +Z to the curve tangent (direction of travel)
+      this.cars[i].quaternion.setFromUnitVectors(_fwd, tangent);
     }
   }
 
@@ -103,7 +112,11 @@ export class TrainSystem {
     this._seen  = new WeakSet();
 
     if (!scene._trainLightAdded) {
-      scene.add(new THREE.HemisphereLight(0xffffff, 0x888888, 1.2));
+      // Hemisphere for base fill, directional for face differentiation
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x888888, 0.7));
+      const dir = new THREE.DirectionalLight(0xffffff, 1.2);
+      dir.position.set(3, 8, 5);
+      scene.add(dir);
       scene._trainLightAdded = true;
     }
 
