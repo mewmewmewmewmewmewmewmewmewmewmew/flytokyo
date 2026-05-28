@@ -395,21 +395,34 @@ function buildEdgesGeoMesh(buildings, mat) {
 }
 
 function buildStreetLines(streets, mat) {
-  const pos = [], col = [];
+  const rPos = [], rCol = [];  // vehicle roads — render above buildings
+  const fPos = [], fCol = [];  // footpaths    — render with buildings
+
   for (const { coords, highway } of streets) {
-    const c = streetColor(highway);
+    const c    = streetColor(highway);
+    const foot = FOOT_TYPES.has(highway);
+    const pos  = foot ? fPos : rPos;
+    const col  = foot ? fCol : rCol;
     for (let i = 0; i < coords.length - 1; i++) {
       const [x0, z0] = coords[i], [x1, z1] = coords[i + 1];
-      pos.push(x0, 0.2, z0,  x1, 0.2, z1);
-      col.push(c.r, c.g, c.b,  c.r, c.g, c.b);
+      pos.push(x0, 0.2, z0, x1, 0.2, z1);
+      col.push(c.r, c.g, c.b, c.r, c.g, c.b);
     }
   }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  geo.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
-  const lines = new THREE.LineSegments(geo, mat);
-  lines.renderOrder = 0;
-  return lines;
+
+  const result = [];
+  function make(pos, col, ro) {
+    if (!pos.length) return;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
+    const lines = new THREE.LineSegments(geo, mat);
+    lines.renderOrder = ro;
+    result.push(lines);
+  }
+  make(fPos, fCol, 1);  // footpaths: between ground and building surfaces
+  make(rPos, rCol, 3);  // roads: above buildings so buildings don't paint over them
+  return result;
 }
 
 function buildRailLines(rails, yLevel, mat) {
@@ -654,7 +667,7 @@ class TileManager {
         this.buildings += bldgs.length;
       }
       if (strs.length) {
-        group.add(buildStreetLines(strs, this.mats.street));
+        for (const m of buildStreetLines(strs, this.mats.street)) group.add(m);
         this.streets += strs.length;
       }
       if (rails.length) {
