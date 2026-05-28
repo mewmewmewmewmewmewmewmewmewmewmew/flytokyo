@@ -171,7 +171,7 @@ const FOOT_TYPES = new Set(['footway','path','pedestrian','cycleway','bridleway'
 
 function streetColor(type) {
   if (FOOT_TYPES.has(type)) return new THREE.Color(0xd0c4a8);  // tan — footpaths/sidewalks
-  return new THREE.Color(0xc0bcb8);                             // light grey — roads
+  return new THREE.Color(0x909090);                             // neutral grey — roads
 }
 
 function railColor(type) {
