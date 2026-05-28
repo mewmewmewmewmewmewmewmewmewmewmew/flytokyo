@@ -58,16 +58,16 @@ function makeCarMat(colorHex, opacity) {
 // Two material sets — surface (50%) and underground (30%)
 const MATS = {
   surface: {
-    body: makeCarMat(0x1e9c52, 0.30),
-    face: makeCarMat(0x166e3a, 0.30),
-    roof: makeCarMat(0xd0e8cc, 0.30),
-    win:  makeCarMat(0x88ccf0, 0.30),
-  },
-  underground: {
     body: makeCarMat(0x1e9c52, 0.20),
     face: makeCarMat(0x166e3a, 0.20),
     roof: makeCarMat(0xd0e8cc, 0.20),
     win:  makeCarMat(0x88ccf0, 0.20),
+  },
+  underground: {
+    body: makeCarMat(0x1e9c52, 0.10),
+    face: makeCarMat(0x166e3a, 0.10),
+    roof: makeCarMat(0xd0e8cc, 0.10),
+    win:  makeCarMat(0x88ccf0, 0.10),
   },
 };
 
