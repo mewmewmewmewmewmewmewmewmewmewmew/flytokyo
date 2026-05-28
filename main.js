@@ -263,7 +263,7 @@ function createMaterials() {
   return {
     surface: new THREE.ShaderMaterial({
       vertexShader: SURF_VERT, fragmentShader: SURF_FRAG,
-      uniforms: fadeUniforms(), transparent: true, depthWrite: true,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
       side: THREE.DoubleSide,
     }),
     wireframe: new THREE.ShaderMaterial({
@@ -722,30 +722,28 @@ function initScene(collision) {
   camera.position.set(0, 1.6, 0);
 
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(8000, 8000, 1, 1),
+    new THREE.PlaneGeometry(8000, 8000, 64, 64),
     new THREE.ShaderMaterial({
       uniforms: {
         uGround: { value: new THREE.Color(0xd8dce8) },
         uSky:    { value: new THREE.Color(0xf0f2f8) },
-        uNear:   { value: FADE_NEAR },
         uFar:    { value: FADE_FAR },
       },
       vertexShader: /* glsl */`
         varying float vDist;
         void main() {
-          vec4 mv = modelViewMatrix * vec4(position, 1.0);
-          vDist = length(mv.xyz);
-          gl_Position = projectionMatrix * mv;
+          vec4 world = modelMatrix * vec4(position, 1.0);
+          vDist = length(world.xz - cameraPosition.xz);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
       fragmentShader: /* glsl */`
         uniform vec3  uGround;
         uniform vec3  uSky;
-        uniform float uNear;
         uniform float uFar;
         varying float vDist;
         void main() {
-          float t = smoothstep(uNear, uFar, vDist);
+          float t = smoothstep(uFar * 0.35, uFar, vDist);
           gl_FragColor = vec4(mix(uGround, uSky, t), 1.0);
         }
       `,
