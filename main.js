@@ -563,14 +563,15 @@ class TileManager {
   }
 
   isInBuilding(x, z) {
-    const R = 0.5;   // player radius keeps camera away from wall faces
+    const R = 0.5;
     for (const fp of this.footprints) {
       if (x + R < fp.minX || x - R > fp.maxX || z + R < fp.minZ || z - R > fp.maxZ) continue;
-      if (pointInPolygon(x,     z,     fp.ring)) return true;
-      if (pointInPolygon(x + R, z,     fp.ring)) return true;
-      if (pointInPolygon(x - R, z,     fp.ring)) return true;
-      if (pointInPolygon(x,     z + R, fp.ring)) return true;
-      if (pointInPolygon(x,     z - R, fp.ring)) return true;
+      if (pointInPolygon(x, z, fp.ring)) return true;
+      // 8 points at 45° intervals so diagonal approaches are also caught
+      for (let i = 0; i < 8; i++) {
+        const a = i * Math.PI / 4;
+        if (pointInPolygon(x + R * Math.cos(a), z + R * Math.sin(a), fp.ring)) return true;
+      }
     }
     return false;
   }
@@ -687,12 +688,15 @@ function createFPSControls(camera, domElement, collision) {
         applyRotation();
       }
 
-      // Jump
-      const onGround = camera.position.y <= EYE_HEIGHT + 0.01;
-      if (keys.has('Space') && onGround) velocityY = JUMP_VEL;
-      velocityY += GRAVITY;
+      // Space held = ascend; released above ground = fall under gravity
+      if (keys.has('Space')) {
+        velocityY = JUMP_VEL;
+      } else if (camera.position.y > EYE_HEIGHT) {
+        velocityY += GRAVITY;
+      } else {
+        velocityY = 0;
+      }
       camera.position.y = Math.max(EYE_HEIGHT, camera.position.y + velocityY);
-      if (camera.position.y <= EYE_HEIGHT) velocityY = 0;
 
       // WASD + Shift sprint
       if (keys.has('KeyW') || keys.has('KeyS') || keys.has('KeyA') || keys.has('KeyD')) {
