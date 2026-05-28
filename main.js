@@ -563,8 +563,7 @@ class TileManager {
     }
   }
 
-  isInBuilding(x, z, playerY) {
-    const R = 0.8;
+  isInBuilding(x, z, playerY, R = 0.8) {
     for (const fp of this.footprints) {
       if (fp.height < playerY) continue; // eye level above roof = can pass over
       if (x + R < fp.minX || x - R > fp.maxX || z + R < fp.minZ || z - R > fp.maxZ) continue;
@@ -603,24 +602,19 @@ class TileManager {
 function createFPSControls(camera, domElement, collision) {
   let yaw   = 0;
   let pitch = 0;
-  let yawVel   = 0;
-  let pitchVel = 0;
 
   const LOOK_SPEED   = 0.00175;
   const MOVE_SPEED   = 0.30;
   const STRAFE_SPEED = 0.15;
-  const DAMP         = 0.85;
   const JUMP_VEL     = 0.20;
   const GRAVITY      = -0.012;
 
-  let velocityY = 0;
+  let velocityY  = 0;
+  let isGrounded = true;
 
   const keys = new Set();
   window.addEventListener('keydown', e => { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); });
   window.addEventListener('keyup',   e => keys.delete(e.code));
-
-  let isDragging = false;
-  let lastX = 0, lastY = 0;
 
   const _fwd   = new THREE.Vector3();
   const _right = new THREE.Vector3();
@@ -635,42 +629,36 @@ function createFPSControls(camera, domElement, collision) {
     _right.set(-_fwd.z, 0, _fwd.x);
   }
 
-  // Try full move, then axis-only fallbacks for wall sliding.
-  // Passes player Y so buildings shorter than the player are passable.
+  // On ground use 0.8 m margin; airborne drop to 0 so the gap can't trap you.
   function tryMove(dx, dz) {
+    const R  = isGrounded ? 0.8 : 0.0;
     const cx = camera.position.x, cz = camera.position.z, cy = camera.position.y;
-    const blocked = collision.fn && collision.fn(cx + dx, cz + dz, cy);
+    const blocked = collision.fn && collision.fn(cx + dx, cz + dz, cy, R);
     if (!blocked) {
       camera.position.x += dx;
       camera.position.z += dz;
     } else {
-      if (!collision.fn(cx + dx, cz, cy))       camera.position.x += dx;
-      else if (!collision.fn(cx, cz + dz, cy))  camera.position.z += dz;
+      if (!collision.fn(cx + dx, cz, cy, R))      camera.position.x += dx;
+      else if (!collision.fn(cx, cz + dz, cy, R)) camera.position.z += dz;
     }
   }
 
-  domElement.addEventListener('mousedown', e => {
-    if (e.button !== 0) return;
-    isDragging = true;
-    lastX = e.clientX; lastY = e.clientY;
-    e.preventDefault();
-  }, { passive: false });
+  // Pointer lock — click canvas to capture, Escape releases automatically.
+  domElement.addEventListener('click', () => {
+    if (document.pointerLockElement !== domElement) domElement.requestPointerLock();
+  });
 
-  window.addEventListener('mousemove', e => {
-    if (!isDragging) return;
-    const dx = e.clientX - lastX, dy = e.clientY - lastY;
-    lastX = e.clientX; lastY = e.clientY;
-    yawVel   = -dx * LOOK_SPEED;
-    pitchVel = -dy * LOOK_SPEED;
-    yaw   += yawVel;
-    pitch  = Math.max(-Math.PI * 0.499, Math.min(Math.PI * 0.499, pitch + pitchVel));
+  document.addEventListener('mousemove', e => {
+    if (document.pointerLockElement !== domElement) return;
+    yaw  += -e.movementX * LOOK_SPEED;
+    pitch = Math.max(-Math.PI * 0.499, Math.min(Math.PI * 0.499, pitch + -e.movementY * LOOK_SPEED));
     applyRotation();
     dispatcher.dispatchEvent({ type: 'change' });
   });
 
-  window.addEventListener('mouseup', e => { if (e.button === 0) isDragging = false; });
   domElement.addEventListener('contextmenu', e => e.preventDefault());
 
+  // Touch look (for mobile — no pointer lock available)
   let touchLast = null;
   domElement.addEventListener('touchstart', e => {
     if (e.touches.length === 1) touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -680,9 +668,8 @@ function createFPSControls(camera, domElement, collision) {
     if (e.touches.length === 1 && touchLast) {
       const dx = e.touches[0].clientX - touchLast.x, dy = e.touches[0].clientY - touchLast.y;
       touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-      yawVel = -dx * LOOK_SPEED; pitchVel = -dy * LOOK_SPEED;
-      yaw   += yawVel;
-      pitch  = Math.max(-Math.PI * 0.499, Math.min(Math.PI * 0.499, pitch + pitchVel));
+      yaw  += -dx * LOOK_SPEED;
+      pitch = Math.max(-Math.PI * 0.499, Math.min(Math.PI * 0.499, pitch + -dy * LOOK_SPEED));
       applyRotation();
       dispatcher.dispatchEvent({ type: 'change' });
     }
@@ -692,14 +679,7 @@ function createFPSControls(camera, domElement, collision) {
 
   const dispatcher = Object.assign(new THREE.EventDispatcher(), {
     update() {
-      if (!isDragging && (Math.abs(yawVel) > 0.000001 || Math.abs(pitchVel) > 0.000001)) {
-        yawVel *= DAMP; pitchVel *= DAMP;
-        yaw   += yawVel;
-        pitch  = Math.max(-Math.PI * 0.499, Math.min(Math.PI * 0.499, pitch + pitchVel));
-        applyRotation();
-      }
-
-      // Space held = ascend; released above floor = fall under gravity; land on roofs
+      // Physics
       const floorY = (collision.floorFn ? collision.floorFn(camera.position.x, camera.position.z) : 0) + EYE_HEIGHT;
       if (keys.has('Space')) {
         velocityY = JUMP_VEL;
@@ -709,16 +689,17 @@ function createFPSControls(camera, domElement, collision) {
         velocityY = 0;
       }
       camera.position.y = Math.max(floorY, camera.position.y + velocityY);
+      isGrounded = camera.position.y <= floorY + 0.05;
 
       // WASD + Shift sprint
       if (keys.has('KeyW') || keys.has('KeyS') || keys.has('KeyA') || keys.has('KeyD')) {
         getHorizDirs();
         const sprint = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 2 : 1;
         let moved = false;
-        if (keys.has('KeyW')) { tryMove( _fwd.x * MOVE_SPEED * sprint,    _fwd.z * MOVE_SPEED * sprint);    moved = true; }
-        if (keys.has('KeyS')) { tryMove(-_fwd.x * MOVE_SPEED * sprint,   -_fwd.z * MOVE_SPEED * sprint);    moved = true; }
-        if (keys.has('KeyD')) { tryMove( _right.x * STRAFE_SPEED * sprint, _right.z * STRAFE_SPEED * sprint); moved = true; }
-        if (keys.has('KeyA')) { tryMove(-_right.x * STRAFE_SPEED * sprint,-_right.z * STRAFE_SPEED * sprint); moved = true; }
+        if (keys.has('KeyW')) { tryMove( _fwd.x * MOVE_SPEED * sprint,     _fwd.z * MOVE_SPEED * sprint);    moved = true; }
+        if (keys.has('KeyS')) { tryMove(-_fwd.x * MOVE_SPEED * sprint,    -_fwd.z * MOVE_SPEED * sprint);    moved = true; }
+        if (keys.has('KeyD')) { tryMove( _right.x * STRAFE_SPEED * sprint,  _right.z * STRAFE_SPEED * sprint); moved = true; }
+        if (keys.has('KeyA')) { tryMove(-_right.x * STRAFE_SPEED * sprint, -_right.z * STRAFE_SPEED * sprint); moved = true; }
         if (moved) dispatcher.dispatchEvent({ type: 'change' });
       }
     },
@@ -781,7 +762,7 @@ async function main() {
   const manager = new TileManager(scene, mats, statusEl);
 
   // Wire collision after manager exists
-  collision.fn      = (x, z, y) => manager.isInBuilding(x, z, y);
+  collision.fn      = (x, z, y, R) => manager.isInBuilding(x, z, y, R);
   collision.floorFn = (x, z)    => manager.getFloorHeight(x, z);
 
   manager.update(0, 0);
