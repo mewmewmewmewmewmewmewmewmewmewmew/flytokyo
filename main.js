@@ -167,14 +167,11 @@ function wireColor(h) {
   );
 }
 
+const FOOT_TYPES = new Set(['footway','path','pedestrian','cycleway','bridleway']);
+
 function streetColor(type) {
-  if (['motorway','motorway_link','trunk','trunk_link','primary','primary_link'].includes(type))
-    return new THREE.Color(0x3d4a6a);
-  if (['secondary','secondary_link','tertiary','tertiary_link'].includes(type))
-    return new THREE.Color(0x5a6280);
-  if (['pedestrian','footway','path','cycleway'].includes(type))
-    return new THREE.Color(0x8090a8);
-  return new THREE.Color(0x6a7490);
+  if (FOOT_TYPES.has(type)) return new THREE.Color(0xd0c4a8);  // tan — footpaths/sidewalks
+  return new THREE.Color(0xc0bcb8);                             // light grey — roads
 }
 
 function railColor(type) {
@@ -869,7 +866,7 @@ function initScene(collision) {
     new THREE.PlaneGeometry(8000, 8000, 1, 1),
     new THREE.ShaderMaterial({
       uniforms: {
-        uGround: { value: new THREE.Color(0xd8dce8) },
+        uGround: { value: new THREE.Color(0xd0c4a8) },
         uFar:    { value: FADE_FAR },
       },
       transparent: true,
