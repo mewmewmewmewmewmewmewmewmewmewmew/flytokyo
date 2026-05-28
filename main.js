@@ -181,10 +181,17 @@ function bldgTerrainInfo(ring, height) {
 
 // ─── Overpass ────────────────────────────────────────────────────────────────
 
+const OVERPASS_ENDPOINTS = [
+  'https://overpass.kumi.systems/api/interpreter',   // fast, generous limits
+  'https://overpass-api.de/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+];
+let _opIdx = 0;
+
 async function fetchOSMBbox(bbox) {
   const { south, west, north, east } = bbox;
   const query = [
-    '[out:json][timeout:40];(',
+    '[out:json][timeout:25];(',
     `way["building"](${south},${west},${north},${east});`,
     `way["highway"](${south},${west},${north},${east});`,
     `way["railway"](${south},${west},${north},${east});`,
@@ -196,10 +203,15 @@ async function fetchOSMBbox(bbox) {
     `node["office"]["name"](${south},${west},${north},${east});`,
     ');out body;>;out skel qt;',
   ].join('');
+  // Round-robin across mirrors: one public endpoint only gives ~2 slots/IP and
+  // rate-limits (429) or times out (504) under load, which was the real cause of
+  // tiles crawling. Spreading across mirrors roughly triples our headroom and
+  // routes around whichever server is slow right now.
+  const url = OVERPASS_ENDPOINTS[_opIdx++ % OVERPASS_ENDPOINTS.length];
   const ctrl  = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 45_000);
+  const timer = setTimeout(() => ctrl.abort(), 30_000);
   try {
-    const res = await fetch('https://overpass-api.de/api/interpreter', {
+    const res = await fetch(url, {
       method:  'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body:    'data=' + encodeURIComponent(query),
@@ -1058,11 +1070,12 @@ class TileManager {
     } catch (err) {
       console.warn(`Tile ${tx},${ty}:`, err.message);
       this.tiles.set(k, 'failed');
-      // Retry up to 5× with capped back-off: 3 s, 5 s, 8 s, 12 s, 12 s
+      // Retry up to 6× with short back-off — each retry hits a different mirror,
+      // so a quick retry usually lands on a server that isn't rate-limiting us.
       const attempt = this._retries.get(k) || 0;
-      if (attempt < 5) {
+      if (attempt < 6) {
         this._retries.set(k, attempt + 1);
-        const delay = [3000, 5000, 8000, 12000, 12000][attempt];
+        const delay = [800, 1500, 3000, 5000, 8000, 8000][attempt];
         setTimeout(() => {
           this.tiles.delete(k);
           this.request(tx, ty);
