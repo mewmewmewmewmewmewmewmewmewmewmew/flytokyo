@@ -263,8 +263,8 @@ function createMaterials() {
   return {
     surface: new THREE.ShaderMaterial({
       vertexShader: SURF_VERT, fragmentShader: SURF_FRAG,
-      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
-      side: THREE.DoubleSide,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: true,
+      side: THREE.FrontSide,
     }),
     wireframe: new THREE.ShaderMaterial({
       vertexShader: LINE_VERT, fragmentShader: WIRE_FRAG,
@@ -566,7 +566,7 @@ class TileManager {
   isInBuilding(x, z, playerY) {
     const R = 0.8;
     for (const fp of this.footprints) {
-      if (fp.height + EYE_HEIGHT <= playerY) continue; // player is above this roof
+      if (fp.height < playerY) continue; // eye level above roof = can pass over
       if (x + R < fp.minX || x - R > fp.maxX || z + R < fp.minZ || z - R > fp.maxZ) continue;
       if (pointInPolygon(x, z, fp.ring)) return true;
       for (let i = 0; i < 8; i++) {
