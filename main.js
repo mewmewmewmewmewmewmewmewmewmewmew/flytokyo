@@ -47,6 +47,96 @@ function tileToBBox(tx, ty) {
   };
 }
 
+// ─── Terrain elevation (Terrarium tiles, AWS S3) ──────────────────────────────
+
+let terrain = null;
+const TERRAIN_ZOOM = 12;
+
+function terrainTX(lon, z) { return Math.floor((lon + 180) / 360 * (1 << z)); }
+function terrainTY(lat, z) {
+  const r = lat * Math.PI / 180;
+  return Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * (1 << z));
+}
+
+class TerrainSampler {
+  constructor(tiles, baseElev) {
+    this.tiles = tiles;
+    this.baseElev = baseElev;
+  }
+
+  sampleLatLon(lat, lon) {
+    const r = lat * Math.PI / 180;
+    const sec = 1 / Math.cos(r);
+    for (const t of this.tiles) {
+      const n = 1 << t.z;
+      const fx = (lon + 180) / 360 * n - t.tx;
+      const fy = (1 - Math.log(Math.tan(r) + sec) / Math.PI) / 2 * n - t.ty;
+      if (fx < 0 || fx >= 1 || fy < 0 || fy >= 1) continue;
+      const px = fx * t.w, py = fy * t.h;
+      const x0 = Math.min(Math.floor(px), t.w - 2);
+      const y0 = Math.min(Math.floor(py), t.h - 2);
+      const u = px - x0, v = py - y0;
+      const h = (xi, yi) => {
+        const i = (yi * t.w + xi) * 4;
+        return t.data[i] * 256 + t.data[i + 1] + t.data[i + 2] / 256 - 32768;
+      };
+      return h(x0,y0)*(1-u)*(1-v) + h(x0+1,y0)*u*(1-v) +
+             h(x0,y0+1)*(1-u)*v   + h(x0+1,y0+1)*u*v;
+    }
+    return this.baseElev;
+  }
+
+  // Returns elevation in metres relative to world origin (positive = higher than spawn).
+  sample(wx, wz) {
+    const { lat, lon } = worldToGeo(wx, wz);
+    return this.sampleLatLon(lat, lon) - this.baseElev;
+  }
+}
+
+async function loadTerrain() {
+  const extra = LOAD_RADIUS + 1;
+  const bounds = {
+    s: CENTER_LAT - extra * TILE_LAT, n: CENTER_LAT + extra * TILE_LAT,
+    w: CENTER_LON - extra * TILE_LON, e: CENTER_LON + extra * TILE_LON,
+  };
+  const txMin = terrainTX(bounds.w, TERRAIN_ZOOM), txMax = terrainTX(bounds.e, TERRAIN_ZOOM);
+  const tyMin = terrainTY(bounds.n, TERRAIN_ZOOM), tyMax = terrainTY(bounds.s, TERRAIN_ZOOM);
+
+  const fetches = [];
+  for (let ty = tyMin; ty <= tyMax; ty++) {
+    for (let tx = txMin; tx <= txMax; tx++) {
+      fetches.push(new Promise(resolve => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+          const c = document.createElement('canvas');
+          c.width = img.width; c.height = img.height;
+          const ctx2 = c.getContext('2d');
+          ctx2.drawImage(img, 0, 0);
+          const { data } = ctx2.getImageData(0, 0, img.width, img.height);
+          resolve({ data, w: img.width, h: img.height, z: TERRAIN_ZOOM, tx, ty });
+        };
+        img.onerror = () => resolve(null);
+        img.src = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${TERRAIN_ZOOM}/${tx}/${ty}.png`;
+      }));
+    }
+  }
+
+  const tiles = (await Promise.all(fetches)).filter(Boolean);
+  if (!tiles.length) return null;
+  const tmp = new TerrainSampler(tiles, 0);
+  const baseElev = tmp.sampleLatLon(CENTER_LAT, CENTER_LON);
+  return new TerrainSampler(tiles, baseElev);
+}
+
+// Minimum terrain elevation under a building ring (world XZ), slightly below surface.
+function bldgBaseY(ring) {
+  if (!terrain) return 0;
+  let minH = Infinity;
+  for (const [x, z] of ring) { const h = terrain.sample(x, z); if (h < minH) minH = h; }
+  return minH - 0.5;
+}
+
 // ─── Overpass ────────────────────────────────────────────────────────────────
 
 async function fetchOSMBbox(bbox) {
@@ -309,7 +399,7 @@ function createMaterials() {
 
 // ─── Geometry builders ───────────────────────────────────────────────────────
 
-function buildSingleBuildingGeo(ring, height) {
+function buildSingleBuildingGeo(ring, height, baseY = 0) {
   const pos = [], norm = [], idx = [];
   let v = 0;
   const n = ring.length;
@@ -317,8 +407,11 @@ function buildSingleBuildingGeo(ring, height) {
   const tris = earcut(flat);
   if (!tris.length) return null;
 
+  const topY = baseY + height;
+  const botY = baseY - 1.5; // sink below grade to avoid terrain gaps
+
   const rb = v;
-  for (const [x, z] of ring) { pos.push(x, height, z); norm.push(0, 1, 0); v++; }
+  for (const [x, z] of ring) { pos.push(x, topY, z); norm.push(0, 1, 0); v++; }
   for (const i of tris) idx.push(rb + i);
 
   for (let i = 0; i < n; i++) {
@@ -326,7 +419,7 @@ function buildSingleBuildingGeo(ring, height) {
     const [x0, z0] = ring[i], [x1, z1] = ring[j];
     const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz) || 1;
     const b = v;
-    pos.push(x0, 0, z0,  x1, 0, z1,  x1, height, z1,  x0, height, z0);
+    pos.push(x0, botY, z0,  x1, botY, z1,  x1, topY, z1,  x0, topY, z0);
     for (let k = 0; k < 4; k++) norm.push(dz / len, 0, -dx / len);
     idx.push(b, b+1, b+2,  b, b+2, b+3);
     v += 4;
@@ -351,9 +444,13 @@ function buildSurfaceMesh(buildings, mat) {
     const tris = earcut(flat);
     if (!tris.length) continue;
 
+    const groundY = bldgBaseY(ring);
+    const topY = groundY + height;
+    const botY = groundY - 1.5;
+
     const rb = v;
     for (const [x, z] of ring) {
-      pos.push(x, height, z); norm.push(0, 1, 0); col.push(rc.r, rc.g, rc.b); v++;
+      pos.push(x, topY, z); norm.push(0, 1, 0); col.push(rc.r, rc.g, rc.b); v++;
     }
     for (const i of tris) idx.push(rb + i);
 
@@ -362,7 +459,7 @@ function buildSurfaceMesh(buildings, mat) {
       const [x0, z0] = ring[i], [x1, z1] = ring[j];
       const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz) || 1;
       const b = v;
-      pos.push(x0, 0, z0,  x1, 0, z1,  x1, height, z1,  x0, height, z0);
+      pos.push(x0, botY, z0,  x1, botY, z1,  x1, topY, z1,  x0, topY, z0);
       for (let k = 0; k < 4; k++) { norm.push(dz / len, 0, -dx / len); col.push(wc.r, wc.g, wc.b); }
       idx.push(b, b+1, b+2,  b, b+2, b+3);
       v += 4;
@@ -383,7 +480,7 @@ function buildEdgesGeoMesh(buildings, mat) {
   const allPos = [], allCol = [];
 
   for (const { ring, height } of buildings) {
-    const base = buildSingleBuildingGeo(ring, height);
+    const base = buildSingleBuildingGeo(ring, height, bldgBaseY(ring));
     if (!base) continue;
     const edgesGeo = new THREE.EdgesGeometry(base);
     const posAttr  = edgesGeo.getAttribute('position');
@@ -449,13 +546,15 @@ function addRibbonToBuffers(coords, halfW, pos, col, color) {
 
   // Emit quads as two triangles per segment strip.
   for (let i = 0; i < n - 1; i++) {
+    const y0 = (terrain ? terrain.sample(coords[i][0],   coords[i][1])   : 0) + 0.05;
+    const y1 = (terrain ? terrain.sample(coords[i+1][0], coords[i+1][1]) : 0) + 0.05;
     pos.push(
-      lx[i],   0.05, lz[i],
-      rx[i],   0.05, rz[i],
-      lx[i+1], 0.05, lz[i+1],
-      rx[i],   0.05, rz[i],
-      rx[i+1], 0.05, rz[i+1],
-      lx[i+1], 0.05, lz[i+1],
+      lx[i],   y0, lz[i],
+      rx[i],   y0, rz[i],
+      lx[i+1], y1, lz[i+1],
+      rx[i],   y0, rz[i],
+      rx[i+1], y1, rz[i+1],
+      lx[i+1], y1, lz[i+1],
     );
     for (let v = 0; v < 6; v++) col.push(color.r, color.g, color.b);
   }
@@ -492,7 +591,9 @@ function buildRailLines(rails, yLevel, mat) {
     const c = railColor(type);
     for (let i = 0; i < coords.length - 1; i++) {
       const [x0, z0] = coords[i], [x1, z1] = coords[i + 1];
-      pos.push(x0, yLevel, z0,  x1, yLevel, z1);
+      const ty0 = (terrain ? terrain.sample(x0, z0) : 0) + yLevel;
+      const ty1 = (terrain ? terrain.sample(x1, z1) : 0) + yLevel;
+      pos.push(x0, ty0, z0,  x1, ty1, z1);
       col.push(c.r, c.g, c.b,   c.r, c.g, c.b);
     }
   }
@@ -716,6 +817,7 @@ class TileManager {
         const xs = ring.map(p => p[0]), zs = ring.map(p => p[1]);
         this.footprints.push({
           ring, height,
+          groundY: bldgBaseY(ring),
           minX: Math.min(...xs), maxX: Math.max(...xs),
           minZ: Math.min(...zs), maxZ: Math.max(...zs),
         });
@@ -791,12 +893,16 @@ class TileManager {
     return false;
   }
 
-  // Returns the height of the tallest building footprint under (x, z), or 0 for open ground
+  // Returns the standing floor Y under (x, z): terrain height outside buildings,
+  // building-top height inside buildings.
   getFloorHeight(x, z) {
-    let maxH = 0;
+    const groundY = terrain ? terrain.sample(x, z) : 0;
+    let maxH = groundY;
     for (const fp of this.footprints) {
       if (x < fp.minX || x > fp.maxX || z < fp.minZ || z > fp.maxZ) continue;
-      if (fp.height > maxH && pointInPolygon(x, z, fp.ring)) maxH = fp.height;
+      if (!pointInPolygon(x, z, fp.ring)) continue;
+      const topY = fp.groundY + fp.height;
+      if (topY > maxH) maxH = topY;
     }
     return maxH;
   }
@@ -937,7 +1043,7 @@ function initScene(collision) {
   camera.position.set(0, 1.6, 0);
 
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(8000, 8000, 1, 1),
+    new THREE.PlaneGeometry(8000, 8000, 256, 256),
     new THREE.ShaderMaterial({
       uniforms: {
         uGround: { value: new THREE.Color(0xd8dce8) },
@@ -992,7 +1098,7 @@ function initScene(collision) {
     renderer.render(scene, camera);
   })();
 
-  return { scene, camera, controls, trainRef };
+  return { scene, camera, controls, trainRef, ground };
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -1003,7 +1109,22 @@ async function main() {
 
   // Mutable ref so controls (created first) can call collision once tiles arrive
   const collision = { fn: null };
-  const { scene, camera, controls, trainRef } = initScene(collision);
+  const { scene, camera, controls, trainRef, ground } = initScene(collision);
+
+  // Load terrain elevation tiles before OSM tiles so geometry is placed correctly.
+  loadMsg.textContent = 'Loading terrain…';
+  terrain = await loadTerrain();
+  if (terrain) {
+    // Displace ground plane vertices. PlaneGeometry is in XY before rotation.x = -π/2,
+    // which maps local (x, y, z) → world (x, z, -y). To set world Y, set local Z.
+    const pos = ground.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      pos.setZ(i, terrain.sample(pos.getX(i), -pos.getY(i)));
+    }
+    pos.needsUpdate = true;
+    ground.geometry.computeVertexNormals();
+    camera.position.y = terrain.sample(0, 0) + EYE_HEIGHT;
+  }
 
   loadMsg.textContent = 'Fetching Shibuya from OpenStreetMap…';
 
