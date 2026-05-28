@@ -890,7 +890,7 @@ function createFPSControls(camera, domElement, collision) {
 // ─── Scene setup ─────────────────────────────────────────────────────────────
 
 function initScene(collision) {
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, stencil: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.setSize(innerWidth, innerHeight);
   renderer.setClearColor(0x000000, 0); // transparent — sky comes from CSS gradient
