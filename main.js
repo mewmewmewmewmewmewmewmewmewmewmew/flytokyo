@@ -730,10 +730,10 @@ function initScene(collision) {
         uFar:    { value: FADE_FAR },
       },
       vertexShader: /* glsl */`
-        varying float vDist;
+        varying vec3 vWorldPos;
         void main() {
           vec4 world = modelMatrix * vec4(position, 1.0);
-          vDist = length(world.xz - cameraPosition.xz);
+          vWorldPos = world.xyz;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
@@ -741,10 +741,18 @@ function initScene(collision) {
         uniform vec3  uGround;
         uniform vec3  uSky;
         uniform float uFar;
-        varying float vDist;
+        varying vec3  vWorldPos;
         void main() {
-          float t = smoothstep(uFar * 0.35, uFar, vDist);
-          gl_FragColor = vec4(mix(uGround, uSky, t), 1.0);
+          vec3  ray       = vWorldPos - cameraPosition;
+          float horizDist = length(ray.xz);
+          // downAngle: 0 = horizontal ray (horizon), 1 = straight down
+          float downAngle = max(0.0, -normalize(ray).y);
+          // distance fog matches building fade range
+          float distFade  = smoothstep(uFar * 0.4, uFar, horizDist);
+          // angle fog: near-horizontal rays fade to sky — creates visible
+          // horizon haze at pedestrian eye height regardless of distance
+          float angleFade = 1.0 - smoothstep(0.002, 0.018, downAngle);
+          gl_FragColor = vec4(mix(uGround, uSky, max(distFade, angleFade)), 1.0);
         }
       `,
     }),
