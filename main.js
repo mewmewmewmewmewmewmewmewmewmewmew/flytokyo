@@ -448,14 +448,30 @@ function renderLabelCanvas(text, { bg, stroke, fg = '#fff' }) {
   return { tex, aspect: canvas.width / canvas.height };
 }
 
-// Floating, camera-facing label — used for point POIs which have no surface.
-function makeLabelSprite(text) {
-  const { tex, aspect } = renderLabelCanvas(text, { bg: 'rgba(40,70,140,0.85)' });
-  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
-  const h = 4;
-  spr.scale.set(h * aspect, h, 1);
-  spr.renderOrder = 5;
-  return spr;
+// A textured plane laid flat against a wall at (x,z), facing outward along (nx,nz),
+// centred at height y. Sits just proud of the wall to avoid z-fighting.
+function wallPlaneMesh(tex, w, h, x, z, nx, nz, y) {
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(w, h),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide }),
+  );
+  const off = 0.4;
+  mesh.position.set(x + nx * off, y, z + nz * off);
+  mesh.lookAt(mesh.position.x + nx, mesh.position.y, mesh.position.z + nz);  // face outward, upright
+  mesh.renderOrder = 5;
+  return mesh;
+}
+
+// Outward-facing horizontal normal of a ring edge at point (qx,qz), pointing away
+// from the footprint centroid.
+function outwardNormal(ring, ex, ez, qx, qz) {
+  const len = Math.hypot(ex, ez) || 1;
+  let nx = -ez / len, nz = ex / len;
+  let cx = 0, cz = 0;
+  for (const [x, z] of ring) { cx += x; cz += z; }
+  cx /= ring.length; cz /= ring.length;
+  if ((qx + nx - cx) ** 2 + (qz + nz - cz) ** 2 < (qx - cx) ** 2 + (qz - cz) ** 2) { nx = -nx; nz = -nz; }
+  return { nx, nz };
 }
 
 // A name laid flat onto the building's longest wall so it reads as signage on the
@@ -472,13 +488,7 @@ function makeBuildingLabel(ring, topY, text) {
 
   const [x0, z0] = ring[bi], [x1, z1] = ring[(bi + 1) % ring.length];
   const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
-  const ex = (x1 - x0) / best, ez = (z1 - z0) / best;
-  let nx = -ez, nz = ex;                                   // wall normal (horizontal)
-  let cx = 0, cz = 0;
-  for (const [x, z] of ring) { cx += x; cz += z; }
-  cx /= ring.length; cz /= ring.length;
-  // Flip the normal if it points toward the interior — we want it facing out.
-  if ((mx + nx - cx) ** 2 + (mz + nz - cz) ** 2 < (mx - cx) ** 2 + (mz - cz) ** 2) { nx = -nx; nz = -nz; }
+  const { nx, nz } = outwardNormal(ring, x1 - x0, z1 - z0, mx, mz);
 
   const base    = terrain ? terrain.sample(mx, mz) : 0;
   const facadeH = Math.max(topY - base, 3);
@@ -488,16 +498,48 @@ function makeBuildingLabel(ring, topY, text) {
   let w = h * aspect;
   if (w > best * 0.9) { const f = best * 0.9 / w; w *= f; h *= f; }   // fit within the wall
   const cy = Math.max(base + h / 2 + 0.5, base + Math.min(facadeH * 0.62, facadeH - h / 2 - 0.5));
+  return wallPlaneMesh(tex, w, h, mx, mz, nx, nz, cy);
+}
 
-  const mesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(w, h),
-    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide }),
-  );
-  const off = 0.4;   // sit just proud of the wall to avoid z-fighting
-  mesh.position.set(mx + nx * off, cy, mz + nz * off);
-  mesh.lookAt(mesh.position.x + nx, mesh.position.y, mesh.position.z + nz);  // face outward, upright
-  mesh.renderOrder = 5;
-  return mesh;
+// Find the closest building wall to a point, within maxDist metres. Returns the
+// footprint, the projection of the point onto that wall, and the edge direction.
+function nearestWall(px, pz, footprints, maxDist) {
+  let best = null, bestD2 = maxDist * maxDist;
+  for (const fp of footprints) {
+    if (px < fp.minX - maxDist || px > fp.maxX + maxDist ||
+        pz < fp.minZ - maxDist || pz > fp.maxZ + maxDist) continue;
+    const ring = fp.ring;
+    for (let i = 0; i < ring.length; i++) {
+      const [x0, z0] = ring[i], [x1, z1] = ring[(i + 1) % ring.length];
+      const dx = x1 - x0, dz = z1 - z0;
+      const l2 = dx * dx + dz * dz || 1e-6;
+      const t = Math.max(0, Math.min(1, ((px - x0) * dx + (pz - z0) * dz) / l2));
+      const qx = x0 + dx * t, qz = z0 + dz * t;
+      const d2 = (px - qx) ** 2 + (pz - qz) ** 2;
+      if (d2 < bestD2) { bestD2 = d2; best = { fp, qx, qz, ex: dx, ez: dz, len: Math.hypot(dx, dz) }; }
+    }
+  }
+  return best;
+}
+
+// A POI sign laid flat on the nearest building wall (storefront height). Falls back
+// to a floating billboard when the POI isn't near any building.
+function makePoiLabel(px, pz, text, footprints) {
+  const { tex, aspect } = renderLabelCanvas(text, { bg: 'rgba(40,70,140,0.88)' });
+  const wall = nearestWall(px, pz, footprints, 12);
+  if (wall) {
+    const { nx, nz } = outwardNormal(wall.fp.ring, wall.ex, wall.ez, wall.qx, wall.qz);
+    let h = 2.6, w = h * aspect;
+    if (w > wall.len * 0.9) { const f = wall.len * 0.9 / w; w *= f; h *= f; }
+    const y = (terrain ? terrain.sample(wall.qx, wall.qz) : 0) + 3.5;
+    return wallPlaneMesh(tex, w, h, wall.qx, wall.qz, nx, nz, y);
+  }
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
+  spr.scale.set(4 * aspect, 4, 1);
+  spr.renderOrder = 5;
+  const y = (terrain ? terrain.sample(px, pz) : 0) + 4;
+  spr.position.set(px, y, pz);
+  return spr;
 }
 
 // ─── Shaders ─────────────────────────────────────────────────────────────────
@@ -1124,12 +1166,9 @@ class TileManager {
       }
     }
 
-    // POI labels (points) at head height above the ground.
+    // POI signs laid on the nearest building wall (floating fallback if none near).
     for (const p of pois) {
-      const spr = makeLabelSprite(truncateLabel(p.name));
-      const y = (terrain ? terrain.sample(p.x, p.z) : 0) + 4;
-      spr.position.set(p.x, y, p.z);
-      this.labelGroup.add(spr);
+      this.labelGroup.add(makePoiLabel(p.x, p.z, truncateLabel(p.name), this.footprints));
     }
 
     const group = new THREE.Group();
