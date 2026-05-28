@@ -510,6 +510,30 @@ function stitchMetroCurves(curves) {
   return result;
 }
 
+// Split a stitched curve wherever consecutive segments form a sharp angle (>90°)
+// so trains never have to reverse direction mid-path.
+function splitAtSharpTurns(curve) {
+  const pts = curve.points;
+  if (pts.length < 3) return [curve];
+
+  const segs  = [];
+  let   seg   = [pts[0]];
+
+  for (let i = 1; i < pts.length - 1; i++) {
+    seg.push(pts[i]);
+    const a = new THREE.Vector3().subVectors(pts[i],     pts[i - 1]).normalize();
+    const b = new THREE.Vector3().subVectors(pts[i + 1], pts[i]    ).normalize();
+    if (a.dot(b) < 0) {          // angle > 90° — split here
+      if (seg.length >= 2) segs.push(new THREE.CatmullRomCurve3(seg, false, 'catmullrom', 0.5));
+      seg = [pts[i]];
+    }
+  }
+  seg.push(pts[pts.length - 1]);
+  if (seg.length >= 2) segs.push(new THREE.CatmullRomCurve3(seg, false, 'catmullrom', 0.5));
+
+  return segs;
+}
+
 // ─── Collision ───────────────────────────────────────────────────────────────
 
 function pointInPolygon(px, pz, ring) {
@@ -919,7 +943,8 @@ async function main() {
       setTimeout(() => loading.remove(), 800);
       if (manager.metroCurves.length) {
         const stitched = stitchMetroCurves(manager.metroCurves);
-        trainRef.system = new TrainSystem(scene, stitched);
+        const cleaned  = stitched.flatMap(splitAtSharpTurns);
+        trainRef.system = new TrainSystem(scene, cleaned);
       }
     } else if (manager.tilesLoaded >= TILES_CORE) {
       // Core tiles all finished (possibly with errors) but no data yet —
