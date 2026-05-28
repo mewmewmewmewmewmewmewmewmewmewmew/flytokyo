@@ -252,7 +252,7 @@ const METRO_FRAG = /* glsl */`
   void main() {
     float fade = 1.0 - smoothstep(uNear * 0.5, uFar, vDist);
     if (fade < 0.01) discard;
-    gl_FragColor = vec4(vCol, 0.30 * fade);
+    gl_FragColor = vec4(vCol, 0.12 * fade);
   }
 `;
 
@@ -419,30 +419,25 @@ function buildRailLines(rails, yLevel, mat) {
   return new THREE.LineSegments(geo, mat);
 }
 
-// Returns { mesh, trainCurves }
-// trainCurves are at y=1.9 (street level) so trains are visible from ground.
-// The tube mesh stays at METRO_DEPTH for underground visuals.
+// Returns { mesh, curves } — curves are at METRO_DEPTH, same as tube geometry.
+// Train cars use depthTest:false so they render through the ground plane.
 function buildMetroTubes(rails, mat) {
-  const geoms       = [];
-  const trainCurves = [];
+  const geoms  = [];
+  const curves = [];
 
   for (const { coords, type } of rails) {
     if (coords.length < 2) continue;
-    const underPts = [];
-    const trainPts = [];
+    const pts = [];
     for (const [x, z] of coords) {
-      const uv = new THREE.Vector3(x, METRO_DEPTH, z);
-      if (!underPts.length || uv.distanceTo(underPts[underPts.length - 1]) > 0.1) {
-        underPts.push(uv);
-        trainPts.push(new THREE.Vector3(x, 1.9, z));
-      }
+      const v = new THREE.Vector3(x, METRO_DEPTH, z);
+      if (!pts.length || v.distanceTo(pts[pts.length - 1]) > 0.1) pts.push(v);
     }
-    if (underPts.length < 2) continue;
+    if (pts.length < 2) continue;
 
-    const curve = new THREE.CatmullRomCurve3(underPts);
-    trainCurves.push(new THREE.CatmullRomCurve3(trainPts, false, 'catmullrom', 0.5));
+    const curve = new THREE.CatmullRomCurve3(pts);
+    curves.push(curve);
 
-    const geo   = new THREE.TubeGeometry(curve, Math.max(underPts.length * 2, 4), 2.5, 8, false);
+    const geo   = new THREE.TubeGeometry(curve, Math.max(pts.length * 2, 4), 2.5, 8, false);
     const c      = railColor(type);
     const count  = geo.getAttribute('position').count;
     const colBuf = new Float32Array(count * 3);
@@ -458,7 +453,7 @@ function buildMetroTubes(rails, mat) {
   geoms.forEach(g => g.dispose());
   const mesh = new THREE.Mesh(merged, mat);
   mesh.renderOrder = 3;
-  return { mesh, trainCurves };
+  return { mesh, curves };
 }
 
 // ─── Curve stitching ─────────────────────────────────────────────────────────
@@ -476,6 +471,8 @@ function stitchMetroCurves(curves) {
     for (let j = 0; j < curves.length; j++) {
       if (used.has(j)) continue;
       const jp = curves[j].points;
+      // Only connect curves at the same depth (±2 m) to avoid tunnel/surface cross-links
+      if (Math.abs(anchor.y - jp[0].y) > 2 && Math.abs(anchor.y - jp[jp.length - 1].y) > 2) continue;
       const d0 = anchor.distanceTo(jp[0]);
       const d1 = anchor.distanceTo(jp[jp.length - 1]);
       if (d0 < bestDist) { bestDist = d0; bestJ = j; bestFlip = false; }
@@ -618,18 +615,7 @@ class TileManager {
         if (sl) { sl.renderOrder = 0; group.add(sl); }
         if (tl) {
           group.add(tl.mesh);
-          for (const c of tl.trainCurves) this.metroCurves.push(c);
-        }
-        // Surface-rail trains at car-centre height (track y=0.3 + half-height 1.6 = 1.9)
-        for (const { coords } of surface) {
-          if (coords.length < 2) continue;
-          const pts = [];
-          for (const [x, z] of coords) {
-            const v = new THREE.Vector3(x, 1.9, z);
-            if (!pts.length || v.distanceTo(pts[pts.length - 1]) > 0.1) pts.push(v);
-          }
-          if (pts.length >= 2)
-            this.metroCurves.push(new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5));
+          for (const c of tl.curves) this.metroCurves.push(c);
         }
         this.rails += rails.length;
       }
