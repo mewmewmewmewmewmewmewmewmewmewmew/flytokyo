@@ -756,6 +756,7 @@ function initScene(collision) {
   );
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.05;
+  ground.renderOrder = -1; // render before streets/buildings so they always paint over it
   scene.add(ground);
 
   const controls = createFPSControls(camera, renderer.domElement, collision);
