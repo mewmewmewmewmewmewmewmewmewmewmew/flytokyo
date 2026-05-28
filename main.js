@@ -617,6 +617,18 @@ class TileManager {
           group.add(tl.mesh);
           for (const c of tl.curves) this.metroCurves.push(c);
         }
+        // Surface-rail trains at car-centre height (y=1.9) — always visible
+        // from ground level as a guaranteed fallback alongside tunnel trains.
+        for (const { coords } of surface) {
+          if (coords.length < 2) continue;
+          const pts = [];
+          for (const [x, z] of coords) {
+            const v = new THREE.Vector3(x, 1.9, z);
+            if (!pts.length || v.distanceTo(pts[pts.length - 1]) > 0.1) pts.push(v);
+          }
+          if (pts.length >= 2)
+            this.metroCurves.push(new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5));
+        }
         this.rails += rails.length;
       }
 
