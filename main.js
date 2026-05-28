@@ -284,6 +284,16 @@ function createMaterials() {
     street: new THREE.ShaderMaterial({
       vertexShader: LINE_VERT, fragmentShader: STREET_FRAG,
       uniforms: fadeUniforms(), transparent: true, depthWrite: false,
+      stencilWrite: true, stencilRef: 2,
+      stencilFunc: THREE.NotEqualStencilFunc,
+      stencilFail: THREE.KeepStencilOp, stencilZFail: THREE.KeepStencilOp, stencilZPass: THREE.ReplaceStencilOp,
+    }),
+    footpath: new THREE.ShaderMaterial({
+      vertexShader: LINE_VERT, fragmentShader: STREET_FRAG,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
+      stencilWrite: true, stencilRef: 1,
+      stencilFunc: THREE.NotEqualStencilFunc,
+      stencilFail: THREE.KeepStencilOp, stencilZFail: THREE.KeepStencilOp, stencilZPass: THREE.ReplaceStencilOp,
     }),
     rail: new THREE.ShaderMaterial({
       vertexShader: LINE_VERT, fragmentShader: STREET_FRAG,
@@ -394,7 +404,7 @@ function buildEdgesGeoMesh(buildings, mat) {
   return lines;
 }
 
-function buildStreetLines(streets, mat) {
+function buildStreetLines(streets, roadMat, pathMat) {
   const rPos = [], rCol = [];  // vehicle roads
   const fPos = [], fCol = [];  // footpaths
 
@@ -403,7 +413,7 @@ function buildStreetLines(streets, mat) {
     const foot  = FOOT_TYPES.has(highway);
     const pos   = foot ? fPos : rPos;
     const col   = foot ? fCol : rCol;
-    const halfW = foot ? 1.5 : 3.5;  // footpath 3m wide, road 7m wide
+    const halfW = foot ? 1.5 : 3.5;
 
     for (let i = 0; i < coords.length - 1; i++) {
       const [x0, z0] = coords[i];
@@ -413,7 +423,6 @@ function buildStreetLines(streets, mat) {
       if (len < 0.01) continue;
       const nx = -dz / len * halfW;
       const nz =  dx / len * halfW;
-      // Quad as two CCW triangles, normal faces up so front-face visible from above
       pos.push(
         x0 - nx, 0.05, z0 - nz,
         x0 + nx, 0.05, z0 + nz,
@@ -427,7 +436,7 @@ function buildStreetLines(streets, mat) {
   }
 
   const result = [];
-  function make(pos, col, ro) {
+  function make(pos, col, mat, ro) {
     if (!pos.length) return;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -436,8 +445,8 @@ function buildStreetLines(streets, mat) {
     mesh.renderOrder = ro;
     result.push(mesh);
   }
-  make(fPos, fCol, 1);  // footpaths between ground and buildings
-  make(rPos, rCol, 3);  // roads above buildings
+  make(fPos, fCol, pathMat, 1);  // footpaths
+  make(rPos, rCol, roadMat, 3);  // roads
   return result;
 }
 
@@ -683,7 +692,7 @@ class TileManager {
         this.buildings += bldgs.length;
       }
       if (strs.length) {
-        for (const m of buildStreetLines(strs, this.mats.street)) group.add(m);
+        for (const m of buildStreetLines(strs, this.mats.street, this.mats.footpath)) group.add(m);
         this.streets += strs.length;
       }
       if (rails.length) {
