@@ -761,6 +761,38 @@ function initScene(collision) {
   ground.position.y = -0.05;
   scene.add(ground);
 
+  // Sky dome — gradient from horizon grey up to zenith white.
+  // Follows the camera each frame so it's always centred on the player.
+  const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(1800, 32, 16),
+    new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      uniforms: {
+        uHorizon: { value: new THREE.Color(0xd8dce8) }, // match ground colour
+        uZenith:  { value: new THREE.Color(0xf0f2f8) }, // match clear colour
+      },
+      vertexShader: /* glsl */`
+        varying float vY;
+        void main() {
+          vY = normalize(position).y;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */`
+        uniform vec3 uHorizon;
+        uniform vec3 uZenith;
+        varying float vY;
+        void main() {
+          float t = smoothstep(-0.05, 0.20, vY);
+          gl_FragColor = vec4(mix(uHorizon, uZenith, t), 1.0);
+        }
+      `,
+    }),
+  );
+  sky.renderOrder = -1;
+  scene.add(sky);
+
   const controls = createFPSControls(camera, renderer.domElement, collision);
 
   window.addEventListener('resize', () => {
@@ -771,6 +803,7 @@ function initScene(collision) {
 
   (function animate() {
     requestAnimationFrame(animate);
+    sky.position.copy(camera.position);
     controls.update();
     renderer.render(scene, camera);
   })();
