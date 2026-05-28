@@ -7,46 +7,48 @@ const CAR_H   = 3.2;   // height
 const COUPLER = 1.2;   // gap between cars
 const NUM_CARS = 8;
 
-const LOOP_SECONDS  = 20;   // time for the train to traverse one curve end-to-end
-const MIN_CURVE_LEN = 200;  // ignore very short fragments (metres)
+const TRAIN_SPEED   = 15;   // m/s (~54 km/h)
+const MIN_CURVE_LEN = 200;  // skip very short fragments (metres)
 
 // ─── Materials ───────────────────────────────────────────────────────────────
-const matBody = new THREE.MeshLambertMaterial({ color: 0x1e9c52 });  // metro green
-const matFace = new THREE.MeshLambertMaterial({ color: 0x166e3a });  // darker ends
-const matWin  = new THREE.MeshLambertMaterial({ color: 0xb8dff7, transparent: true, opacity: 0.75 });
+const matBody  = new THREE.MeshLambertMaterial({ color: 0x1e9c52 });
+const matFace  = new THREE.MeshLambertMaterial({ color: 0x166e3a });
+const matWin   = new THREE.MeshLambertMaterial({ color: 0xb8dff7, transparent: true, opacity: 0.75 });
 const matWheel = new THREE.MeshLambertMaterial({ color: 0x444444 });
 
 // ─── Single car mesh ─────────────────────────────────────────────────────────
+// lookAt() makes the object's +Z axis face the target, so +Z = direction of travel.
+// All along-track dimensions use Z; cross-track dimensions use X.
 function buildCar() {
   const group = new THREE.Group();
 
   // Body
-  group.add(obj(new THREE.BoxGeometry(CAR_L, CAR_H, CAR_W), matBody));
+  group.add(obj(new THREE.BoxGeometry(CAR_W, CAR_H, CAR_L), matBody));
 
-  // Front / rear faces (slightly inset end-caps)
-  const capGeo = new THREE.BoxGeometry(0.3, CAR_H, CAR_W);
+  // End-caps (front = +Z, rear = -Z)
+  const capGeo = new THREE.BoxGeometry(CAR_W, CAR_H, 0.3);
   const front  = obj(capGeo, matFace);
   const rear   = obj(capGeo, matFace);
-  front.position.x =  CAR_L / 2 - 0.15;
-  rear.position.x  = -CAR_L / 2 + 0.15;
+  front.position.z =  CAR_L / 2 - 0.15;
+  rear.position.z  = -CAR_L / 2 + 0.15;
   group.add(front, rear);
 
-  // Window strip — two long strips on each side
-  const winH = CAR_H * 0.35;
-  const winL = CAR_L * 0.88;
-  const winGeo = new THREE.BoxGeometry(winL, winH, 0.05);
+  // Window strips on ±X sides
+  const winH   = CAR_H * 0.35;
+  const winL   = CAR_L * 0.88;
+  const winGeo = new THREE.BoxGeometry(0.05, winH, winL);
   const wL = obj(winGeo, matWin);
   const wR = obj(winGeo, matWin);
-  wL.position.set(0,  CAR_H * 0.12,  CAR_W / 2 + 0.01);
-  wR.position.set(0,  CAR_H * 0.12, -CAR_W / 2 - 0.01);
+  wL.position.set( CAR_W / 2 + 0.01, CAR_H * 0.12, 0);
+  wR.position.set(-CAR_W / 2 - 0.01, CAR_H * 0.12, 0);
   group.add(wL, wR);
 
-  // Bogies (wheel assemblies) — flat boxes under the car
-  const bogieGeo = new THREE.BoxGeometry(2.5, 0.4, CAR_W * 0.9);
+  // Bogies (wheel assemblies)
+  const bogieGeo = new THREE.BoxGeometry(CAR_W * 0.9, 0.4, 2.5);
   const b1 = obj(bogieGeo, matWheel);
   const b2 = obj(bogieGeo, matWheel);
-  b1.position.set( CAR_L * 0.32, -CAR_H / 2 - 0.2, 0);
-  b2.position.set(-CAR_L * 0.32, -CAR_H / 2 - 0.2, 0);
+  b1.position.set(0, -CAR_H / 2 - 0.2,  CAR_L * 0.32);
+  b2.position.set(0, -CAR_H / 2 - 0.2, -CAR_L * 0.32);
   group.add(b1, b2);
 
   return group;
@@ -56,33 +58,31 @@ function obj(geo, mat) {
   return new THREE.Mesh(geo, mat);
 }
 
-// ─── Train: 8 independent car meshes sharing a curve ────────────────────────
+// ─── Train: 8 cars sharing a stitched curve ───────────────────────────────────
 class Train {
   constructor(scene, curve, phaseOffset) {
     this.curve  = curve;
     this.length = curve.getLength();
-    this.t      = phaseOffset;  // 0-1 start position
+    this.t      = phaseOffset;
     this.cars   = [];
 
     for (let i = 0; i < NUM_CARS; i++) {
       const car = buildCar();
-      // Cars need a directional light to look non-flat
       scene.add(car);
       this.cars.push(car);
     }
   }
 
   update(dt) {
-    this.t = (this.t + dt / LOOP_SECONDS) % 1;
+    this.t = (this.t + dt * TRAIN_SPEED / this.length) % 1;
 
-    const carSpacing = (CAR_L + COUPLER) / this.length; // spacing as fraction of curve
+    const carSpacing = (CAR_L + COUPLER) / this.length;
 
     for (let i = 0; i < this.cars.length; i++) {
-      const ct = ((this.t - i * carSpacing) % 1 + 1) % 1;
+      const ct  = ((this.t - i * carSpacing) % 1 + 1) % 1;
       const pos = this.curve.getPointAt(ct);
-
-      // Tangent for orientation — sample slightly ahead to avoid numerical noise
-      const ct2 = (ct + 0.0002) % 1;
+      // Sample 1m ahead for orientation
+      const ct2   = (ct + Math.min(0.005, 1 / this.length)) % 1;
       const ahead = this.curve.getPointAt(ct2);
 
       this.cars[i].position.copy(pos);
@@ -95,14 +95,13 @@ class Train {
   }
 }
 
-// ─── TrainSystem — one Train per qualifying metro curve ───────────────────────
+// ─── TrainSystem ──────────────────────────────────────────────────────────────
 export class TrainSystem {
   constructor(scene, curves) {
     this.scene  = scene;
     this.trains = [];
     this._seen  = new WeakSet();
 
-    // Add a hemisphere light if the scene has none — needed for Lambert materials
     if (!scene._trainLightAdded) {
       scene.add(new THREE.HemisphereLight(0xffffff, 0x888888, 1.2));
       scene._trainLightAdded = true;
@@ -116,9 +115,7 @@ export class TrainSystem {
       if (this._seen.has(curve)) continue;
       this._seen.add(curve);
       if (curve.getLength() < MIN_CURVE_LEN) continue;
-      // Stagger starting positions so trains are spread out on each line
-      const phase = Math.random();
-      this.trains.push(new Train(this.scene, curve, phase));
+      this.trains.push(new Train(this.scene, curve, Math.random()));
     }
   }
 

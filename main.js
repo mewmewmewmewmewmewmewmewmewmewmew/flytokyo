@@ -455,6 +455,63 @@ function buildMetroTubes(rails, mat) {
   return { mesh, curves };
 }
 
+// ─── Curve stitching ─────────────────────────────────────────────────────────
+// Connect adjacent per-tile curve segments into long continuous paths so trains
+// travel through multiple tiles rather than looping within one segment.
+function stitchMetroCurves(curves) {
+  const THRESH = 40;      // metres — endpoints within this are joined
+  const used   = new Set();
+  const result = [];
+
+  for (let seed = 0; seed < curves.length; seed++) {
+    if (used.has(seed)) continue;
+    used.add(seed);
+    let pts = curves[seed].points.slice();
+
+    // Extend the tail
+    let grew = true;
+    while (grew) {
+      grew = false;
+      const tail = pts[pts.length - 1];
+      for (let j = 0; j < curves.length; j++) {
+        if (used.has(j)) continue;
+        const jp = curves[j].points;
+        if (tail.distanceTo(jp[0]) < THRESH) {
+          pts = pts.concat(jp.slice(1));
+          used.add(j); grew = true; break;
+        }
+        if (tail.distanceTo(jp[jp.length - 1]) < THRESH) {
+          pts = pts.concat(jp.slice().reverse().slice(1));
+          used.add(j); grew = true; break;
+        }
+      }
+    }
+
+    // Extend the head
+    grew = true;
+    while (grew) {
+      grew = false;
+      const head = pts[0];
+      for (let j = 0; j < curves.length; j++) {
+        if (used.has(j)) continue;
+        const jp = curves[j].points;
+        if (head.distanceTo(jp[jp.length - 1]) < THRESH) {
+          pts = jp.slice(0, -1).concat(pts);
+          used.add(j); grew = true; break;
+        }
+        if (head.distanceTo(jp[0]) < THRESH) {
+          pts = jp.slice().reverse().slice(0, -1).concat(pts);
+          used.add(j); grew = true; break;
+        }
+      }
+    }
+
+    result.push(new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5));
+  }
+
+  return result;
+}
+
 // ─── Collision ───────────────────────────────────────────────────────────────
 
 function pointInPolygon(px, pz, ring) {
@@ -486,6 +543,7 @@ class TileManager {
     this.footprints = [];   // { ring, minX, maxX, minZ, maxZ }
     this.tilesTotal   = 0;
     this.tilesLoaded  = 0;
+    this._retries     = new Map(); // k → retry count
     this.metroCurves  = [];   // CatmullRomCurve3 paths collected as tiles load
   }
 
@@ -570,6 +628,17 @@ class TileManager {
     } catch (err) {
       console.warn(`Tile ${tx},${ty}:`, err.message);
       this.tiles.set(k, 'failed');
+      // Retry up to 3× with exponential back-off (2 s, 4 s, 8 s)
+      const attempt = this._retries.get(k) || 0;
+      if (attempt < 3) {
+        this._retries.set(k, attempt + 1);
+        setTimeout(() => {
+          this.tiles.delete(k);
+          this.request(tx, ty);
+          if (!this.busy) this._process();
+        }, 2000 * (1 << attempt));
+        return; // don't count as done yet — retry is in flight
+      }
     }
     this.tilesLoaded++;
   }
@@ -824,19 +893,28 @@ async function main() {
   });
 
   const pbar    = document.getElementById('pbar');
+  const loadMsg2 = document.getElementById('load-msg');
   const loading = document.getElementById('loading');
+  let shown = false;
   const poll = setInterval(() => {
+    if (shown) return;
     const pct = Math.min(1, manager.tilesLoaded / TILES_CORE);
     pbar.style.width = `${pct * 100}%`;
-    if (manager.tilesLoaded >= TILES_CORE) {
+
+    if (manager.hasData) {
+      // We have real buildings — show the scene
+      shown = true;
       clearInterval(poll);
       loading.classList.add('fade-out');
       setTimeout(() => loading.remove(), 800);
-      // Spawn trains on metro curves collected so far; more may arrive as
-      // outer tiles load but the core area has enough lines to start with
       if (manager.metroCurves.length) {
-        trainRef.system = new TrainSystem(scene, manager.metroCurves);
+        const stitched = stitchMetroCurves(manager.metroCurves);
+        trainRef.system = new TrainSystem(scene, stitched);
       }
+    } else if (manager.tilesLoaded >= TILES_CORE) {
+      // Core tiles all finished (possibly with errors) but no data yet —
+      // retries are in flight; let user know
+      loadMsg2.textContent = 'Retrying…';
     }
   }, 200);
 }
