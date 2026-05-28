@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
+import { TrainSystem } from './train.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -166,7 +167,7 @@ function streetColor(type) {
 function railColor(type) {
   switch (type) {
     case 'rail':       return new THREE.Color(0x80b830);
-    case 'subway':     return new THREE.Color(0x7744cc);
+    case 'subway':     return new THREE.Color(0x22aa55);
     case 'light_rail': return new THREE.Color(0x00aacc);
     case 'tram':       return new THREE.Color(0xcc8800);
     case 'monorail':   return new THREE.Color(0x009988);
@@ -418,8 +419,10 @@ function buildRailLines(rails, yLevel, mat) {
   return new THREE.LineSegments(geo, mat);
 }
 
+// Returns { mesh, curves } — curves are CatmullRomCurve3 paths for train animation
 function buildMetroTubes(rails, mat) {
-  const geoms = [];
+  const geoms  = [];
+  const curves = [];
 
   for (const { coords, type } of rails) {
     if (coords.length < 2) continue;
@@ -431,6 +434,7 @@ function buildMetroTubes(rails, mat) {
     if (pts.length < 2) continue;
 
     const curve = new THREE.CatmullRomCurve3(pts);
+    curves.push(curve);
     const geo   = new THREE.TubeGeometry(curve, Math.max(pts.length * 2, 4), 2.5, 8, false);
 
     const c      = railColor(type);
@@ -448,7 +452,7 @@ function buildMetroTubes(rails, mat) {
   geoms.forEach(g => g.dispose());
   const mesh = new THREE.Mesh(merged, mat);
   mesh.renderOrder = 3;
-  return mesh;
+  return { mesh, curves };
 }
 
 // ─── Collision ───────────────────────────────────────────────────────────────
@@ -480,8 +484,9 @@ class TileManager {
     this.rails      = 0;
     this.busy       = false;
     this.footprints = [];   // { ring, minX, maxX, minZ, maxZ }
-    this.tilesTotal  = 0;
-    this.tilesLoaded = 0;
+    this.tilesTotal   = 0;
+    this.tilesLoaded  = 0;
+    this.metroCurves  = [];   // CatmullRomCurve3 paths collected as tiles load
   }
 
   key(tx, ty) { return `${tx}_${ty}`; }
@@ -552,7 +557,10 @@ class TileManager {
         const sl = buildRailLines(surface, 0.3, this.mats.rail);
         const tl = buildMetroTubes(tunnel, this.mats.metro);
         if (sl) { sl.renderOrder = 0; group.add(sl); }
-        if (tl) group.add(tl);
+        if (tl) {
+          group.add(tl.mesh);
+          for (const c of tl.curves) this.metroCurves.push(c);
+        }
         this.rails += rails.length;
       }
 
@@ -767,13 +775,20 @@ function initScene(collision) {
     renderer.setSize(innerWidth, innerHeight);
   });
 
+  const trainRef = { system: null };
+  let lastTime = performance.now();
+
   (function animate() {
     requestAnimationFrame(animate);
+    const now = performance.now();
+    const dt  = Math.min((now - lastTime) / 1000, 0.1);
+    lastTime  = now;
     controls.update();
+    if (trainRef.system) trainRef.system.update(dt);
     renderer.render(scene, camera);
   })();
 
-  return { scene, camera, controls };
+  return { scene, camera, controls, trainRef };
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -784,7 +799,7 @@ async function main() {
 
   // Mutable ref so controls (created first) can call collision once tiles arrive
   const collision = { fn: null };
-  const { scene, camera, controls } = initScene(collision);
+  const { scene, camera, controls, trainRef } = initScene(collision);
 
   loadMsg.textContent = 'Fetching Shibuya from OpenStreetMap…';
 
@@ -817,6 +832,11 @@ async function main() {
       clearInterval(poll);
       loading.classList.add('fade-out');
       setTimeout(() => loading.remove(), 800);
+      // Spawn trains on metro curves collected so far; more may arrive as
+      // outer tiles load but the core area has enough lines to start with
+      if (manager.metroCurves.length) {
+        trainRef.system = new TrainSystem(scene, manager.metroCurves);
+      }
     }
   }, 200);
 }
