@@ -8,7 +8,7 @@ const COUPLER = 1.2;   // gap between cars
 const NUM_CARS = 8;
 
 const TRAIN_SPEED   = 15;   // m/s (~54 km/h)
-const MIN_CURVE_LEN = 150;  // skip very short fragments (metres)
+const MIN_CURVE_LEN = 25;   // shorter than one car → skip
 
 // Pre-allocated rotation helper
 const _fwd = new THREE.Vector3(0, 0, 1);
@@ -76,7 +76,10 @@ class Train {
     this.t      = phaseOffset;
     this.cars   = [];
 
-    for (let i = 0; i < NUM_CARS; i++) {
+    // Scale car count so the train fits in the available path length
+    const carCount = Math.max(1, Math.min(NUM_CARS,
+      Math.floor(this.length / (CAR_L + COUPLER))));
+    for (let i = 0; i < carCount; i++) {
       const car = buildCar();
       scene.add(car);
       this.cars.push(car);

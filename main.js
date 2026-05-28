@@ -419,24 +419,30 @@ function buildRailLines(rails, yLevel, mat) {
   return new THREE.LineSegments(geo, mat);
 }
 
-// Returns { mesh, curves } — curves are CatmullRomCurve3 paths for train animation
+// Returns { mesh, trainCurves }
+// trainCurves are at y=1.9 (street level) so trains are visible from ground.
+// The tube mesh stays at METRO_DEPTH for underground visuals.
 function buildMetroTubes(rails, mat) {
-  const geoms  = [];
-  const curves = [];
+  const geoms       = [];
+  const trainCurves = [];
 
   for (const { coords, type } of rails) {
     if (coords.length < 2) continue;
-    const pts = [];
+    const underPts = [];
+    const trainPts = [];
     for (const [x, z] of coords) {
-      const v = new THREE.Vector3(x, METRO_DEPTH, z);
-      if (!pts.length || v.distanceTo(pts[pts.length - 1]) > 0.1) pts.push(v);
+      const uv = new THREE.Vector3(x, METRO_DEPTH, z);
+      if (!underPts.length || uv.distanceTo(underPts[underPts.length - 1]) > 0.1) {
+        underPts.push(uv);
+        trainPts.push(new THREE.Vector3(x, 1.9, z));
+      }
     }
-    if (pts.length < 2) continue;
+    if (underPts.length < 2) continue;
 
-    const curve = new THREE.CatmullRomCurve3(pts);
-    curves.push(curve);
-    const geo   = new THREE.TubeGeometry(curve, Math.max(pts.length * 2, 4), 2.5, 8, false);
+    const curve = new THREE.CatmullRomCurve3(underPts);
+    trainCurves.push(new THREE.CatmullRomCurve3(trainPts, false, 'catmullrom', 0.5));
 
+    const geo   = new THREE.TubeGeometry(curve, Math.max(underPts.length * 2, 4), 2.5, 8, false);
     const c      = railColor(type);
     const count  = geo.getAttribute('position').count;
     const colBuf = new Float32Array(count * 3);
@@ -452,58 +458,53 @@ function buildMetroTubes(rails, mat) {
   geoms.forEach(g => g.dispose());
   const mesh = new THREE.Mesh(merged, mat);
   mesh.renderOrder = 3;
-  return { mesh, curves };
+  return { mesh, trainCurves };
 }
 
 // ─── Curve stitching ─────────────────────────────────────────────────────────
-// Connect adjacent per-tile curve segments into long continuous paths so trains
-// travel through multiple tiles rather than looping within one segment.
+// Greedy closest-endpoint matching builds long continuous paths from many
+// short per-tile segments. All input curves share y=1.9 so distance is XZ only.
 function stitchMetroCurves(curves) {
-  const THRESH = 40;      // metres — endpoints within this are joined
+  const THRESH = 60;   // metres — connect endpoints within this distance
   const used   = new Set();
   const result = [];
+
+  // Helper: find the best (closest) unvisited endpoint to a given anchor point.
+  // Returns { j, flip, dist } or null.
+  function bestNeighbour(anchor) {
+    let bestJ = -1, bestDist = THRESH, bestFlip = false;
+    for (let j = 0; j < curves.length; j++) {
+      if (used.has(j)) continue;
+      const jp = curves[j].points;
+      const d0 = anchor.distanceTo(jp[0]);
+      const d1 = anchor.distanceTo(jp[jp.length - 1]);
+      if (d0 < bestDist) { bestDist = d0; bestJ = j; bestFlip = false; }
+      if (d1 < bestDist) { bestDist = d1; bestJ = j; bestFlip = true; }
+    }
+    return bestJ >= 0 ? { j: bestJ, flip: bestFlip } : null;
+  }
 
   for (let seed = 0; seed < curves.length; seed++) {
     if (used.has(seed)) continue;
     used.add(seed);
     let pts = curves[seed].points.slice();
 
-    // Extend the tail
-    let grew = true;
-    while (grew) {
-      grew = false;
-      const tail = pts[pts.length - 1];
-      for (let j = 0; j < curves.length; j++) {
-        if (used.has(j)) continue;
-        const jp = curves[j].points;
-        if (tail.distanceTo(jp[0]) < THRESH) {
-          pts = pts.concat(jp.slice(1));
-          used.add(j); grew = true; break;
-        }
-        if (tail.distanceTo(jp[jp.length - 1]) < THRESH) {
-          pts = pts.concat(jp.slice().reverse().slice(1));
-          used.add(j); grew = true; break;
-        }
-      }
+    // Extend tail: keep attaching the closest curve whose endpoint is near
+    let match;
+    while ((match = bestNeighbour(pts[pts.length - 1]))) {
+      const jp = curves[match.j].points;
+      pts = pts.concat(match.flip ? jp.slice().reverse().slice(1) : jp.slice(1));
+      used.add(match.j);
     }
 
-    // Extend the head
-    grew = true;
-    while (grew) {
-      grew = false;
-      const head = pts[0];
-      for (let j = 0; j < curves.length; j++) {
-        if (used.has(j)) continue;
-        const jp = curves[j].points;
-        if (head.distanceTo(jp[jp.length - 1]) < THRESH) {
-          pts = jp.slice(0, -1).concat(pts);
-          used.add(j); grew = true; break;
-        }
-        if (head.distanceTo(jp[0]) < THRESH) {
-          pts = jp.slice().reverse().slice(0, -1).concat(pts);
-          used.add(j); grew = true; break;
-        }
-      }
+    // Extend head: prepend curves that connect to the start
+    while ((match = bestNeighbour(pts[0]))) {
+      const jp = curves[match.j].points;
+      // For head extension: match.flip means jp[0] was closest (need reversed prepend)
+      pts = match.flip
+        ? jp.slice(0, -1).concat(pts)                    // jp end near head → prepend jp
+        : jp.slice().reverse().slice(0, -1).concat(pts); // jp start near head → prepend reversed
+      used.add(match.j);
     }
 
     result.push(new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5));
@@ -617,10 +618,9 @@ class TileManager {
         if (sl) { sl.renderOrder = 0; group.add(sl); }
         if (tl) {
           group.add(tl.mesh);
-          for (const c of tl.curves) this.metroCurves.push(c);
+          for (const c of tl.trainCurves) this.metroCurves.push(c);
         }
-        // Surface trains: curve points at car-centre height above the track line
-        // (track at y=0.3, car half-height ≈1.6 → centre at y=1.9)
+        // Surface-rail trains at car-centre height (track y=0.3 + half-height 1.6 = 1.9)
         for (const { coords } of surface) {
           if (coords.length < 2) continue;
           const pts = [];
