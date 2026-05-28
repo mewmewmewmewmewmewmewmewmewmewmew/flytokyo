@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v6.2 -->
+  <meta charset="UTF-8"><!-- v6.3 -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Tokyo 3D</title>
   <style>
@@ -79,8 +79,49 @@
       transition: width 0.3s ease;
     }
 
-    #load-msg { font-size: 12px; opacity: 0.45; }
+    #load-msg { font-size: 12px; opacity: 0.45; min-height: 14px; }
     #load-version { font-size: 11px; opacity: 0.25; margin-top: 4px; }
+
+    #load-search {
+      display: flex;
+      gap: 8px;
+      width: 320px;
+      max-width: 80vw;
+    }
+    #place-input {
+      flex: 1;
+      padding: 9px 12px;
+      font-size: 13px;
+      font-family: inherit;
+      color: #1a1e30;
+      background: rgba(255,255,255,0.7);
+      border: 1px solid #b8bccc;
+      border-radius: 6px;
+      outline: none;
+    }
+    #place-input:focus { border-color: #4455aa; background: #fff; }
+    #place-go {
+      padding: 9px 18px;
+      font-size: 13px;
+      font-weight: 600;
+      font-family: inherit;
+      letter-spacing: 0.04em;
+      color: #fff;
+      background: #4455aa;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    #place-go:hover { background: #3a4795; }
+    #place-go:disabled { opacity: 0.5; cursor: default; }
+    #search-msg {
+      font-size: 11.5px;
+      opacity: 0.5;
+      text-align: center;
+      max-width: 320px;
+      line-height: 1.5;
+      min-height: 16px;
+    }
 
     #version {
       position: fixed;
@@ -95,10 +136,16 @@
 </head>
 <body>
   <div id="loading">
-    <div id="load-title">Tokyo · Shibuya</div>
-    <div id="pbar-bg"><div id="pbar"></div></div>
-    <div id="load-msg">Loading…</div>
-    <div id="load-version">v6.2</div>
+    <div id="load-title">Where to?</div>
+    <div id="load-search">
+      <input id="place-input" type="text" autocomplete="off" spellcheck="false"
+             placeholder="e.g. Shibuya Scramble Crossing" value="Shibuya Scramble Crossing">
+      <button id="place-go">Go</button>
+    </div>
+    <div id="search-msg">Enter a place to explore — “Big Ben London”, “Times Square”…</div>
+    <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
+    <div id="load-msg"></div>
+    <div id="load-version">v6.3</div>
   </div>
 
   <div id="overlay">
@@ -106,7 +153,7 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v6.2</div>
+  <div id="version">v6.3</div>
 
   <div id="hint">
     Click · Look &nbsp;|&nbsp; WASD · Move<br>

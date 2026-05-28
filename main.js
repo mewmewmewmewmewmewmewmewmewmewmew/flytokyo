@@ -5,11 +5,19 @@ import { TrainSystem } from './train.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-const CENTER_LAT = 35.6595;
-const CENTER_LON = 139.7004;
+// Center of the world (world origin maps here). Mutable: set from the geocoded
+// start location chosen on the loading screen before any geometry loads.
+let CENTER_LAT = 35.6595;
+let CENTER_LON = 139.7004;
 
 const M_PER_DEG_LAT = 111_320;
-const M_PER_DEG_LON = 111_320 * Math.cos(CENTER_LAT * Math.PI / 180);
+let   M_PER_DEG_LON = 111_320 * Math.cos(CENTER_LAT * Math.PI / 180);
+
+function setCenter(lat, lon) {
+  CENTER_LAT = lat;
+  CENTER_LON = lon;
+  M_PER_DEG_LON = 111_320 * Math.cos(CENTER_LAT * Math.PI / 180);
+}
 
 const TILE_LAT    = 0.005;
 const TILE_LON    = 0.006;
@@ -1016,8 +1024,13 @@ function createFPSControls(camera, domElement, collision) {
   let isGrounded = true;
 
   const keys = new Set();
-  window.addEventListener('keydown', e => { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); });
-  window.addEventListener('keyup',   e => keys.delete(e.code));
+  const typingInField = e => e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
+  window.addEventListener('keydown', e => {
+    if (typingInField(e)) return;            // don't capture keys while typing in the search box
+    keys.add(e.code);
+    if (e.code === 'Space') e.preventDefault();
+  });
+  window.addEventListener('keyup', e => keys.delete(e.code));
 
   const _fwd   = new THREE.Vector3();
   const _right = new THREE.Vector3();
@@ -1183,6 +1196,66 @@ function initScene(collision) {
   return { scene, camera, controls, trainRef, ground };
 }
 
+// ─── Geocoding (OpenStreetMap Nominatim — no API key) ─────────────────────────
+
+async function geocode(query) {
+  const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&q='
+            + encodeURIComponent(query);
+  const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  if (!Array.isArray(data) || !data.length) return null;
+  return {
+    lat:   parseFloat(data[0].lat),
+    lon:   parseFloat(data[0].lon),
+    label: data[0].display_name || query,
+  };
+}
+
+// Shows the search field on the loading screen and resolves once the user picks a
+// place that geocodes successfully. Returns { lat, lon, label, shortLabel }.
+function promptLocation() {
+  return new Promise(resolve => {
+    const input = document.getElementById('place-input');
+    const btn   = document.getElementById('place-go');
+    const msg   = document.getElementById('search-msg');
+    input.focus();
+    input.select();
+
+    async function go() {
+      const q = input.value.trim();
+      if (!q) return;
+      btn.disabled = input.disabled = true;
+      msg.textContent = 'Searching…';
+      try {
+        const hit = await geocode(q);
+        if (!hit) {
+          msg.textContent = `Couldn't find “${q}”. Try another place.`;
+          btn.disabled = input.disabled = false;
+          input.focus(); input.select();
+          return;
+        }
+        hit.shortLabel = (hit.label.split(',')[0] || q).trim();
+        resolve(hit);
+      } catch (err) {
+        msg.textContent = 'Search failed — check your connection and retry.';
+        btn.disabled = input.disabled = false;
+      }
+    }
+
+    btn.addEventListener('click', go);
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+  });
+}
+
+function setPlaceLabel(name) {
+  document.title = `${name} · 3D`;
+  const lt = document.getElementById('load-title');
+  const h1 = document.querySelector('#overlay h1');
+  if (lt) lt.textContent = name;
+  if (h1) h1.textContent = name;
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -1192,6 +1265,15 @@ async function main() {
   // Mutable ref so controls (created first) can call collision once tiles arrive
   const collision = { fn: null };
   const { scene, camera, controls, trainRef, ground } = initScene(collision);
+
+  // Ask where to start, geocode it, then center the world there.
+  const place = await promptLocation();
+  setCenter(place.lat, place.lon);
+  setPlaceLabel(place.shortLabel);
+
+  // Switch the loading screen from search mode to progress mode.
+  document.getElementById('load-search').style.display = 'none';
+  document.getElementById('pbar-bg').style.display = '';
 
   // Load terrain elevation tiles before OSM tiles so geometry is placed correctly.
   loadMsg.textContent = 'Loading terrain…';
@@ -1208,7 +1290,7 @@ async function main() {
     camera.position.y = terrain.sample(0, 0) + EYE_HEIGHT;
   }
 
-  loadMsg.textContent = 'Fetching Shibuya from OpenStreetMap…';
+  loadMsg.textContent = `Fetching ${place.shortLabel} from OpenStreetMap…`;
 
   const mats    = createMaterials();
   const manager = new TileManager(scene, mats, statusEl);
