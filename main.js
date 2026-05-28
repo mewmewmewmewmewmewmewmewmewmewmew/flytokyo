@@ -19,6 +19,9 @@ const FADE_NEAR   = 120;
 const FADE_FAR    = 900;
 const METRO_DEPTH = -7;
 const EYE_HEIGHT  = 1.6;
+// Sink the ground mesh this far below true terrain so its coarse triangles can
+// never poke up through the thin road/footpath decals laid just above terrain.
+const GROUND_SINK = 0.6;
 
 // ─── Coordinate helpers ──────────────────────────────────────────────────────
 
@@ -452,7 +455,8 @@ function buildSingleBuildingGeo(ring, topY, vertexH) {
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n;
     const [x0, z0] = ring[i], [x1, z1] = ring[j];
-    const h0 = vertexH[i], h1 = vertexH[j];
+    // Extend wall bottoms below the sunk ground so no gap shows at the base.
+    const h0 = vertexH[i] - (GROUND_SINK + 0.5), h1 = vertexH[j] - (GROUND_SINK + 0.5);
     const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz) || 1;
     const b = v;
     pos.push(x0, h0, z0,  x1, h1, z1,  x1, topY, z1,  x0, topY, z0);
@@ -491,7 +495,8 @@ function buildSurfaceMesh(buildings, mat) {
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
       const [x0, z0] = ring[i], [x1, z1] = ring[j];
-      const h0 = vertexH[i], h1 = vertexH[j];
+      // Extend wall bottoms below the sunk ground so no gap shows at the base.
+    const h0 = vertexH[i] - (GROUND_SINK + 0.5), h1 = vertexH[j] - (GROUND_SINK + 0.5);
       const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz) || 1;
       const b = v;
       pos.push(x0, h0, z0,  x1, h1, z1,  x1, topY, z1,  x0, topY, z0);
@@ -1176,7 +1181,7 @@ async function main() {
     // which maps local (x, y, z) → world (x, z, -y). To set world Y, set local Z.
     const pos = ground.geometry.attributes.position;
     for (let i = 0; i < pos.count; i++) {
-      pos.setZ(i, terrain.sample(pos.getX(i), -pos.getY(i)));
+      pos.setZ(i, terrain.sample(pos.getX(i), -pos.getY(i)) - GROUND_SINK);
     }
     pos.needsUpdate = true;
     ground.geometry.computeVertexNormals();
