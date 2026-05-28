@@ -133,20 +133,40 @@ async function loadTerrain() {
 }
 
 // Returns { topY, vertexH } for a building.
-// topY = flat roof elevation, measured as (highest terrain corner + height) so the
-// building always stands at least `height` above ground on every side and never
-// gets buried by the uphill slope. The shortest wall (at the highest corner) equals
-// the building's height.
+// topY = flat roof elevation, measured as (highest terrain under the footprint +
+// height) so the building always stands its full height above the ground on every
+// side and never gets buried by the slope. We sample not just the ring corners but
+// a grid across the whole footprint (plus a small margin), because most OSM
+// buildings are simple rectangles whose highest ground sits along an edge or in the
+// interior — not at a corner.
 // vertexH[i] = terrain elevation at ring vertex i — used for wall bottoms so each
-// wall face starts exactly at ground level, trimming the building to the terrain.
+// wall face starts at ground level, trimming the building to the terrain.
 function bldgTerrainInfo(ring, height) {
   const vertexH = [];
-  let maxH = -Infinity;
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
   for (const [x, z] of ring) {
     const h = terrain ? terrain.sample(x, z) : 0;
     vertexH.push(h);
-    if (h > maxH) maxH = h;
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
   }
+
+  let maxH = -Infinity;
+  for (const h of vertexH) if (h > maxH) maxH = h;
+
+  if (terrain) {
+    const M = 3; // metres of margin so the roof also clears ground right at the walls
+    const x0 = minX - M, x1 = maxX + M, z0 = minZ - M, z1 = maxZ + M;
+    const nx = Math.min(8, Math.max(1, Math.round((x1 - x0) / 6)));
+    const nz = Math.min(8, Math.max(1, Math.round((z1 - z0) / 6)));
+    for (let i = 0; i <= nx; i++) {
+      for (let j = 0; j <= nz; j++) {
+        const h = terrain.sample(x0 + (x1 - x0) * i / nx, z0 + (z1 - z0) * j / nz);
+        if (h > maxH) maxH = h;
+      }
+    }
+  }
+
   if (!isFinite(maxH)) maxH = 0;
   return { topY: maxH + height, vertexH };
 }
