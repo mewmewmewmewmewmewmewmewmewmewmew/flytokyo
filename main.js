@@ -563,9 +563,14 @@ class TileManager {
   }
 
   isInBuilding(x, z) {
+    const R = 0.5;   // player radius keeps camera away from wall faces
     for (const fp of this.footprints) {
-      if (x < fp.minX || x > fp.maxX || z < fp.minZ || z > fp.maxZ) continue;
-      if (pointInPolygon(x, z, fp.ring)) return true;
+      if (x + R < fp.minX || x - R > fp.maxX || z + R < fp.minZ || z - R > fp.maxZ) continue;
+      if (pointInPolygon(x,     z,     fp.ring)) return true;
+      if (pointInPolygon(x + R, z,     fp.ring)) return true;
+      if (pointInPolygon(x - R, z,     fp.ring)) return true;
+      if (pointInPolygon(x,     z + R, fp.ring)) return true;
+      if (pointInPolygon(x,     z - R, fp.ring)) return true;
     }
     return false;
   }
@@ -593,9 +598,14 @@ function createFPSControls(camera, domElement, collision) {
   const MOVE_SPEED   = 0.30;
   const STRAFE_SPEED = 0.15;
   const DAMP         = 0.85;
+  const EYE_HEIGHT   = 1.6;
+  const JUMP_VEL     = 0.20;
+  const GRAVITY      = -0.012;
+
+  let velocityY = 0;
 
   const keys = new Set();
-  window.addEventListener('keydown', e => keys.add(e.code));
+  window.addEventListener('keydown', e => { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); });
   window.addEventListener('keyup',   e => keys.delete(e.code));
 
   let isDragging = false;
@@ -677,13 +687,22 @@ function createFPSControls(camera, domElement, collision) {
         applyRotation();
       }
 
+      // Jump
+      const onGround = camera.position.y <= EYE_HEIGHT + 0.01;
+      if (keys.has('Space') && onGround) velocityY = JUMP_VEL;
+      velocityY += GRAVITY;
+      camera.position.y = Math.max(EYE_HEIGHT, camera.position.y + velocityY);
+      if (camera.position.y <= EYE_HEIGHT) velocityY = 0;
+
+      // WASD + Shift sprint
       if (keys.has('KeyW') || keys.has('KeyS') || keys.has('KeyA') || keys.has('KeyD')) {
         getHorizDirs();
+        const sprint = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 2 : 1;
         let moved = false;
-        if (keys.has('KeyW')) { tryMove( _fwd.x * MOVE_SPEED,    _fwd.z * MOVE_SPEED);   moved = true; }
-        if (keys.has('KeyS')) { tryMove(-_fwd.x * MOVE_SPEED,   -_fwd.z * MOVE_SPEED);   moved = true; }
-        if (keys.has('KeyD')) { tryMove( _right.x * STRAFE_SPEED, _right.z * STRAFE_SPEED); moved = true; }
-        if (keys.has('KeyA')) { tryMove(-_right.x * STRAFE_SPEED,-_right.z * STRAFE_SPEED); moved = true; }
+        if (keys.has('KeyW')) { tryMove( _fwd.x * MOVE_SPEED * sprint,    _fwd.z * MOVE_SPEED * sprint);    moved = true; }
+        if (keys.has('KeyS')) { tryMove(-_fwd.x * MOVE_SPEED * sprint,   -_fwd.z * MOVE_SPEED * sprint);    moved = true; }
+        if (keys.has('KeyD')) { tryMove( _right.x * STRAFE_SPEED * sprint, _right.z * STRAFE_SPEED * sprint); moved = true; }
+        if (keys.has('KeyA')) { tryMove(-_right.x * STRAFE_SPEED * sprint,-_right.z * STRAFE_SPEED * sprint); moved = true; }
         if (moved) dispatcher.dispatchEvent({ type: 'change' });
       }
     },
