@@ -856,6 +856,7 @@ class TileManager {
     this.tilesTotal   = 0;
     this.tilesLoaded  = 0;
     this._retries     = new Map(); // k → retry count
+    this.settled      = new Set(); // tile keys that reached a terminal state (done or gave up)
     this.metroCurves  = [];   // CatmullRomCurve3 paths collected as tiles load
   }
 
@@ -879,14 +880,25 @@ class TileManager {
   }
 
   async _process() {
+    if (this.busy) return;
     this.busy = true;
-    while (this.queue.length) {
-      const { tx, ty, k } = this.queue.shift();
-      this.tiles.set(k, 'loading');
-      await this._loadTile(tx, ty, k);
-      if (this.queue.length) await sleep(350);
-    }
+
+    // Two workers pull from the shared queue — fast enough to load the whole radius
+    // grid quickly while staying within Overpass's per-IP concurrency limit.
+    const worker = async () => {
+      while (this.queue.length) {
+        const { tx, ty, k } = this.queue.shift();
+        this.tiles.set(k, 'loading');
+        await this._loadTile(tx, ty, k);
+        if (this.queue.length) await sleep(150);
+      }
+    };
+    await Promise.all([worker(), worker()]);
+
     this.busy = false;
+    // A retry scheduled while we were draining may have queued work after the
+    // workers exited but before busy flipped — pick it up so nothing strands.
+    if (this.queue.length) this._process();
   }
 
   async _loadTile(tx, ty, k) {
@@ -969,6 +981,7 @@ class TileManager {
       }
     }
     this.tilesLoaded++;
+    this.settled.add(k); // done, or gave up after exhausting retries
   }
 
   isInBuilding(x, z, playerY, R = 0.8) {
@@ -1212,38 +1225,73 @@ async function geocode(query) {
   };
 }
 
+// Approximate current location from IP address (no permission prompt). Falls back
+// across two free, key-less, CORS-enabled services.
+async function ipLocate() {
+  try {
+    const r = await fetch('https://ipapi.co/json/');
+    if (r.ok) {
+      const d = await r.json();
+      if (d.latitude && d.longitude)
+        return { lat: +d.latitude, lon: +d.longitude, label: d.city || 'My location' };
+    }
+  } catch (_) { /* try fallback */ }
+  const r = await fetch('https://ipwho.is/');
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json();
+  if (!d.success || !d.latitude || !d.longitude) throw new Error('no location');
+  return { lat: +d.latitude, lon: +d.longitude, label: d.city || 'My location' };
+}
+
 // Shows the search field on the loading screen and resolves once the user picks a
 // place that geocodes successfully. Returns { lat, lon, label, shortLabel }.
 function promptLocation() {
   return new Promise(resolve => {
     const input = document.getElementById('place-input');
     const btn   = document.getElementById('place-go');
+    const meBtn = document.getElementById('place-me');
     const msg   = document.getElementById('search-msg');
     input.focus();
     input.select();
 
+    const lock   = () => { btn.disabled = input.disabled = meBtn.disabled = true; };
+    const unlock = () => { btn.disabled = input.disabled = meBtn.disabled = false; };
+
     async function go() {
       const q = input.value.trim();
       if (!q) return;
-      btn.disabled = input.disabled = true;
+      lock();
       msg.textContent = 'Searching…';
       try {
         const hit = await geocode(q);
         if (!hit) {
           msg.textContent = `Couldn't find “${q}”. Try another place.`;
-          btn.disabled = input.disabled = false;
-          input.focus(); input.select();
+          unlock(); input.focus(); input.select();
           return;
         }
         hit.shortLabel = (hit.label.split(',')[0] || q).trim();
         resolve(hit);
       } catch (err) {
         msg.textContent = 'Search failed — check your connection and retry.';
-        btn.disabled = input.disabled = false;
+        unlock();
+      }
+    }
+
+    async function useMyLocation() {
+      lock();
+      msg.textContent = 'Locating you…';
+      try {
+        const hit = await ipLocate();
+        hit.shortLabel = (hit.label.split(',')[0] || 'My location').trim();
+        resolve(hit);
+      } catch (err) {
+        msg.textContent = "Couldn't detect your location — enter a place instead.";
+        unlock();
       }
     }
 
     btn.addEventListener('click', go);
+    meBtn.addEventListener('click', useMyLocation);
     input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
   });
 }
@@ -1311,17 +1359,16 @@ async function main() {
   window.addEventListener('blur', () => setXray(false));
 
   manager.update(0, 0);
-  manager.tilesTotal = manager.queue.length;  // capture initial batch size
-  const TILES_CORE   = Math.min(9, manager.tilesTotal); // show until 3×3 core is done
-  // Track the center tile so we don't dismiss the loading screen until it's ready.
-  const _cg = worldToGeo(0, 0);
-  const _ct = latLonToTile(_cg.lat, _cg.lon);
-  const centerKey = manager.key(_ct.tx, _ct.ty);
+  // The full radius grid requested for the spawn — we won't start until every one
+  // of these tiles has settled (loaded, or given up after exhausting retries), so
+  // the player never spawns next to an unloaded hole.
+  const initialKeys = manager.queue.map(t => t.k);
+  manager.tilesTotal = initialKeys.length;
 
   let lastCheck = 0;
   controls.addEventListener('change', () => {
     const now = Date.now();
-    if (now - lastCheck > 2000) {
+    if (now - lastCheck > 1000) {
       lastCheck = now;
       manager.update(camera.position.x, camera.position.z);
     }
@@ -1333,13 +1380,13 @@ async function main() {
   let shown = false;
   const poll = setInterval(() => {
     if (shown) return;
-    const pct = Math.min(1, manager.tilesLoaded / TILES_CORE);
-    pbar.style.width = `${pct * 100}%`;
+    const done = initialKeys.reduce((n, k) => n + (manager.settled.has(k) ? 1 : 0), 0);
+    const total = initialKeys.length;
+    pbar.style.width = `${(done / total) * 100}%`;
+    loadMsg2.textContent = `Loading map… ${done} / ${total} tiles`;
 
-    const centerStatus = manager.tiles.get(centerKey);
-    const centerReady  = centerStatus === 'done' || centerStatus === 'failed';
-    if (manager.hasData && centerReady) {
-      // We have real buildings and the center tile is resolved — show the scene
+    if (done >= total) {
+      // Entire spawn grid is loaded — reveal the scene.
       shown = true;
       clearInterval(poll);
       loading.classList.add('fade-out');
@@ -1349,10 +1396,6 @@ async function main() {
         const cleaned  = stitched.flatMap(splitAtSharpTurns);
         trainRef.system = new TrainSystem(scene, cleaned);
       }
-    } else if (manager.tilesLoaded >= TILES_CORE) {
-      // Core tiles all finished (possibly with errors) but no data yet —
-      // retries are in flight; let user know
-      loadMsg2.textContent = 'Retrying…';
     }
   }, 200);
 }
