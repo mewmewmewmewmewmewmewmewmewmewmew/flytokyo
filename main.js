@@ -725,14 +725,13 @@ function initScene(collision) {
   camera.position.set(0, 1.6, 0);
 
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(8000, 8000, 64, 64),
+    new THREE.PlaneGeometry(8000, 8000, 1, 1),
     new THREE.ShaderMaterial({
       uniforms: {
         uGround: { value: new THREE.Color(0xd8dce8) },
+        uSky:    { value: new THREE.Color(0xf0f2f8) },
         uFar:    { value: FADE_FAR },
       },
-      transparent: true,
-      depthWrite: false,
       vertexShader: /* glsl */`
         varying vec2 vXZ;
         void main() {
@@ -743,13 +742,13 @@ function initScene(collision) {
       `,
       fragmentShader: /* glsl */`
         uniform vec3  uGround;
+        uniform vec3  uSky;
         uniform float uFar;
         varying vec2  vXZ;
         void main() {
-          float d     = length(vXZ - cameraPosition.xz);
-          float alpha = 1.0 - smoothstep(uFar * 0.5, uFar, d);
-          if (alpha < 0.01) discard;
-          gl_FragColor = vec4(uGround, alpha);
+          float d = length(vXZ - cameraPosition.xz);
+          float t = smoothstep(uFar * 0.5, uFar, d);
+          gl_FragColor = vec4(mix(uGround, uSky, t), 1.0);
         }
       `,
     }),
