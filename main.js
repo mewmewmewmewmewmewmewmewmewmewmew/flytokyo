@@ -395,18 +395,34 @@ function buildEdgesGeoMesh(buildings, mat) {
 }
 
 function buildStreetLines(streets, mat) {
-  const rPos = [], rCol = [];  // vehicle roads — render above buildings
-  const fPos = [], fCol = [];  // footpaths    — render with buildings
+  const rPos = [], rCol = [];  // vehicle roads
+  const fPos = [], fCol = [];  // footpaths
 
   for (const { coords, highway } of streets) {
-    const c    = streetColor(highway);
-    const foot = FOOT_TYPES.has(highway);
-    const pos  = foot ? fPos : rPos;
-    const col  = foot ? fCol : rCol;
+    const c     = streetColor(highway);
+    const foot  = FOOT_TYPES.has(highway);
+    const pos   = foot ? fPos : rPos;
+    const col   = foot ? fCol : rCol;
+    const halfW = foot ? 1.5 : 3.5;  // footpath 3m wide, road 7m wide
+
     for (let i = 0; i < coords.length - 1; i++) {
-      const [x0, z0] = coords[i], [x1, z1] = coords[i + 1];
-      pos.push(x0, 0.2, z0, x1, 0.2, z1);
-      col.push(c.r, c.g, c.b, c.r, c.g, c.b);
+      const [x0, z0] = coords[i];
+      const [x1, z1] = coords[i + 1];
+      const dx = x1 - x0, dz = z1 - z0;
+      const len = Math.hypot(dx, dz);
+      if (len < 0.01) continue;
+      const nx = -dz / len * halfW;
+      const nz =  dx / len * halfW;
+      // Quad as two CCW triangles, normal faces up so front-face visible from above
+      pos.push(
+        x0 - nx, 0.05, z0 - nz,
+        x0 + nx, 0.05, z0 + nz,
+        x1 - nx, 0.05, z1 - nz,
+        x1 + nx, 0.05, z1 + nz,
+        x1 - nx, 0.05, z1 - nz,
+        x0 + nx, 0.05, z0 + nz,
+      );
+      for (let v = 0; v < 6; v++) col.push(c.r, c.g, c.b);
     }
   }
 
@@ -416,12 +432,12 @@ function buildStreetLines(streets, mat) {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     geo.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
-    const lines = new THREE.LineSegments(geo, mat);
-    lines.renderOrder = ro;
-    result.push(lines);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.renderOrder = ro;
+    result.push(mesh);
   }
-  make(fPos, fCol, 1);  // footpaths: between ground and building surfaces
-  make(rPos, rCol, 3);  // roads: above buildings so buildings don't paint over them
+  make(fPos, fCol, 1);  // footpaths between ground and buildings
+  make(rPos, rCol, 3);  // roads above buildings
   return result;
 }
 
