@@ -68,7 +68,13 @@ async function fetchOSMBbox(bbox) {
       signal:  ctrl.signal,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
+    const data = await res.json();
+    // Overpass returns 200 OK even on server-side timeout/error — detect via remark
+    if (data.remark && /error|timeout/i.test(data.remark))
+      throw new Error(`Overpass: ${data.remark}`);
+    if (!Array.isArray(data.elements))
+      throw new Error('Overpass: malformed response (no elements array)');
+    return data;
   } finally {
     clearTimeout(timer);
   }
@@ -685,15 +691,16 @@ class TileManager {
     } catch (err) {
       console.warn(`Tile ${tx},${ty}:`, err.message);
       this.tiles.set(k, 'failed');
-      // Retry up to 3× with exponential back-off (2 s, 4 s, 8 s)
+      // Retry up to 5× with capped back-off: 3 s, 5 s, 8 s, 12 s, 12 s
       const attempt = this._retries.get(k) || 0;
       if (attempt < 5) {
         this._retries.set(k, attempt + 1);
+        const delay = [3000, 5000, 8000, 12000, 12000][attempt];
         setTimeout(() => {
           this.tiles.delete(k);
           this.request(tx, ty);
           if (!this.busy) this._process();
-        }, 2000 * (1 << attempt));
+        }, delay);
         return; // don't count as done yet — retry is in flight
       }
     }
