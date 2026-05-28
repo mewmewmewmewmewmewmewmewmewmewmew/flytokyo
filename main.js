@@ -404,35 +404,71 @@ function buildEdgesGeoMesh(buildings, mat) {
   return lines;
 }
 
+// Builds a ribbon with miter joints so adjacent segments share exact corner vertices,
+// eliminating the overlapping-rectangle artifact at road bends.
+function addRibbonToBuffers(coords, halfW, pos, col, color) {
+  const n = coords.length;
+  if (n < 2) return;
+
+  // Compute left/right edge vertices with miter joints at each node.
+  const lx = [], lz = [], rx = [], rz = [];
+
+  for (let i = 0; i < n; i++) {
+    const [cx, cz] = coords[i];
+    let mx, mz, scale = halfW;
+
+    if (i === 0) {
+      const dx = coords[1][0] - cx, dz = coords[1][1] - cz;
+      const len = Math.hypot(dx, dz) || 1;
+      mx = -dz / len; mz = dx / len;
+    } else if (i === n - 1) {
+      const dx = cx - coords[i-1][0], dz = cz - coords[i-1][1];
+      const len = Math.hypot(dx, dz) || 1;
+      mx = -dz / len; mz = dx / len;
+    } else {
+      const d1x = cx - coords[i-1][0], d1z = cz - coords[i-1][1];
+      const d2x = coords[i+1][0] - cx, d2z = coords[i+1][1] - cz;
+      const l1 = Math.hypot(d1x, d1z) || 1, l2 = Math.hypot(d2x, d2z) || 1;
+      const n1x = -d1z / l1, n1z = d1x / l1;
+      const n2x = -d2z / l2, n2z = d2x / l2;
+      let bx = n1x + n2x, bz = n1z + n2z;
+      const bl = Math.hypot(bx, bz);
+      if (bl < 0.001) { mx = n1x; mz = n1z; }
+      else {
+        bx /= bl; bz /= bl;
+        const dot = bx * n1x + bz * n1z;
+        // dot approaches 0 at U-turns — clamp miter to 4× half-width
+        scale = dot > 0.25 ? halfW / dot : halfW * 4;
+        mx = bx; mz = bz;
+      }
+    }
+
+    lx.push(cx - mx * scale); lz.push(cz - mz * scale);
+    rx.push(cx + mx * scale); rz.push(cz + mz * scale);
+  }
+
+  // Emit quads as two triangles per segment strip.
+  for (let i = 0; i < n - 1; i++) {
+    pos.push(
+      lx[i],   0.05, lz[i],
+      rx[i],   0.05, rz[i],
+      lx[i+1], 0.05, lz[i+1],
+      rx[i],   0.05, rz[i],
+      rx[i+1], 0.05, rz[i+1],
+      lx[i+1], 0.05, lz[i+1],
+    );
+    for (let v = 0; v < 6; v++) col.push(color.r, color.g, color.b);
+  }
+}
+
 function buildStreetLines(streets, roadMat, pathMat) {
-  const rPos = [], rCol = [];  // vehicle roads
-  const fPos = [], fCol = [];  // footpaths
+  const rPos = [], rCol = [];
+  const fPos = [], fCol = [];
 
   for (const { coords, highway } of streets) {
-    const c     = streetColor(highway);
-    const foot  = FOOT_TYPES.has(highway);
-    const pos   = foot ? fPos : rPos;
-    const col   = foot ? fCol : rCol;
-    const halfW = foot ? 1.5 : 3.5;
-
-    for (let i = 0; i < coords.length - 1; i++) {
-      const [x0, z0] = coords[i];
-      const [x1, z1] = coords[i + 1];
-      const dx = x1 - x0, dz = z1 - z0;
-      const len = Math.hypot(dx, dz);
-      if (len < 0.01) continue;
-      const nx = -dz / len * halfW;
-      const nz =  dx / len * halfW;
-      pos.push(
-        x0 - nx, 0.05, z0 - nz,
-        x0 + nx, 0.05, z0 + nz,
-        x1 - nx, 0.05, z1 - nz,
-        x1 + nx, 0.05, z1 + nz,
-        x1 - nx, 0.05, z1 - nz,
-        x0 + nx, 0.05, z0 + nz,
-      );
-      for (let v = 0; v < 6; v++) col.push(c.r, c.g, c.b);
-    }
+    const c    = streetColor(highway);
+    const foot = FOOT_TYPES.has(highway);
+    addRibbonToBuffers(coords, foot ? 1.5 : 3.5, foot ? fPos : rPos, foot ? fCol : rCol, c);
   }
 
   const result = [];
@@ -445,8 +481,8 @@ function buildStreetLines(streets, roadMat, pathMat) {
     mesh.renderOrder = ro;
     result.push(mesh);
   }
-  make(fPos, fCol, pathMat, 1);  // footpaths
-  make(rPos, rCol, roadMat, 3);  // roads
+  make(fPos, fCol, pathMat, 1);
+  make(rPos, rCol, roadMat, 3);
   return result;
 }
 
