@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v6.5 -->
+  <meta charset="UTF-8"><!-- v6.6 -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Tokyo 3D</title>
   <style>
@@ -80,7 +80,13 @@
     }
 
     #load-msg { font-size: 12px; opacity: 0.45; min-height: 14px; }
-    #load-version { font-size: 11px; opacity: 0.25; margin-top: 4px; }
+    #load-version {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      font-size: 11px;
+      opacity: 0.25;
+    }
 
     #load-search {
       display: flex;
@@ -158,7 +164,7 @@
     <div id="search-msg">Enter a place to explore — “Big Ben London”, “Times Square”…</div>
     <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
     <div id="load-msg"></div>
-    <div id="load-version">v6.5</div>
+    <div id="load-version">v6.6</div>
   </div>
 
   <div id="overlay">
@@ -166,7 +172,7 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v6.5</div>
+  <div id="version">v6.6</div>
 
   <div id="hint">
     Click · Look &nbsp;|&nbsp; WASD · Move<br>
