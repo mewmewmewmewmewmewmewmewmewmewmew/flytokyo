@@ -129,12 +129,20 @@ async function loadTerrain() {
   return new TerrainSampler(tiles, baseElev);
 }
 
-// Minimum terrain elevation under a building ring (world XZ), slightly below surface.
-function bldgBaseY(ring) {
-  if (!terrain) return 0;
+// Returns { topY, vertexH } for a building.
+// topY  = flat roof elevation (min terrain + height).
+// vertexH[i] = terrain elevation at ring vertex i — used for wall bottoms so each
+// wall face starts exactly at ground level, trimming the building to the terrain.
+function bldgTerrainInfo(ring, height) {
+  const vertexH = [];
   let minH = Infinity;
-  for (const [x, z] of ring) { const h = terrain.sample(x, z); if (h < minH) minH = h; }
-  return minH - 0.5;
+  for (const [x, z] of ring) {
+    const h = terrain ? terrain.sample(x, z) : 0;
+    vertexH.push(h);
+    if (h < minH) minH = h;
+  }
+  if (!isFinite(minH)) minH = 0;
+  return { topY: minH + height, vertexH };
 }
 
 // ─── Overpass ────────────────────────────────────────────────────────────────
@@ -399,16 +407,14 @@ function createMaterials() {
 
 // ─── Geometry builders ───────────────────────────────────────────────────────
 
-function buildSingleBuildingGeo(ring, height, baseY = 0) {
+// topY: flat roof elevation. vertexH[i]: terrain height at ring[i], used as wall base.
+function buildSingleBuildingGeo(ring, topY, vertexH) {
   const pos = [], norm = [], idx = [];
   let v = 0;
   const n = ring.length;
   const flat = ring.flatMap(([x, z]) => [x, z]);
   const tris = earcut(flat);
   if (!tris.length) return null;
-
-  const topY = baseY + height;
-  const botY = baseY - 1.5; // sink below grade to avoid terrain gaps
 
   const rb = v;
   for (const [x, z] of ring) { pos.push(x, topY, z); norm.push(0, 1, 0); v++; }
@@ -417,9 +423,10 @@ function buildSingleBuildingGeo(ring, height, baseY = 0) {
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n;
     const [x0, z0] = ring[i], [x1, z1] = ring[j];
+    const h0 = vertexH[i], h1 = vertexH[j];
     const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz) || 1;
     const b = v;
-    pos.push(x0, botY, z0,  x1, botY, z1,  x1, topY, z1,  x0, topY, z0);
+    pos.push(x0, h0, z0,  x1, h1, z1,  x1, topY, z1,  x0, topY, z0);
     for (let k = 0; k < 4; k++) norm.push(dz / len, 0, -dx / len);
     idx.push(b, b+1, b+2,  b, b+2, b+3);
     v += 4;
@@ -444,9 +451,7 @@ function buildSurfaceMesh(buildings, mat) {
     const tris = earcut(flat);
     if (!tris.length) continue;
 
-    const groundY = bldgBaseY(ring);
-    const topY = groundY + height;
-    const botY = groundY - 1.5;
+    const { topY, vertexH } = bldgTerrainInfo(ring, height);
 
     const rb = v;
     for (const [x, z] of ring) {
@@ -457,9 +462,10 @@ function buildSurfaceMesh(buildings, mat) {
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
       const [x0, z0] = ring[i], [x1, z1] = ring[j];
+      const h0 = vertexH[i], h1 = vertexH[j];
       const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz) || 1;
       const b = v;
-      pos.push(x0, botY, z0,  x1, botY, z1,  x1, topY, z1,  x0, topY, z0);
+      pos.push(x0, h0, z0,  x1, h1, z1,  x1, topY, z1,  x0, topY, z0);
       for (let k = 0; k < 4; k++) { norm.push(dz / len, 0, -dx / len); col.push(wc.r, wc.g, wc.b); }
       idx.push(b, b+1, b+2,  b, b+2, b+3);
       v += 4;
@@ -480,7 +486,8 @@ function buildEdgesGeoMesh(buildings, mat) {
   const allPos = [], allCol = [];
 
   for (const { ring, height } of buildings) {
-    const base = buildSingleBuildingGeo(ring, height, bldgBaseY(ring));
+    const { topY, vertexH } = bldgTerrainInfo(ring, height);
+    const base = buildSingleBuildingGeo(ring, topY, vertexH);
     if (!base) continue;
     const edgesGeo = new THREE.EdgesGeometry(base);
     const posAttr  = edgesGeo.getAttribute('position');
@@ -815,9 +822,10 @@ class TileManager {
       // Register footprints for collision
       for (const { ring, height } of bldgs) {
         const xs = ring.map(p => p[0]), zs = ring.map(p => p[1]);
+        const { topY: bTop } = bldgTerrainInfo(ring, height);
         this.footprints.push({
           ring, height,
-          groundY: bldgBaseY(ring),
+          topY: bTop,
           minX: Math.min(...xs), maxX: Math.max(...xs),
           minZ: Math.min(...zs), maxZ: Math.max(...zs),
         });
@@ -901,8 +909,7 @@ class TileManager {
     for (const fp of this.footprints) {
       if (x < fp.minX || x > fp.maxX || z < fp.minZ || z > fp.maxZ) continue;
       if (!pointInPolygon(x, z, fp.ring)) continue;
-      const topY = fp.groundY + fp.height;
-      if (topY > maxH) maxH = topY;
+      if (fp.topY > maxH) maxH = fp.topY;
     }
     return maxH;
   }
