@@ -264,7 +264,7 @@ function createMaterials() {
     surface: new THREE.ShaderMaterial({
       vertexShader: SURF_VERT, fragmentShader: SURF_FRAG,
       uniforms: fadeUniforms(), transparent: true, depthWrite: true,
-      side: THREE.FrontSide,
+      side: THREE.DoubleSide,
     }),
     wireframe: new THREE.ShaderMaterial({
       vertexShader: LINE_VERT, fragmentShader: WIRE_FRAG,
@@ -722,8 +722,34 @@ function initScene(collision) {
   camera.position.set(0, 1.6, 0);
 
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(8000, 8000),
-    new THREE.MeshBasicMaterial({ color: 0xd8dce8 }),
+    new THREE.PlaneGeometry(8000, 8000, 1, 1),
+    new THREE.ShaderMaterial({
+      uniforms: {
+        uGround: { value: new THREE.Color(0xd8dce8) },
+        uSky:    { value: new THREE.Color(0xf0f2f8) },
+        uNear:   { value: FADE_NEAR },
+        uFar:    { value: FADE_FAR },
+      },
+      vertexShader: /* glsl */`
+        varying float vDist;
+        void main() {
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          vDist = length(mv.xyz);
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: /* glsl */`
+        uniform vec3  uGround;
+        uniform vec3  uSky;
+        uniform float uNear;
+        uniform float uFar;
+        varying float vDist;
+        void main() {
+          float t = smoothstep(uNear, uFar, vDist);
+          gl_FragColor = vec4(mix(uGround, uSky, t), 1.0);
+        }
+      `,
+    }),
   );
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.05;
