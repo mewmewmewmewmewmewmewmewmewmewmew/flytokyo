@@ -480,6 +480,8 @@ class TileManager {
     this.rails      = 0;
     this.busy       = false;
     this.footprints = [];   // { ring, minX, maxX, minZ, maxZ }
+    this.tilesTotal  = 0;
+    this.tilesLoaded = 0;
   }
 
   key(tx, ty) { return `${tx}_${ty}`; }
@@ -561,6 +563,7 @@ class TileManager {
       console.warn(`Tile ${tx},${ty}:`, err.message);
       this.tiles.set(k, 'failed');
     }
+    this.tilesLoaded++;
   }
 
   isInBuilding(x, z, playerY, R = 0.8) {
@@ -731,24 +734,20 @@ function initScene(collision) {
       transparent: true,
       depthWrite: false,
       vertexShader: /* glsl */`
-        varying vec3 vWorldPos;
+        varying vec2 vXZ;
         void main() {
           vec4 world = modelMatrix * vec4(position, 1.0);
-          vWorldPos = world.xyz;
+          vXZ = world.xz;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
       fragmentShader: /* glsl */`
         uniform vec3  uGround;
         uniform float uFar;
-        varying vec3  vWorldPos;
+        varying vec2  vXZ;
         void main() {
-          vec3  ray       = vWorldPos - cameraPosition;
-          float horizDist = length(ray.xz);
-          float downAngle = max(0.0, -normalize(ray).y);
-          float distFade  = smoothstep(uFar * 0.4, uFar, horizDist);
-          float angleFade = 1.0 - smoothstep(0.002, 0.018, downAngle);
-          float alpha     = 1.0 - max(distFade, angleFade);
+          float d     = length(vXZ - cameraPosition.xz);
+          float alpha = 1.0 - smoothstep(uFar * 0.5, uFar, d);
           if (alpha < 0.01) discard;
           gl_FragColor = vec4(uGround, alpha);
         }
@@ -796,6 +795,8 @@ async function main() {
   collision.floorFn = (x, z)    => manager.getFloorHeight(x, z);
 
   manager.update(0, 0);
+  manager.tilesTotal = manager.queue.length;  // capture initial batch size
+  const TILES_CORE   = Math.min(9, manager.tilesTotal); // show until 3×3 core is done
 
   let lastCheck = 0;
   controls.addEventListener('change', () => {
@@ -806,10 +807,13 @@ async function main() {
     }
   });
 
+  const pbar    = document.getElementById('pbar');
+  const loading = document.getElementById('loading');
   const poll = setInterval(() => {
-    if (manager.hasData) {
+    const pct = Math.min(1, manager.tilesLoaded / TILES_CORE);
+    pbar.style.width = `${pct * 100}%`;
+    if (manager.tilesLoaded >= TILES_CORE) {
       clearInterval(poll);
-      const loading = document.getElementById('loading');
       loading.classList.add('fade-out');
       setTimeout(() => loading.remove(), 800);
     }
