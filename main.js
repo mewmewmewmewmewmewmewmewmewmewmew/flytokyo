@@ -179,6 +179,59 @@ function bldgTerrainInfo(ring, height) {
   return { topY: maxH + height, vertexH };
 }
 
+// ─── Overpass response cache (IndexedDB, 3-day TTL) ───────────────────────────
+
+const CACHE_DB = 'tokyo3d', CACHE_STORE = 'overpass';
+const CACHE_TTL = 3 * 24 * 60 * 60 * 1000;   // 3 days
+const QUERY_VERSION = 'v1';                  // bump to invalidate cache when the query changes
+
+let _dbPromise = null;
+function openCache() {
+  if (_dbPromise) return _dbPromise;
+  _dbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(CACHE_DB, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(CACHE_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  }).catch(() => null);   // private mode / blocked → run without a cache
+  return _dbPromise;
+}
+
+async function cacheGet(key) {
+  const db = await openCache();
+  if (!db) return null;
+  return new Promise(resolve => {
+    try {
+      const r = db.transaction(CACHE_STORE, 'readonly').objectStore(CACHE_STORE).get(key);
+      r.onsuccess = () => resolve(r.result || null);
+      r.onerror   = () => resolve(null);
+    } catch { resolve(null); }
+  });
+}
+
+async function cachePut(key, value) {
+  const db = await openCache();
+  if (!db) return;
+  try {
+    db.transaction(CACHE_STORE, 'readwrite').objectStore(CACHE_STORE).put(value, key);
+  } catch { /* ignore */ }
+}
+
+// Drop expired entries once at startup so storage doesn't grow unbounded.
+async function pruneCache() {
+  const db = await openCache();
+  if (!db) return;
+  try {
+    const cur = db.transaction(CACHE_STORE, 'readwrite').objectStore(CACHE_STORE).openCursor();
+    cur.onsuccess = e => {
+      const c = e.target.result;
+      if (!c) return;
+      if (!c.value || Date.now() - c.value.ts > CACHE_TTL) c.delete();
+      c.continue();
+    };
+  } catch { /* ignore */ }
+}
+
 // ─── Overpass ────────────────────────────────────────────────────────────────
 
 // Known to send permissive CORS headers from the browser. de is the reliable
@@ -191,6 +244,10 @@ let _opIdx = 0;
 
 async function fetchOSMBbox(bbox) {
   const { south, west, north, east } = bbox;
+  const cacheKey = `${QUERY_VERSION}:${south.toFixed(6)},${west.toFixed(6)},${north.toFixed(6)},${east.toFixed(6)}`;
+  const cached = await cacheGet(cacheKey);
+  if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.data;
+
   const query = [
     '[out:json][timeout:25];(',
     `way["building"](${south},${west},${north},${east});`,
@@ -225,6 +282,7 @@ async function fetchOSMBbox(bbox) {
       throw new Error(`Overpass: ${data.remark}`);
     if (!Array.isArray(data.elements))
       throw new Error('Overpass: malformed response (no elements array)');
+    cachePut(cacheKey, { ts: Date.now(), data });   // fire-and-forget; 3-day TTL
     return data;
   } finally {
     clearTimeout(timer);
@@ -1511,6 +1569,8 @@ function setPlaceLabel(name) {
 async function main() {
   const loadMsg  = document.getElementById('load-msg');
   const statusEl = document.getElementById('status');
+
+  pruneCache();   // drop expired Overpass entries (3-day TTL) in the background
 
   // Mutable ref so controls (created first) can call collision once tiles arrive
   const collision = { fn: null };
