@@ -248,9 +248,9 @@ const STREET_FRAG = /* glsl */`
   uniform float uNear;
   uniform float uFar;
   void main() {
-    float fade = 1.0 - smoothstep(uNear * 0.5, uFar, vDist);
+    float fade = 1.0 - smoothstep(uNear, uFar, vDist);
     if (fade < 0.01) discard;
-    gl_FragColor = vec4(vCol, 0.9 * fade);
+    gl_FragColor = vec4(vCol, fade);
   }
 `;
 
