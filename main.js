@@ -12,10 +12,10 @@ const M_PER_DEG_LON = 111_320 * Math.cos(CENTER_LAT * Math.PI / 180);
 
 const TILE_LAT    = 0.005;
 const TILE_LON    = 0.006;
-const LOAD_RADIUS = 1;
+const LOAD_RADIUS = 2;
 
-const FADE_NEAR   = 80;
-const FADE_FAR    = 500;
+const FADE_NEAR   = 120;
+const FADE_FAR    = 900;
 const METRO_DEPTH = -7;
 const EYE_HEIGHT  = 1.6;
 
