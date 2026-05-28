@@ -714,10 +714,10 @@ function createFPSControls(camera, domElement, collision) {
 // ─── Scene setup ─────────────────────────────────────────────────────────────
 
 function initScene(collision) {
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.setSize(innerWidth, innerHeight);
-  renderer.setClearColor(0xf0f2f8);
+  renderer.setClearColor(0x000000, 0); // transparent — sky comes from CSS gradient
   document.body.appendChild(renderer.domElement);
 
   const scene  = new THREE.Scene();
@@ -729,9 +729,10 @@ function initScene(collision) {
     new THREE.ShaderMaterial({
       uniforms: {
         uGround: { value: new THREE.Color(0xd8dce8) },
-        uSky:    { value: new THREE.Color(0xf0f2f8) },
         uFar:    { value: FADE_FAR },
       },
+      transparent: true,
+      depthWrite: false,
       vertexShader: /* glsl */`
         varying vec2 vXZ;
         void main() {
@@ -742,13 +743,13 @@ function initScene(collision) {
       `,
       fragmentShader: /* glsl */`
         uniform vec3  uGround;
-        uniform vec3  uSky;
         uniform float uFar;
         varying vec2  vXZ;
         void main() {
-          float d = length(vXZ - cameraPosition.xz);
-          float t = smoothstep(uFar * 0.5, uFar, d);
-          gl_FragColor = vec4(mix(uGround, uSky, t), 1.0);
+          float d     = length(vXZ - cameraPosition.xz);
+          float alpha = 1.0 - smoothstep(uFar * 0.5, uFar, d);
+          if (alpha < 0.01) discard;
+          gl_FragColor = vec4(uGround, alpha);
         }
       `,
     }),

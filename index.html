@@ -6,7 +6,8 @@
   <title>Tokyo 3D</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #f0f2f8; overflow: hidden; font-family: system-ui, sans-serif; color: #1a1e30; }
+    body { background: linear-gradient(to bottom, #f4f8ff 0%, #f0f2f8 42%, #e4e8f2 58%, #d8dce8 100%);
+           overflow: hidden; font-family: system-ui, sans-serif; color: #1a1e30; }
     canvas { display: block; }
 
     #overlay {
@@ -48,7 +49,7 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      background: #f0f2f8;
+      background: linear-gradient(to bottom, #f4f8ff 0%, #f0f2f8 42%, #e4e8f2 58%, #d8dce8 100%);
       gap: 16px;
       z-index: 10;
       transition: opacity 0.7s ease;
@@ -97,7 +98,7 @@
     <div id="load-title">Tokyo · Shibuya</div>
     <div id="pbar-bg"><div id="pbar"></div></div>
     <div id="load-msg">Loading…</div>
-    <div id="load-version">v2.7</div>
+    <div id="load-version">v2.8</div>
   </div>
 
   <div id="overlay">
@@ -105,7 +106,7 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v2.7</div>
+  <div id="version">v2.8</div>
 
   <div id="hint">
     Click · Look &nbsp;|&nbsp; WASD · Move<br>
