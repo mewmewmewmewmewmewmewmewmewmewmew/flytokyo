@@ -188,6 +188,12 @@ async function fetchOSMBbox(bbox) {
     `way["building"](${south},${west},${north},${east});`,
     `way["highway"](${south},${west},${north},${east});`,
     `way["railway"](${south},${west},${north},${east});`,
+    // Named POIs (points) for the F1 label overlay — only those with a name tag
+    // so the payload stays small.
+    `node["shop"]["name"](${south},${west},${north},${east});`,
+    `node["amenity"]["name"](${south},${west},${north},${east});`,
+    `node["tourism"]["name"](${south},${west},${north},${east});`,
+    `node["office"]["name"](${south},${west},${north},${east});`,
     ');out body;>;out skel qt;',
   ].join('');
   const ctrl  = new AbortController();
@@ -231,7 +237,23 @@ function parseBuildings(osm, nodeMap) {
       if (ax === bx && az === bz) ring.pop();
     }
     if (ring.length < 3) continue;
-    out.push({ id: el.id, ring, height: extractHeight(el.tags) });
+    const name = el.tags['name:en'] || el.tags.name || null;
+    out.push({ id: el.id, ring, height: extractHeight(el.tags), name });
+  }
+  return out;
+}
+
+// Named point POIs (shops, restaurants, offices, attractions) for the label overlay.
+const POI_KINDS = ['shop', 'amenity', 'tourism', 'office'];
+function parsePOIs(osm) {
+  const out = [];
+  for (const el of osm.elements) {
+    if (el.type !== 'node' || !el.tags) continue;
+    if (!POI_KINDS.some(k => el.tags[k])) continue;
+    const name = el.tags['name:en'] || el.tags.name;
+    if (!name) continue;
+    const [x, z] = project(el.lat, el.lon);
+    out.push({ id: 'n' + el.id, x, z, name });  // 'n' prefix: node ids share no space with way ids
   }
   return out;
 }
@@ -315,6 +337,49 @@ function railColor(type) {
     case 'monorail':   return new THREE.Color(0x009988);
     default:           return new THREE.Color(0x667799);
   }
+}
+
+// ─── Labels (building names + POIs) ───────────────────────────────────────────
+
+const truncateLabel = s => (s.length > 28 ? s.slice(0, 27) + '…' : s);
+
+function roundRectPath(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y,     x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x,     y + h, r);
+  ctx.arcTo(x,     y + h, x,     y,     r);
+  ctx.arcTo(x,     y,     x + w, y,     r);
+  ctx.closePath();
+}
+
+// Billboarded text label rendered to a canvas texture. depthTest stays on so labels
+// are correctly occluded by buildings in front of them.
+function makeLabelSprite(text, kind) {
+  const fontSize = 44, padX = 14, padY = 9;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const font = `600 ${fontSize}px system-ui, sans-serif`;
+  ctx.font = font;
+  const textW = ctx.measureText(text).width;
+  canvas.width  = Math.ceil(textW + padX * 2);
+  canvas.height = Math.ceil(fontSize + padY * 2);
+  ctx.font = font;                 // reset — resizing the canvas clears context state
+  ctx.textBaseline = 'middle';
+  roundRectPath(ctx, 0, 0, canvas.width, canvas.height, 14);
+  ctx.fillStyle = kind === 'poi' ? 'rgba(40,70,140,0.85)' : 'rgba(20,24,40,0.80)';
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.fillText(text, padX, canvas.height / 2 + 1);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.minFilter  = THREE.LinearFilter;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
+  const worldH = kind === 'poi' ? 4 : 5.5;
+  spr.scale.set(worldH * canvas.width / canvas.height, worldH, 1);
+  spr.renderOrder = 5;
+  return spr;
 }
 
 // ─── Shaders ─────────────────────────────────────────────────────────────────
@@ -858,6 +923,9 @@ class TileManager {
     this._retries     = new Map(); // k → retry count
     this.settled      = new Set(); // tile keys that reached a terminal state (done or gave up)
     this.metroCurves  = [];   // CatmullRomCurve3 paths collected as tiles load
+    this.labelGroup   = new THREE.Group();   // name/POI labels — toggled with F1
+    this.labelGroup.visible = false;         // off by default
+    scene.add(this.labelGroup);
   }
 
   key(tx, ty) { return `${tx}_${ty}`; }
@@ -912,9 +980,11 @@ class TileManager {
         .filter(s => { if (this.seenIds.has(s.id)) return false; this.seenIds.add(s.id); return true; });
       const rails = parseRailways(osm, nodeMap)
         .filter(r => { if (this.seenIds.has(r.id)) return false; this.seenIds.add(r.id); return true; });
+      const pois  = parsePOIs(osm)
+        .filter(p => { if (this.seenIds.has(p.id)) return false; this.seenIds.add(p.id); return true; });
 
-      // Register footprints for collision
-      for (const { ring, height } of bldgs) {
+      // Register footprints for collision; add a name label above named buildings.
+      for (const { ring, height, name } of bldgs) {
         const xs = ring.map(p => p[0]), zs = ring.map(p => p[1]);
         const { topY: bTop } = bldgTerrainInfo(ring, height);
         this.footprints.push({
@@ -923,6 +993,21 @@ class TileManager {
           minX: Math.min(...xs), maxX: Math.max(...xs),
           minZ: Math.min(...zs), maxZ: Math.max(...zs),
         });
+        if (name) {
+          let cx = 0, cz = 0;
+          for (const [x, z] of ring) { cx += x; cz += z; }
+          const spr = makeLabelSprite(truncateLabel(name), 'bldg');
+          spr.position.set(cx / ring.length, bTop + 3, cz / ring.length);
+          this.labelGroup.add(spr);
+        }
+      }
+
+      // POI labels (points) at head height above the ground.
+      for (const p of pois) {
+        const spr = makeLabelSprite(truncateLabel(p.name), 'poi');
+        const y = (terrain ? terrain.sample(p.x, p.z) : 0) + 4;
+        spr.position.set(p.x, y, p.z);
+        this.labelGroup.add(spr);
       }
 
       const group = new THREE.Group();
@@ -1193,7 +1278,9 @@ function initScene(collision) {
     renderer.setSize(innerWidth, innerHeight);
   });
 
-  const trainRef = { system: null };
+  const trainRef  = { system: null };
+  const labelsRef = { group: null };   // set once tiles load; toggled by F1
+  const LABEL_DIST = 250;               // only show labels within this many metres
   let lastTime = performance.now();
 
   (function animate() {
@@ -1203,10 +1290,15 @@ function initScene(collision) {
     lastTime  = now;
     controls.update();
     if (trainRef.system) trainRef.system.update(dt);
+    // Declutter: only keep labels near the camera visible.
+    if (labelsRef.group && labelsRef.group.visible) {
+      const cp = camera.position;
+      for (const s of labelsRef.group.children) s.visible = cp.distanceTo(s.position) < LABEL_DIST;
+    }
     renderer.render(scene, camera);
   })();
 
-  return { scene, camera, controls, trainRef, ground };
+  return { scene, camera, controls, trainRef, labelsRef, ground };
 }
 
 // ─── Geocoding (OpenStreetMap Nominatim — no API key) ─────────────────────────
@@ -1312,7 +1404,7 @@ async function main() {
 
   // Mutable ref so controls (created first) can call collision once tiles arrive
   const collision = { fn: null };
-  const { scene, camera, controls, trainRef, ground } = initScene(collision);
+  const { scene, camera, controls, trainRef, labelsRef, ground } = initScene(collision);
 
   // Ask where to start, geocode it, then center the world there.
   const place = await promptLocation();
@@ -1346,6 +1438,15 @@ async function main() {
   // Wire collision after manager exists
   collision.fn      = (x, z, y, R) => manager.isInBuilding(x, z, y, R);
   collision.floorFn = (x, z)    => manager.getFloorHeight(x, z);
+
+  // F1 toggles the name/POI label overlay (off by default).
+  labelsRef.group = manager.labelGroup;
+  window.addEventListener('keydown', e => {
+    if (e.code === 'F1') {
+      e.preventDefault();
+      manager.labelGroup.visible = !manager.labelGroup.visible;
+    }
+  });
 
   // X-ray view: solid by default; translucent only while right mouse button is held.
   function setXray(on) {
