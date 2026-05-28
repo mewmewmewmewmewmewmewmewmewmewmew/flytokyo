@@ -170,7 +170,7 @@ function wireColor(h) {
 const FOOT_TYPES = new Set(['footway','path','pedestrian','cycleway','bridleway']);
 
 function streetColor(type) {
-  if (FOOT_TYPES.has(type)) return new THREE.Color(0xd0c4a8);  // tan — footpaths/sidewalks
+  if (FOOT_TYPES.has(type)) return new THREE.Color(0xc0c0c0);  // light grey — footpaths/sidewalks
   return new THREE.Color(0x909090);                             // neutral grey — roads
 }
 
