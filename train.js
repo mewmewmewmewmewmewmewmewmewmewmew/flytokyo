@@ -30,6 +30,7 @@ const CAR_FRAG = /* glsl */`
   uniform float uEndFade;
   uniform float uNear;
   uniform float uFar;
+  uniform float uXray;
   varying float vDist;
   varying vec3  vNorm;
   void main() {
@@ -38,10 +39,13 @@ const CAR_FRAG = /* glsl */`
     if (uEndFade < 0.01) discard;
     vec3  L    = normalize(vec3(0.5, 1.0, 0.3));
     float diff = max(dot(normalize(vNorm), L), 0.0);
-    gl_FragColor = vec4(uColor * (0.55 + 0.45 * diff), uOpacity * uEndFade * fade);
+    // Solid (uXray=0): full opacity. X-ray (uXray=1): the dim per-car opacity.
+    float baseOp = mix(1.0, uOpacity, uXray);
+    gl_FragColor = vec4(uColor * (0.55 + 0.45 * diff), baseOp * uEndFade * fade);
   }
 `;
 
+// Materials default to SOLID mode (depth-tested, opaque); TrainSystem.setXray() flips them.
 function makeCarMat(colorHex, opacity) {
   return new THREE.ShaderMaterial({
     vertexShader:   CAR_VERT,
@@ -52,9 +56,10 @@ function makeCarMat(colorHex, opacity) {
       uEndFade: { value: 1.0 },
       uNear:    { value: 120 },
       uFar:     { value: 900 },
+      uXray:    { value: 0.0 },
     },
-    depthTest:   false,
-    depthWrite:  false,
+    depthTest:   true,
+    depthWrite:  true,
     transparent: true,
     side: THREE.DoubleSide,
   });
@@ -149,6 +154,7 @@ export class TrainSystem {
     this.scene  = scene;
     this.trains = [];
     this._seen  = new WeakSet();
+    this.xray   = false;   // false = solid (default), true = x-ray (right-click)
     this.addCurves(curves);
   }
 
@@ -160,9 +166,25 @@ export class TrainSystem {
       if (len < MIN_CURVE_LEN) continue;
       const n = Math.max(1, Math.floor(len / TRAIN_SPACING));
       for (let t = 0; t < n; t++) {
-        this.trains.push(new Train(this.scene, curve, t / n));
+        const train = new Train(this.scene, curve, t / n);
+        this._applyXray(train);
+        this.trains.push(train);
       }
     }
+  }
+
+  _applyXray(train) {
+    const x = this.xray ? 1.0 : 0.0;
+    for (const mat of train.mats) {
+      mat.uniforms.uXray.value = x;
+      mat.depthTest  = !this.xray;
+      mat.depthWrite = !this.xray;
+    }
+  }
+
+  setXray(on) {
+    this.xray = on;
+    for (const train of this.trains) this._applyXray(train);
   }
 
   update(dt) {

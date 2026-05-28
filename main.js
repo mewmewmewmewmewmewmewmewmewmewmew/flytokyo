@@ -305,12 +305,13 @@ const SURF_FRAG = /* glsl */`
   varying vec3  vNorm;
   uniform float uNear;
   uniform float uFar;
+  uniform float uXray;
   void main() {
     vec3  L     = normalize(vec3(0.5, 1.0, 0.3));
     float diff  = max(dot(normalize(vNorm), L), 0.0);
     float light = 0.60 + 0.40 * diff;
     float fade  = 1.0 - smoothstep(uNear, uFar, vDist);
-    float a     = 0.80 * fade;
+    float a     = mix(1.0, 0.80, uXray) * fade;
     if (a < 0.01) discard;
     gl_FragColor = vec4(vCol * light, a);
   }
@@ -345,10 +346,11 @@ const STREET_FRAG = /* glsl */`
   varying float vDist;
   uniform float uNear;
   uniform float uFar;
+  uniform float uXray;
   void main() {
     float fade = 1.0 - smoothstep(uNear, uFar, vDist);
     if (fade < 0.01) discard;
-    gl_FragColor = vec4(vCol, 0.5 * fade);
+    gl_FragColor = vec4(vCol, mix(1.0, 0.5, uXray) * fade);
   }
 `;
 
@@ -365,14 +367,16 @@ const METRO_FRAG = /* glsl */`
 `;
 
 function fadeUniforms() {
-  return { uNear: { value: FADE_NEAR }, uFar: { value: FADE_FAR } };
+  // uXray: 0 = solid (default), 1 = translucent x-ray (right-click held)
+  return { uNear: { value: FADE_NEAR }, uFar: { value: FADE_FAR }, uXray: { value: 0.0 } };
 }
 
 function createMaterials() {
   return {
+    // depthWrite/depthTest default to SOLID mode; setXray() flips them.
     surface: new THREE.ShaderMaterial({
       vertexShader: SURF_VERT, fragmentShader: SURF_FRAG,
-      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: true,
       side: THREE.DoubleSide,
     }),
     wireframe: new THREE.ShaderMaterial({
@@ -381,28 +385,41 @@ function createMaterials() {
     }),
     street: new THREE.ShaderMaterial({
       vertexShader: LINE_VERT, fragmentShader: STREET_FRAG,
-      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: true,
       stencilWrite: true, stencilRef: 2,
       stencilFunc: THREE.NotEqualStencilFunc,
       stencilFail: THREE.KeepStencilOp, stencilZFail: THREE.KeepStencilOp, stencilZPass: THREE.ReplaceStencilOp,
     }),
     footpath: new THREE.ShaderMaterial({
       vertexShader: LINE_VERT, fragmentShader: STREET_FRAG,
-      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: true,
       stencilWrite: true, stencilRef: 1,
       stencilFunc: THREE.NotEqualStencilFunc,
       stencilFail: THREE.KeepStencilOp, stencilZFail: THREE.KeepStencilOp, stencilZPass: THREE.ReplaceStencilOp,
     }),
     rail: new THREE.ShaderMaterial({
       vertexShader: LINE_VERT, fragmentShader: STREET_FRAG,
-      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: true,
     }),
     metro: new THREE.ShaderMaterial({
       vertexShader: LINE_VERT, fragmentShader: METRO_FRAG,
       uniforms: fadeUniforms(), transparent: true, depthWrite: false,
-      depthTest: false, side: THREE.DoubleSide,
+      depthTest: true, side: THREE.DoubleSide,
     }),
   };
+}
+
+// Switch all shared materials between SOLID (default) and X-RAY (right-click) modes.
+function setMaterialsXray(mats, ground, on) {
+  const x = on ? 1.0 : 0.0;
+  for (const key of ['surface', 'street', 'footpath', 'rail']) {
+    if (mats[key].uniforms.uXray) mats[key].uniforms.uXray.value = x;
+    // Solid: write depth so geometry occludes properly. X-ray: show through.
+    mats[key].depthWrite = !on;
+  }
+  // Metro tunnels: solid hides them underground (depthTest on); x-ray shows them through the ground.
+  mats.metro.depthTest = !on;
+  if (ground) ground.material.depthWrite = !on;
 }
 
 // ─── Geometry builders ───────────────────────────────────────────────────────
@@ -851,13 +868,14 @@ class TileManager {
           group.add(tl.mesh);
           for (const c of tl.curves) this.metroCurves.push(c);
         }
-        // Surface-rail trains at car-centre height (y=1.9) — always visible
-        // from ground level as a guaranteed fallback alongside tunnel trains.
+        // Surface-rail trains ride 1.9 m above the terrain so they stay visible
+        // on hills and in valleys (a fixed y would bury them once terrain tilts).
         for (const { coords } of surface) {
           if (coords.length < 2) continue;
           const pts = [];
           for (const [x, z] of coords) {
-            const v = new THREE.Vector3(x, 1.9, z);
+            const y = (terrain ? terrain.sample(x, z) : 0) + 1.9;
+            const v = new THREE.Vector3(x, y, z);
             if (!pts.length || v.distanceTo(pts[pts.length - 1]) > 0.1) pts.push(v);
           }
           if (pts.length >= 2)
@@ -1057,7 +1075,7 @@ function initScene(collision) {
         uFar:    { value: FADE_FAR },
       },
       transparent: true,
-      depthWrite: false,
+      depthWrite: true,   // solid default: ground occludes underground tunnels/trains
       vertexShader: /* glsl */`
         varying vec2 vXZ;
         void main() {
@@ -1141,6 +1159,17 @@ async function main() {
   // Wire collision after manager exists
   collision.fn      = (x, z, y, R) => manager.isInBuilding(x, z, y, R);
   collision.floorFn = (x, z)    => manager.getFloorHeight(x, z);
+
+  // X-ray view: solid by default; translucent only while right mouse button is held.
+  function setXray(on) {
+    setMaterialsXray(mats, ground, on);
+    if (trainRef.system) trainRef.system.setXray(on);
+  }
+  window.addEventListener('mousedown', e => { if (e.button === 2) setXray(true);  });
+  window.addEventListener('mouseup',   e => { if (e.button === 2) setXray(false); });
+  window.addEventListener('contextmenu', e => e.preventDefault());
+  // Reset on blur so a button released off-window doesn't leave us stuck in x-ray.
+  window.addEventListener('blur', () => setXray(false));
 
   manager.update(0, 0);
   manager.tilesTotal = manager.queue.length;  // capture initial batch size
