@@ -52,19 +52,26 @@ function tileToBBox(tx, ty) {
 async function fetchOSMBbox(bbox) {
   const { south, west, north, east } = bbox;
   const query = [
-    '[out:json][timeout:30];(',
+    '[out:json][timeout:40];(',
     `way["building"](${south},${west},${north},${east});`,
     `way["highway"](${south},${west},${north},${east});`,
     `way["railway"](${south},${west},${north},${east});`,
     ');out body;>;out skel qt;',
   ].join('');
-  const res = await fetch('https://overpass-api.de/api/interpreter', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'data=' + encodeURIComponent(query),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 45_000);
+  try {
+    const res = await fetch('https://overpass-api.de/api/interpreter', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body:    'data=' + encodeURIComponent(query),
+      signal:  ctrl.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ─── OSM parsing ─────────────────────────────────────────────────────────────
@@ -680,7 +687,7 @@ class TileManager {
       this.tiles.set(k, 'failed');
       // Retry up to 3× with exponential back-off (2 s, 4 s, 8 s)
       const attempt = this._retries.get(k) || 0;
-      if (attempt < 3) {
+      if (attempt < 5) {
         this._retries.set(k, attempt + 1);
         setTimeout(() => {
           this.tiles.delete(k);
@@ -932,6 +939,10 @@ async function main() {
   manager.update(0, 0);
   manager.tilesTotal = manager.queue.length;  // capture initial batch size
   const TILES_CORE   = Math.min(9, manager.tilesTotal); // show until 3×3 core is done
+  // Track the center tile so we don't dismiss the loading screen until it's ready.
+  const _cg = worldToGeo(0, 0);
+  const _ct = latLonToTile(_cg.lat, _cg.lon);
+  const centerKey = manager.key(_ct.tx, _ct.ty);
 
   let lastCheck = 0;
   controls.addEventListener('change', () => {
@@ -951,8 +962,10 @@ async function main() {
     const pct = Math.min(1, manager.tilesLoaded / TILES_CORE);
     pbar.style.width = `${pct * 100}%`;
 
-    if (manager.hasData) {
-      // We have real buildings — show the scene
+    const centerStatus = manager.tiles.get(centerKey);
+    const centerReady  = centerStatus === 'done' || centerStatus === 'failed';
+    if (manager.hasData && centerReady) {
+      // We have real buildings and the center tile is resolved — show the scene
       shown = true;
       clearInterval(poll);
       loading.classList.add('fade-out');
