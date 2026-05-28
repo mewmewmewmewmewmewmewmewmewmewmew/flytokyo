@@ -17,6 +17,7 @@ const LOAD_RADIUS = 1;
 const FADE_NEAR   = 80;
 const FADE_FAR    = 500;
 const METRO_DEPTH = -7;
+const EYE_HEIGHT  = 1.6;
 
 // ─── Coordinate helpers ──────────────────────────────────────────────────────
 
@@ -524,10 +525,10 @@ class TileManager {
         .filter(r => { if (this.seenIds.has(r.id)) return false; this.seenIds.add(r.id); return true; });
 
       // Register footprints for collision
-      for (const { ring } of bldgs) {
+      for (const { ring, height } of bldgs) {
         const xs = ring.map(p => p[0]), zs = ring.map(p => p[1]);
         this.footprints.push({
-          ring,
+          ring, height,
           minX: Math.min(...xs), maxX: Math.max(...xs),
           minZ: Math.min(...zs), maxZ: Math.max(...zs),
         });
@@ -562,18 +563,28 @@ class TileManager {
     }
   }
 
-  isInBuilding(x, z) {
-    const R = 0.5;
+  isInBuilding(x, z, playerY) {
+    const R = 0.8;
     for (const fp of this.footprints) {
+      if (fp.height + EYE_HEIGHT <= playerY) continue; // player is above this roof
       if (x + R < fp.minX || x - R > fp.maxX || z + R < fp.minZ || z - R > fp.maxZ) continue;
       if (pointInPolygon(x, z, fp.ring)) return true;
-      // 8 points at 45° intervals so diagonal approaches are also caught
       for (let i = 0; i < 8; i++) {
         const a = i * Math.PI / 4;
         if (pointInPolygon(x + R * Math.cos(a), z + R * Math.sin(a), fp.ring)) return true;
       }
     }
     return false;
+  }
+
+  // Returns the height of the tallest building footprint under (x, z), or 0 for open ground
+  getFloorHeight(x, z) {
+    let maxH = 0;
+    for (const fp of this.footprints) {
+      if (x < fp.minX || x > fp.maxX || z < fp.minZ || z > fp.maxZ) continue;
+      if (fp.height > maxH && pointInPolygon(x, z, fp.ring)) maxH = fp.height;
+    }
+    return maxH;
   }
 
   _updateStatus() {
@@ -599,7 +610,6 @@ function createFPSControls(camera, domElement, collision) {
   const MOVE_SPEED   = 0.30;
   const STRAFE_SPEED = 0.15;
   const DAMP         = 0.85;
-  const EYE_HEIGHT   = 1.6;
   const JUMP_VEL     = 0.20;
   const GRAVITY      = -0.012;
 
@@ -625,16 +635,17 @@ function createFPSControls(camera, domElement, collision) {
     _right.set(-_fwd.z, 0, _fwd.x);
   }
 
-  // Try full move, then axis-only fallbacks for wall sliding
+  // Try full move, then axis-only fallbacks for wall sliding.
+  // Passes player Y so buildings shorter than the player are passable.
   function tryMove(dx, dz) {
-    const cx = camera.position.x, cz = camera.position.z;
-    const blocked = collision.fn && collision.fn(cx + dx, cz + dz);
+    const cx = camera.position.x, cz = camera.position.z, cy = camera.position.y;
+    const blocked = collision.fn && collision.fn(cx + dx, cz + dz, cy);
     if (!blocked) {
       camera.position.x += dx;
       camera.position.z += dz;
     } else {
-      if (!collision.fn(cx + dx, cz))       camera.position.x += dx;
-      else if (!collision.fn(cx, cz + dz))  camera.position.z += dz;
+      if (!collision.fn(cx + dx, cz, cy))       camera.position.x += dx;
+      else if (!collision.fn(cx, cz + dz, cy))  camera.position.z += dz;
     }
   }
 
@@ -688,15 +699,16 @@ function createFPSControls(camera, domElement, collision) {
         applyRotation();
       }
 
-      // Space held = ascend; released above ground = fall under gravity
+      // Space held = ascend; released above floor = fall under gravity; land on roofs
+      const floorY = (collision.floorFn ? collision.floorFn(camera.position.x, camera.position.z) : 0) + EYE_HEIGHT;
       if (keys.has('Space')) {
         velocityY = JUMP_VEL;
-      } else if (camera.position.y > EYE_HEIGHT) {
+      } else if (camera.position.y > floorY) {
         velocityY += GRAVITY;
       } else {
         velocityY = 0;
       }
-      camera.position.y = Math.max(EYE_HEIGHT, camera.position.y + velocityY);
+      camera.position.y = Math.max(floorY, camera.position.y + velocityY);
 
       // WASD + Shift sprint
       if (keys.has('KeyW') || keys.has('KeyS') || keys.has('KeyA') || keys.has('KeyD')) {
@@ -725,7 +737,7 @@ function initScene(collision) {
   document.body.appendChild(renderer.domElement);
 
   const scene  = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(90, innerWidth / innerHeight, 0.5, 2000);
+  const camera = new THREE.PerspectiveCamera(90, innerWidth / innerHeight, 0.15, 2000);
   camera.position.set(0, 1.6, 0);
 
   const ground = new THREE.Mesh(
@@ -769,7 +781,8 @@ async function main() {
   const manager = new TileManager(scene, mats, statusEl);
 
   // Wire collision after manager exists
-  collision.fn = (x, z) => manager.isInBuilding(x, z);
+  collision.fn      = (x, z, y) => manager.isInBuilding(x, z, y);
+  collision.floorFn = (x, z)    => manager.getFloorHeight(x, z);
 
   manager.update(0, 0);
 
