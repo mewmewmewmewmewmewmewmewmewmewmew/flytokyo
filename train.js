@@ -67,7 +67,7 @@ function smoothstepJS(e0, e1, x) {
 
 // ─── Car geometry — fresh materials per call so each Train owns its uniforms ──
 function buildCar(isUnderground) {
-  const op = isUnderground ? 0.10 : 0.20;
+  const op = isUnderground ? 0.05 : 0.10;
   const mats = [
     makeCarMat(0x1e9c52, op),   // body
     makeCarMat(0xd0e8cc, op),   // roof
