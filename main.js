@@ -130,19 +130,22 @@ async function loadTerrain() {
 }
 
 // Returns { topY, vertexH } for a building.
-// topY  = flat roof elevation (min terrain + height).
+// topY = flat roof elevation, measured as (highest terrain corner + height) so the
+// building always stands at least `height` above ground on every side and never
+// gets buried by the uphill slope. The shortest wall (at the highest corner) equals
+// the building's height.
 // vertexH[i] = terrain elevation at ring vertex i — used for wall bottoms so each
 // wall face starts exactly at ground level, trimming the building to the terrain.
 function bldgTerrainInfo(ring, height) {
   const vertexH = [];
-  let minH = Infinity;
+  let maxH = -Infinity;
   for (const [x, z] of ring) {
     const h = terrain ? terrain.sample(x, z) : 0;
     vertexH.push(h);
-    if (h < minH) minH = h;
+    if (h > maxH) maxH = h;
   }
-  if (!isFinite(minH)) minH = 0;
-  return { topY: minH + height, vertexH };
+  if (!isFinite(maxH)) maxH = 0;
+  return { topY: maxH + height, vertexH };
 }
 
 // ─── Overpass ────────────────────────────────────────────────────────────────
