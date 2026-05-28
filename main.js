@@ -383,23 +383,30 @@ function createMaterials() {
       vertexShader: LINE_VERT, fragmentShader: WIRE_FRAG,
       uniforms: fadeUniforms(), transparent: true, depthWrite: false,
     }),
+    // Streets/footpaths/rails are flat decals: they never write depth (so they
+    // can't z-fight each other or the ground) and use a negative polygonOffset to
+    // win the depth test against the terrain mesh they sit on. Road-over-footpath
+    // ordering comes from renderOrder, not depth.
     street: new THREE.ShaderMaterial({
       vertexShader: LINE_VERT, fragmentShader: STREET_FRAG,
-      uniforms: fadeUniforms(), transparent: true, depthWrite: true,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8,
       stencilWrite: true, stencilRef: 2,
       stencilFunc: THREE.NotEqualStencilFunc,
       stencilFail: THREE.KeepStencilOp, stencilZFail: THREE.KeepStencilOp, stencilZPass: THREE.ReplaceStencilOp,
     }),
     footpath: new THREE.ShaderMaterial({
       vertexShader: LINE_VERT, fragmentShader: STREET_FRAG,
-      uniforms: fadeUniforms(), transparent: true, depthWrite: true,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
       stencilWrite: true, stencilRef: 1,
       stencilFunc: THREE.NotEqualStencilFunc,
       stencilFail: THREE.KeepStencilOp, stencilZFail: THREE.KeepStencilOp, stencilZPass: THREE.ReplaceStencilOp,
     }),
     rail: new THREE.ShaderMaterial({
       vertexShader: LINE_VERT, fragmentShader: STREET_FRAG,
-      uniforms: fadeUniforms(), transparent: true, depthWrite: true,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -6,
     }),
     metro: new THREE.ShaderMaterial({
       vertexShader: LINE_VERT, fragmentShader: METRO_FRAG,
@@ -414,12 +421,14 @@ function setMaterialsXray(mats, ground, on) {
   const x = on ? 1.0 : 0.0;
   for (const key of ['surface', 'street', 'footpath', 'rail']) {
     if (mats[key].uniforms.uXray) mats[key].uniforms.uXray.value = x;
-    // Solid: write depth so geometry occludes properly. X-ray: show through.
-    mats[key].depthWrite = !on;
   }
+  // Solid: buildings + ground write depth so they occlude properly.
+  // X-ray: drop those depth writes so everything shows through.
+  // (street/footpath/rail never write depth in either mode — they're decals.)
+  mats.surface.depthWrite = !on;
+  if (ground) ground.material.depthWrite = !on;
   // Metro tunnels: solid hides them underground (depthTest on); x-ray shows them through the ground.
   mats.metro.depthTest = !on;
-  if (ground) ground.material.depthWrite = !on;
 }
 
 // ─── Geometry builders ───────────────────────────────────────────────────────
@@ -525,9 +534,27 @@ function buildEdgesGeoMesh(buildings, mat) {
   return lines;
 }
 
+// Insert intermediate points so no segment is longer than maxLen, letting the
+// ribbon follow terrain bumps instead of chording straight across them.
+function densifyCoords(coords, maxLen) {
+  const out = [coords[0]];
+  for (let i = 1; i < coords.length; i++) {
+    const [x0, z0] = coords[i - 1], [x1, z1] = coords[i];
+    const d = Math.hypot(x1 - x0, z1 - z0);
+    const steps = Math.ceil(d / maxLen);
+    for (let s = 1; s <= steps; s++) {
+      const t = s / steps;
+      out.push([x0 + (x1 - x0) * t, z0 + (z1 - z0) * t]);
+    }
+  }
+  return out;
+}
+
 // Builds a ribbon with miter joints so adjacent segments share exact corner vertices,
-// eliminating the overlapping-rectangle artifact at road bends.
-function addRibbonToBuffers(coords, halfW, pos, col, color) {
+// eliminating the overlapping-rectangle artifact at road bends. yOff lifts the ribbon
+// above the terrain so it layers cleanly over the ground.
+function addRibbonToBuffers(rawCoords, halfW, pos, col, color, yOff) {
+  const coords = terrain ? densifyCoords(rawCoords, 10) : rawCoords;
   const n = coords.length;
   if (n < 2) return;
 
@@ -570,8 +597,8 @@ function addRibbonToBuffers(coords, halfW, pos, col, color) {
 
   // Emit quads as two triangles per segment strip.
   for (let i = 0; i < n - 1; i++) {
-    const y0 = (terrain ? terrain.sample(coords[i][0],   coords[i][1])   : 0) + 0.05;
-    const y1 = (terrain ? terrain.sample(coords[i+1][0], coords[i+1][1]) : 0) + 0.05;
+    const y0 = (terrain ? terrain.sample(coords[i][0],   coords[i][1])   : 0) + yOff;
+    const y1 = (terrain ? terrain.sample(coords[i+1][0], coords[i+1][1]) : 0) + yOff;
     pos.push(
       lx[i],   y0, lz[i],
       rx[i],   y0, rz[i],
@@ -588,10 +615,12 @@ function buildStreetLines(streets, roadMat, pathMat) {
   const rPos = [], rCol = [];
   const fPos = [], fCol = [];
 
+  // Layer heights: footpaths just above ground, roads above footpaths.
   for (const { coords, highway } of streets) {
     const c    = streetColor(highway);
     const foot = FOOT_TYPES.has(highway);
-    addRibbonToBuffers(coords, foot ? 1.5 : 3.5, foot ? fPos : rPos, foot ? fCol : rCol, c);
+    addRibbonToBuffers(coords, foot ? 1.5 : 3.5,
+      foot ? fPos : rPos, foot ? fCol : rCol, c, foot ? 0.10 : 0.20);
   }
 
   const result = [];
