@@ -1,16 +1,18 @@
 import * as THREE from 'three';
 
 // ─── Car dimensions (metres) ──────────────────────────────────────────────────
-const CAR_L   = 20;
-const CAR_W   = 2.7;
-const CAR_H   = 3.2;
-const COUPLER = 1.2;
+const CAR_L    = 20;
+const CAR_W    = 2.7;
+const CAR_H    = 3.2;
+const COUPLER  = 1.2;
 const NUM_CARS = 8;
 
 const TRAIN_SPEED   = 15;   // m/s
 const MIN_CURVE_LEN = 25;   // metres
+const TRAIN_LEN     = NUM_CARS * (CAR_L + COUPLER);  // ~170 m
+const TRAIN_SPACING = TRAIN_LEN * 4;                  // 1 train + 3 gap ≈ 678 m
 
-// ─── Car shader ──────────────────────────────────────────────────────────────
+// ─── Car shader ───────────────────────────────────────────────────────────────
 const CAR_VERT = /* glsl */`
   varying float vDist;
   varying vec3  vNorm;
@@ -25,6 +27,7 @@ const CAR_VERT = /* glsl */`
 const CAR_FRAG = /* glsl */`
   uniform vec3  uColor;
   uniform float uOpacity;
+  uniform float uEndFade;
   uniform float uNear;
   uniform float uFar;
   varying float vDist;
@@ -32,9 +35,10 @@ const CAR_FRAG = /* glsl */`
   void main() {
     float fade = 1.0 - smoothstep(uNear, uFar, vDist);
     if (fade < 0.01) discard;
+    if (uEndFade < 0.01) discard;
     vec3  L    = normalize(vec3(0.5, 1.0, 0.3));
     float diff = max(dot(normalize(vNorm), L), 0.0);
-    gl_FragColor = vec4(uColor * (0.55 + 0.45 * diff), uOpacity * fade);
+    gl_FragColor = vec4(uColor * (0.55 + 0.45 * diff), uOpacity * uEndFade * fade);
   }
 `;
 
@@ -45,6 +49,7 @@ function makeCarMat(colorHex, opacity) {
     uniforms: {
       uColor:   { value: new THREE.Color(colorHex) },
       uOpacity: { value: opacity },
+      uEndFade: { value: 1.0 },
       uNear:    { value: 120 },
       uFar:     { value: 900 },
     },
@@ -55,27 +60,24 @@ function makeCarMat(colorHex, opacity) {
   });
 }
 
-// Two material sets — surface (50%) and underground (30%)
-const MATS = {
-  surface: {
-    body: makeCarMat(0x1e9c52, 0.20),
-    face: makeCarMat(0x166e3a, 0.20),
-    roof: makeCarMat(0xd0e8cc, 0.20),
-    win:  makeCarMat(0x88ccf0, 0.20),
-  },
-  underground: {
-    body: makeCarMat(0x1e9c52, 0.10),
-    face: makeCarMat(0x166e3a, 0.10),
-    roof: makeCarMat(0xd0e8cc, 0.10),
-    win:  makeCarMat(0x88ccf0, 0.10),
-  },
-};
+function smoothstepJS(e0, e1, x) {
+  const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+}
 
-// ─── Car geometry ─────────────────────────────────────────────────────────────
+// ─── Car geometry — fresh materials per call so each Train owns its uniforms ──
 function buildCar(isUnderground) {
-  const m = isUnderground ? MATS.underground : MATS.surface;
-  const group = new THREE.Group();
+  const op = isUnderground ? 0.10 : 0.20;
+  const mats = [
+    makeCarMat(0x1e9c52, op),   // body
+    makeCarMat(0xd0e8cc, op),   // roof
+    makeCarMat(0x166e3a, op),   // face front
+    makeCarMat(0x166e3a, op),   // face back
+    makeCarMat(0x88ccf0, op),   // window right
+    makeCarMat(0x88ccf0, op),   // window left
+  ];
 
+  const group = new THREE.Group();
   const add = (geo, mat, x = 0, y = 0, z = 0) => {
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(x, y, z);
@@ -84,17 +86,14 @@ function buildCar(isUnderground) {
     group.add(mesh);
   };
 
-  add(new THREE.BoxGeometry(CAR_W, CAR_H, CAR_L), m.body);
-  add(new THREE.BoxGeometry(CAR_W - 0.2, 0.15, CAR_L - 0.4), m.roof,
-      0, CAR_H / 2 + 0.08, 0);
-  add(new THREE.BoxGeometry(CAR_W, CAR_H, 0.3), m.face, 0, 0,  CAR_L / 2 - 0.15);
-  add(new THREE.BoxGeometry(CAR_W, CAR_H, 0.3), m.face, 0, 0, -CAR_L / 2 + 0.15);
-  add(new THREE.BoxGeometry(0.1, CAR_H * 0.35, CAR_L * 0.88), m.win,
-       CAR_W / 2 + 0.02, CAR_H * 0.12, 0);
-  add(new THREE.BoxGeometry(0.1, CAR_H * 0.35, CAR_L * 0.88), m.win,
-      -CAR_W / 2 - 0.02, CAR_H * 0.12, 0);
+  add(new THREE.BoxGeometry(CAR_W, CAR_H, CAR_L),             mats[0]);
+  add(new THREE.BoxGeometry(CAR_W - 0.2, 0.15, CAR_L - 0.4), mats[1], 0, CAR_H / 2 + 0.08, 0);
+  add(new THREE.BoxGeometry(CAR_W, CAR_H, 0.3),               mats[2], 0, 0,  CAR_L / 2 - 0.15);
+  add(new THREE.BoxGeometry(CAR_W, CAR_H, 0.3),               mats[3], 0, 0, -CAR_L / 2 + 0.15);
+  add(new THREE.BoxGeometry(0.1, CAR_H * 0.35, CAR_L * 0.88), mats[4],  CAR_W / 2 + 0.02, CAR_H * 0.12, 0);
+  add(new THREE.BoxGeometry(0.1, CAR_H * 0.35, CAR_L * 0.88), mats[5], -CAR_W / 2 - 0.02, CAR_H * 0.12, 0);
 
-  return group;
+  return { group, mats };
 }
 
 // ─── Train ────────────────────────────────────────────────────────────────────
@@ -104,21 +103,30 @@ class Train {
     this.length = curve.getLength();
     this.t      = phaseOffset;
     this.cars   = [];
+    this.mats   = [];  // all materials across all cars in this train
 
     const isUG = curve.points.length > 0 && curve.points[0].y < -1;
     const count = Math.max(1, Math.min(NUM_CARS,
       Math.floor(this.length / (CAR_L + COUPLER))));
 
     for (let i = 0; i < count; i++) {
-      const car = buildCar(isUG);
-      scene.add(car);
-      this.cars.push(car);
+      const { group, mats } = buildCar(isUG);
+      scene.add(group);
+      this.cars.push(group);
+      this.mats.push(...mats);
     }
   }
 
   update(dt) {
     this.t = (this.t + dt * TRAIN_SPEED / this.length) % 1;
     const spacing = (CAR_L + COUPLER) / this.length;
+
+    // Fade over ~2 car lengths at each end so train dissolves instead of U-turning
+    const fadeLen = Math.min(CAR_L * 2 / this.length, 0.4);
+    const endFade = smoothstepJS(0, fadeLen, this.t) *
+                    (1 - smoothstepJS(1 - fadeLen, 1, this.t));
+
+    for (const mat of this.mats) mat.uniforms.uEndFade.value = endFade;
 
     for (let i = 0; i < this.cars.length; i++) {
       const ct    = ((this.t - i * spacing) % 1 + 1) % 1;
@@ -131,6 +139,7 @@ class Train {
 
   dispose(scene) {
     for (const car of this.cars) scene.remove(car);
+    for (const mat of this.mats) mat.dispose();
   }
 }
 
@@ -149,7 +158,7 @@ export class TrainSystem {
       this._seen.add(curve);
       const len = curve.getLength();
       if (len < MIN_CURVE_LEN) continue;
-      const n = Math.max(1, Math.round(len / 400));
+      const n = Math.max(1, Math.floor(len / TRAIN_SPACING));
       for (let t = 0; t < n; t++) {
         this.trains.push(new Train(this.scene, curve, t / n));
       }
