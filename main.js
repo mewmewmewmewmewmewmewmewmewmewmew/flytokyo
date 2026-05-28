@@ -181,10 +181,11 @@ function bldgTerrainInfo(ring, height) {
 
 // ─── Overpass ────────────────────────────────────────────────────────────────
 
+// Known to send permissive CORS headers from the browser. de is the reliable
+// primary; kumi is a fast fallback used on retries.
 const OVERPASS_ENDPOINTS = [
-  'https://overpass.kumi.systems/api/interpreter',   // fast, generous limits
   'https://overpass-api.de/api/interpreter',
-  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
 ];
 let _opIdx = 0;
 
@@ -987,86 +988,132 @@ class TileManager {
     if (this.queue.length) this._process();
   }
 
-  async _loadTile(tx, ty, k) {
-    try {
-      const osm     = await fetchOSMBbox(tileToBBox(tx, ty));
-      const nodeMap = buildNodeMap(osm);
+  // Parse one Overpass response and build all geometry/labels from it. Shared by
+  // per-tile and whole-region loads. Dedup via seenIds means overlapping fetches
+  // (e.g. a region that re-covers already-loaded tiles) add nothing twice.
+  _ingest(osm) {
+    const nodeMap = buildNodeMap(osm);
 
-      const bldgs = parseBuildings(osm, nodeMap)
-        .filter(b => { if (this.seenIds.has(b.id)) return false; this.seenIds.add(b.id); return true; });
-      const strs  = parseStreets(osm, nodeMap)
-        .filter(s => { if (this.seenIds.has(s.id)) return false; this.seenIds.add(s.id); return true; });
-      const rails = parseRailways(osm, nodeMap)
-        .filter(r => { if (this.seenIds.has(r.id)) return false; this.seenIds.add(r.id); return true; });
-      const pois  = parsePOIs(osm)
-        .filter(p => { if (this.seenIds.has(p.id)) return false; this.seenIds.add(p.id); return true; });
+    const bldgs = parseBuildings(osm, nodeMap)
+      .filter(b => { if (this.seenIds.has(b.id)) return false; this.seenIds.add(b.id); return true; });
+    const strs  = parseStreets(osm, nodeMap)
+      .filter(s => { if (this.seenIds.has(s.id)) return false; this.seenIds.add(s.id); return true; });
+    const rails = parseRailways(osm, nodeMap)
+      .filter(r => { if (this.seenIds.has(r.id)) return false; this.seenIds.add(r.id); return true; });
+    const pois  = parsePOIs(osm)
+      .filter(p => { if (this.seenIds.has(p.id)) return false; this.seenIds.add(p.id); return true; });
 
-      // Register footprints for collision; add a name label above named buildings.
-      for (const { ring, height, name } of bldgs) {
-        const xs = ring.map(p => p[0]), zs = ring.map(p => p[1]);
-        const { topY: bTop } = bldgTerrainInfo(ring, height);
-        this.footprints.push({
-          ring, height,
-          topY: bTop,
-          minX: Math.min(...xs), maxX: Math.max(...xs),
-          minZ: Math.min(...zs), maxZ: Math.max(...zs),
-        });
-        if (name) {
-          let cx = 0, cz = 0;
-          for (const [x, z] of ring) { cx += x; cz += z; }
-          const spr = makeLabelSprite(truncateLabel(name), 'bldg');
-          spr.position.set(cx / ring.length, bTop + 3, cz / ring.length);
-          this.labelGroup.add(spr);
-        }
-      }
-
-      // POI labels (points) at head height above the ground.
-      for (const p of pois) {
-        const spr = makeLabelSprite(truncateLabel(p.name), 'poi');
-        const y = (terrain ? terrain.sample(p.x, p.z) : 0) + 4;
-        spr.position.set(p.x, y, p.z);
+    // Register footprints for collision; add a name label above named buildings.
+    for (const { ring, height, name } of bldgs) {
+      const xs = ring.map(p => p[0]), zs = ring.map(p => p[1]);
+      const { topY: bTop } = bldgTerrainInfo(ring, height);
+      this.footprints.push({
+        ring, height,
+        topY: bTop,
+        minX: Math.min(...xs), maxX: Math.max(...xs),
+        minZ: Math.min(...zs), maxZ: Math.max(...zs),
+      });
+      if (name) {
+        let cx = 0, cz = 0;
+        for (const [x, z] of ring) { cx += x; cz += z; }
+        const spr = makeLabelSprite(truncateLabel(name), 'bldg');
+        spr.position.set(cx / ring.length, bTop + 3, cz / ring.length);
         this.labelGroup.add(spr);
       }
+    }
 
-      const group = new THREE.Group();
-      if (bldgs.length) {
-        group.add(buildSurfaceMesh(bldgs, this.mats.surface));
-        group.add(buildEdgesGeoMesh(bldgs, this.mats.wireframe));
-        this.buildings += bldgs.length;
-      }
-      if (strs.length) {
-        for (const m of buildStreetLines(strs, this.mats.street, this.mats.footpath)) group.add(m);
-        this.streets += strs.length;
-      }
-      if (rails.length) {
-        const surface = rails.filter(r => !r.isTunnel);
-        const tunnel  = rails.filter(r =>  r.isTunnel);
-        const sl = buildRailLines(surface, 0.3, this.mats.rail);
-        const tl = buildMetroTubes(tunnel, this.mats.metro);
-        if (sl) { sl.renderOrder = 0; group.add(sl); }
-        if (tl) {
-          group.add(tl.mesh);
-          for (const c of tl.curves) this.metroCurves.push(c);
-        }
-        // Surface-rail trains ride 1.9 m above the terrain so they stay visible
-        // on hills and in valleys (a fixed y would bury them once terrain tilts).
-        for (const { coords } of surface) {
-          if (coords.length < 2) continue;
-          const pts = [];
-          for (const [x, z] of coords) {
-            const y = (terrain ? terrain.sample(x, z) : 0) + 1.9;
-            const v = new THREE.Vector3(x, y, z);
-            if (!pts.length || v.distanceTo(pts[pts.length - 1]) > 0.1) pts.push(v);
-          }
-          if (pts.length >= 2)
-            this.metroCurves.push(new THREE.CatmullRomCurve3(pts, false, 'centripetal', 0.5));
-        }
-        this.rails += rails.length;
-      }
+    // POI labels (points) at head height above the ground.
+    for (const p of pois) {
+      const spr = makeLabelSprite(truncateLabel(p.name), 'poi');
+      const y = (terrain ? terrain.sample(p.x, p.z) : 0) + 4;
+      spr.position.set(p.x, y, p.z);
+      this.labelGroup.add(spr);
+    }
 
-      this.scene.add(group);
+    const group = new THREE.Group();
+    if (bldgs.length) {
+      group.add(buildSurfaceMesh(bldgs, this.mats.surface));
+      group.add(buildEdgesGeoMesh(bldgs, this.mats.wireframe));
+      this.buildings += bldgs.length;
+    }
+    if (strs.length) {
+      for (const m of buildStreetLines(strs, this.mats.street, this.mats.footpath)) group.add(m);
+      this.streets += strs.length;
+    }
+    if (rails.length) {
+      const surface = rails.filter(r => !r.isTunnel);
+      const tunnel  = rails.filter(r =>  r.isTunnel);
+      const sl = buildRailLines(surface, 0.3, this.mats.rail);
+      const tl = buildMetroTubes(tunnel, this.mats.metro);
+      if (sl) { sl.renderOrder = 0; group.add(sl); }
+      if (tl) {
+        group.add(tl.mesh);
+        for (const c of tl.curves) this.metroCurves.push(c);
+      }
+      // Surface-rail trains ride 1.9 m above the terrain so they stay visible
+      // on hills and in valleys (a fixed y would bury them once terrain tilts).
+      for (const { coords } of surface) {
+        if (coords.length < 2) continue;
+        const pts = [];
+        for (const [x, z] of coords) {
+          const y = (terrain ? terrain.sample(x, z) : 0) + 1.9;
+          const v = new THREE.Vector3(x, y, z);
+          if (!pts.length || v.distanceTo(pts[pts.length - 1]) > 0.1) pts.push(v);
+        }
+        if (pts.length >= 2)
+          this.metroCurves.push(new THREE.CatmullRomCurve3(pts, false, 'centripetal', 0.5));
+      }
+      this.rails += rails.length;
+    }
+
+    this.scene.add(group);
+    this._updateStatus();
+  }
+
+  // Compute the bbox + tile keys for a square region of `radius` tiles around (camX,camZ).
+  regionTiles(camX, camZ, radius) {
+    const { lat, lon } = worldToGeo(camX, camZ);
+    const { tx, ty }   = latLonToTile(lat, lon);
+    const keys = [];
+    for (let dy = -radius; dy <= radius; dy++)
+      for (let dx = -radius; dx <= radius; dx++)
+        keys.push(this.key(tx + dx, ty + dy));
+    const bbox = {
+      south: (ty - radius) * TILE_LAT, north: (ty + radius + 1) * TILE_LAT,
+      west:  (tx - radius) * TILE_LON, east:  (tx + radius + 1) * TILE_LON,
+    };
+    return { keys, bbox };
+  }
+
+  // Fetch a whole region in a SINGLE Overpass request (far fewer requests than
+  // one-per-tile, so much less likely to be rate-limited), then ingest it and
+  // mark every covered tile settled.
+  async loadRegion(keys, bbox, label) {
+    for (const k of keys) if (!this.tiles.has(k)) this.tiles.set(k, 'loading');
+    const settle = state => {
+      for (const k of keys) {
+        this.tiles.set(k, state);
+        if (!this.settled.has(k)) { this.settled.add(k); this.tilesLoaded++; }
+      }
+    };
+    for (let attempt = 0; ; attempt++) {
+      try {
+        this._ingest(await fetchOSMBbox(bbox));
+        settle('done');
+        return;
+      } catch (err) {
+        console.warn(`Region ${label}:`, err.message);
+        if (attempt < 6) { await sleep([800, 1500, 3000, 5000, 8000, 8000][attempt]); continue; }
+        settle('failed'); // give up so the loading screen can proceed
+        return;
+      }
+    }
+  }
+
+  async _loadTile(tx, ty, k) {
+    try {
+      this._ingest(await fetchOSMBbox(tileToBBox(tx, ty)));
       this.tiles.set(k, 'done');
-      this._updateStatus();
     } catch (err) {
       console.warn(`Tile ${tx},${ty}:`, err.message);
       this.tiles.set(k, 'failed');
@@ -1480,14 +1527,17 @@ async function main() {
   // Reset on blur so a button released off-window doesn't leave us stuck in x-ray.
   window.addEventListener('blur', () => setXray(false));
 
-  // Queue the 3×3 core first and wait only for it — that's all the player can see
-  // at spawn. The rest of the radius streams in afterwards (queued behind the core,
-  // nearest-first), so we start fast without spawning next to an unloaded hole.
-  manager.requestAround(0, 0, 1);
-  const coreKeys = manager.queue.map(t => t.k);
-  manager.requestAround(0, 0, LOAD_RADIUS);   // append the outer ring (dedup skips the core)
+  // Fetch the 3×3 core as ONE Overpass request and wait only for it — that's all
+  // the player can see at spawn, and one request is far less likely to be rate-
+  // limited than nine. Then fetch the full radius as one more request in the
+  // background (dedup skips the core), so the surroundings fill in without holes.
+  const core = manager.regionTiles(0, 0, 1);
+  const full = manager.regionTiles(0, 0, LOAD_RADIUS);
+  const coreKeys = core.keys;
   manager.tilesTotal = coreKeys.length;
-  if (!manager.busy) manager._process();
+  manager.loadRegion(core.keys, core.bbox, 'core')
+    .then(() => manager.loadRegion(full.keys, full.bbox, 'ring'))
+    .then(() => syncTrains());   // ring done → rebuild trains so new track is covered
 
   let lastCheck = 0;
   controls.addEventListener('change', () => {
@@ -1514,29 +1564,25 @@ async function main() {
   const pbar    = document.getElementById('pbar');
   const loadMsg2 = document.getElementById('load-msg');
   const loading = document.getElementById('loading');
-  let shown = false;
+  let shown = false, fake = 0;
+  loadMsg2.textContent = 'Loading map…';
   const poll = setInterval(() => {
     if (shown) return;
-    const done  = coreKeys.reduce((n, k) => n + (manager.settled.has(k) ? 1 : 0), 0);
-    const total = coreKeys.length;
-    pbar.style.width = `${(done / total) * 100}%`;
-    loadMsg2.textContent = `Loading map… ${done} / ${total} tiles`;
-
-    if (done >= total) {
-      // Core grid loaded — reveal the scene; outer tiles keep loading in the background.
-      shown = true;
-      clearInterval(poll);
-      loading.classList.add('fade-out');
-      setTimeout(() => loading.remove(), 800);
-      syncTrains();
-      // Once the full radius has streamed in, rebuild trains so new track is covered.
-      const ringPoll = setInterval(() => {
-        if (!manager.busy && manager.queue.length === 0) {
-          clearInterval(ringPoll);
-          syncTrains();
-        }
-      }, 2000);
+    const ready = coreKeys.every(k => manager.settled.has(k));
+    if (!ready) {
+      // Single-request load has no granular progress — ease the bar toward 90%
+      // so it reads as working rather than stuck while we wait on Overpass.
+      fake += (0.9 - fake) * 0.05;
+      pbar.style.width = `${fake * 100}%`;
+      return;
     }
+    // Core loaded — reveal the scene; the outer ring keeps loading in the background.
+    shown = true;
+    clearInterval(poll);
+    pbar.style.width = '100%';
+    loading.classList.add('fade-out');
+    setTimeout(() => loading.remove(), 800);
+    syncTrains();
   }, 200);
 }
 
