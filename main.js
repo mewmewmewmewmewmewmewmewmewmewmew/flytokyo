@@ -895,7 +895,7 @@ function initScene(collision) {
     new THREE.PlaneGeometry(8000, 8000, 1, 1),
     new THREE.ShaderMaterial({
       uniforms: {
-        uGround: { value: new THREE.Color(0xd0c4a8) },
+        uGround: { value: new THREE.Color(0xd8dce8) },
         uFar:    { value: FADE_FAR },
       },
       transparent: true,
