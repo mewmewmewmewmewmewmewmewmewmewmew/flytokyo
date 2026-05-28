@@ -726,9 +726,10 @@ function initScene(collision) {
     new THREE.ShaderMaterial({
       uniforms: {
         uGround: { value: new THREE.Color(0xd8dce8) },
-        uSky:    { value: new THREE.Color(0xf0f2f8) },
         uFar:    { value: FADE_FAR },
       },
+      transparent: true,
+      depthWrite: false,
       vertexShader: /* glsl */`
         varying vec3 vWorldPos;
         void main() {
@@ -739,20 +740,17 @@ function initScene(collision) {
       `,
       fragmentShader: /* glsl */`
         uniform vec3  uGround;
-        uniform vec3  uSky;
         uniform float uFar;
         varying vec3  vWorldPos;
         void main() {
           vec3  ray       = vWorldPos - cameraPosition;
           float horizDist = length(ray.xz);
-          // downAngle: 0 = horizontal ray (horizon), 1 = straight down
           float downAngle = max(0.0, -normalize(ray).y);
-          // distance fog matches building fade range
           float distFade  = smoothstep(uFar * 0.4, uFar, horizDist);
-          // angle fog: near-horizontal rays fade to sky — creates visible
-          // horizon haze at pedestrian eye height regardless of distance
           float angleFade = 1.0 - smoothstep(0.002, 0.018, downAngle);
-          gl_FragColor = vec4(mix(uGround, uSky, max(distFade, angleFade)), 1.0);
+          float alpha     = 1.0 - max(distFade, angleFade);
+          if (alpha < 0.01) discard;
+          gl_FragColor = vec4(uGround, alpha);
         }
       `,
     }),
@@ -760,38 +758,6 @@ function initScene(collision) {
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.05;
   scene.add(ground);
-
-  // Sky dome — gradient from horizon grey up to zenith white.
-  // Follows the camera each frame so it's always centred on the player.
-  const sky = new THREE.Mesh(
-    new THREE.SphereGeometry(1800, 32, 16),
-    new THREE.ShaderMaterial({
-      side: THREE.BackSide,
-      depthWrite: false,
-      uniforms: {
-        uHorizon: { value: new THREE.Color(0xd8dce8) }, // match ground colour
-        uZenith:  { value: new THREE.Color(0xf0f2f8) }, // match clear colour
-      },
-      vertexShader: /* glsl */`
-        varying float vY;
-        void main() {
-          vY = normalize(position).y;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: /* glsl */`
-        uniform vec3 uHorizon;
-        uniform vec3 uZenith;
-        varying float vY;
-        void main() {
-          float t = smoothstep(-0.05, 0.20, vY);
-          gl_FragColor = vec4(mix(uHorizon, uZenith, t), 1.0);
-        }
-      `,
-    }),
-  );
-  sky.renderOrder = -1;
-  scene.add(sky);
 
   const controls = createFPSControls(camera, renderer.domElement, collision);
 
@@ -803,7 +769,6 @@ function initScene(collision) {
 
   (function animate() {
     requestAnimationFrame(animate);
-    sky.position.copy(camera.position);
     controls.update();
     renderer.render(scene, camera);
   })();
