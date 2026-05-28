@@ -434,7 +434,7 @@ function buildMetroTubes(rails, mat) {
     }
     if (pts.length < 2) continue;
 
-    const curve = new THREE.CatmullRomCurve3(pts);
+    const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal', 0.5);
     curves.push(curve);
 
     const geo   = new THREE.TubeGeometry(curve, Math.max(pts.length * 2, 4), 2.5, 8, false);
@@ -464,19 +464,46 @@ function stitchMetroCurves(curves) {
   const used   = new Set();
   const result = [];
 
-  // Helper: find the best (closest) unvisited endpoint to a given anchor point.
-  // Returns { j, flip, dist } or null.
-  function bestNeighbour(anchor) {
+  // Direction of a point-array at its tail (looking back up to 5 points for stability).
+  function tailDir(pts) {
+    const end = pts[pts.length - 1];
+    for (let i = pts.length - 2; i >= Math.max(0, pts.length - 5); i--) {
+      const v = new THREE.Vector3().subVectors(end, pts[i]);
+      if (v.length() > 0.5) return v.normalize();
+    }
+    return null;
+  }
+
+  // Find the best unvisited neighbour whose outgoing direction is forward-compatible.
+  function bestNeighbour(anchor, anchorDir) {
     let bestJ = -1, bestDist = THRESH, bestFlip = false;
     for (let j = 0; j < curves.length; j++) {
       if (used.has(j)) continue;
       const jp = curves[j].points;
-      // Only connect curves at the same depth (±2 m) to avoid tunnel/surface cross-links
       if (Math.abs(anchor.y - jp[0].y) > 2 && Math.abs(anchor.y - jp[jp.length - 1].y) > 2) continue;
+
       const d0 = anchor.distanceTo(jp[0]);
       const d1 = anchor.distanceTo(jp[jp.length - 1]);
-      if (d0 < bestDist) { bestDist = d0; bestJ = j; bestFlip = false; }
-      if (d1 < bestDist) { bestDist = d1; bestJ = j; bestFlip = true; }
+      const last = jp.length - 1;
+
+      // Not flipped: new segment goes jp[0] → jp[1]
+      if (d0 < bestDist) {
+        let ok = true;
+        if (anchorDir && jp.length >= 2) {
+          const out = new THREE.Vector3().subVectors(jp[1], jp[0]);
+          if (out.length() > 0.01 && anchorDir.dot(out.normalize()) <= 0) ok = false;
+        }
+        if (ok) { bestDist = d0; bestJ = j; bestFlip = false; }
+      }
+      // Flipped: new segment (reversed) goes jp[last] → jp[last-1]
+      if (d1 < bestDist) {
+        let ok = true;
+        if (anchorDir && jp.length >= 2) {
+          const out = new THREE.Vector3().subVectors(jp[last - 1], jp[last]);
+          if (out.length() > 0.01 && anchorDir.dot(out.normalize()) <= 0) ok = false;
+        }
+        if (ok) { bestDist = d1; bestJ = j; bestFlip = true; }
+      }
     }
     return bestJ >= 0 ? { j: bestJ, flip: bestFlip } : null;
   }
@@ -486,32 +513,21 @@ function stitchMetroCurves(curves) {
     used.add(seed);
     let pts = curves[seed].points.slice();
 
-    // Extend tail: keep attaching the closest curve whose endpoint is near
     let match;
-    while ((match = bestNeighbour(pts[pts.length - 1]))) {
+    while ((match = bestNeighbour(pts[pts.length - 1], tailDir(pts)))) {
       const jp = curves[match.j].points;
       pts = pts.concat(match.flip ? jp.slice().reverse().slice(1) : jp.slice(1));
       used.add(match.j);
     }
 
-    // Extend head: prepend curves that connect to the start
-    while ((match = bestNeighbour(pts[0]))) {
-      const jp = curves[match.j].points;
-      // For head extension: match.flip means jp[0] was closest (need reversed prepend)
-      pts = match.flip
-        ? jp.slice(0, -1).concat(pts)                    // jp end near head → prepend jp
-        : jp.slice().reverse().slice(0, -1).concat(pts); // jp start near head → prepend reversed
-      used.add(match.j);
-    }
-
-    result.push(new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5));
+    result.push(new THREE.CatmullRomCurve3(pts, false, 'centripetal', 0.5));
   }
 
   return result;
 }
 
-// Split a stitched curve wherever consecutive segments form a sharp angle (>90°)
-// so trains never have to reverse direction mid-path.
+// Split a stitched curve wherever consecutive segments form an angle > ~60°
+// (dot < 0.5) so trains always move in a smooth forward arc.
 function splitAtSharpTurns(curve) {
   const pts = curve.points;
   if (pts.length < 3) return [curve];
@@ -523,15 +539,15 @@ function splitAtSharpTurns(curve) {
     seg.push(pts[i]);
     const a = new THREE.Vector3().subVectors(pts[i],     pts[i - 1]).normalize();
     const b = new THREE.Vector3().subVectors(pts[i + 1], pts[i]    ).normalize();
-    if (a.dot(b) < 0) {          // angle > 90° — split here
-      if (seg.length >= 2) segs.push(new THREE.CatmullRomCurve3(seg, false, 'catmullrom', 0.5));
+    if (a.dot(b) < 0.5) {        // angle > ~60° — split here
+      if (seg.length >= 2) segs.push(new THREE.CatmullRomCurve3(seg, false, 'centripetal', 0.5));
       seg = [pts[i]];
     }
   }
   seg.push(pts[pts.length - 1]);
-  if (seg.length >= 2) segs.push(new THREE.CatmullRomCurve3(seg, false, 'catmullrom', 0.5));
+  if (seg.length >= 2) segs.push(new THREE.CatmullRomCurve3(seg, false, 'centripetal', 0.5));
 
-  return segs;
+  return segs.length ? segs : [curve];
 }
 
 // ─── Collision ───────────────────────────────────────────────────────────────
@@ -651,7 +667,7 @@ class TileManager {
             if (!pts.length || v.distanceTo(pts[pts.length - 1]) > 0.1) pts.push(v);
           }
           if (pts.length >= 2)
-            this.metroCurves.push(new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5));
+            this.metroCurves.push(new THREE.CatmullRomCurve3(pts, false, 'centripetal', 0.5));
         }
         this.rails += rails.length;
       }
