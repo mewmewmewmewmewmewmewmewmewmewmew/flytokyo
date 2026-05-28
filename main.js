@@ -937,13 +937,19 @@ class TileManager {
     this.queue.push({ tx, ty, k });
   }
 
-  update(camX, camZ) {
+  // Queue every tile within `radius` of the camera, nearest ring first so the
+  // closest tiles always load before farther ones.
+  requestAround(camX, camZ, radius) {
     const { lat, lon } = worldToGeo(camX, camZ);
     const { tx, ty }   = latLonToTile(lat, lon);
-    this.request(tx, ty);
-    for (let dy = -LOAD_RADIUS; dy <= LOAD_RADIUS; dy++)
-      for (let dx = -LOAD_RADIUS; dx <= LOAD_RADIUS; dx++)
-        if (dx || dy) this.request(tx + dx, ty + dy);
+    for (let r = 0; r <= radius; r++)
+      for (let dy = -r; dy <= r; dy++)
+        for (let dx = -r; dx <= r; dx++)
+          if (Math.max(Math.abs(dx), Math.abs(dy)) === r) this.request(tx + dx, ty + dy);
+  }
+
+  update(camX, camZ) {
+    this.requestAround(camX, camZ, LOAD_RADIUS);
     if (!this.busy && this.queue.length) this._process();
   }
 
@@ -1413,6 +1419,8 @@ async function main() {
 
   // Switch the loading screen from search mode to progress mode.
   document.getElementById('load-search').style.display = 'none';
+  document.getElementById('place-me').style.display    = 'none';
+  document.getElementById('search-msg').style.display  = 'none';
   document.getElementById('pbar-bg').style.display = '';
 
   // Load terrain elevation tiles before OSM tiles so geometry is placed correctly.
@@ -1459,12 +1467,14 @@ async function main() {
   // Reset on blur so a button released off-window doesn't leave us stuck in x-ray.
   window.addEventListener('blur', () => setXray(false));
 
-  manager.update(0, 0);
-  // The full radius grid requested for the spawn — we won't start until every one
-  // of these tiles has settled (loaded, or given up after exhausting retries), so
-  // the player never spawns next to an unloaded hole.
-  const initialKeys = manager.queue.map(t => t.k);
-  manager.tilesTotal = initialKeys.length;
+  // Queue the 3×3 core first and wait only for it — that's all the player can see
+  // at spawn. The rest of the radius streams in afterwards (queued behind the core,
+  // nearest-first), so we start fast without spawning next to an unloaded hole.
+  manager.requestAround(0, 0, 1);
+  const coreKeys = manager.queue.map(t => t.k);
+  manager.requestAround(0, 0, LOAD_RADIUS);   // append the outer ring (dedup skips the core)
+  manager.tilesTotal = coreKeys.length;
+  if (!manager.busy) manager._process();
 
   let lastCheck = 0;
   controls.addEventListener('change', () => {
@@ -1475,28 +1485,44 @@ async function main() {
     }
   });
 
+  // Rebuild trains from all track loaded so far. Called once the core is ready and
+  // again after the background ring finishes, so streamed-in tracks get trains too.
+  // (stitch makes fresh curve objects each time, so we replace the system wholesale
+  // rather than appending, which would duplicate trains.)
+  let trainCurveCount = -1;
+  function syncTrains() {
+    if (manager.metroCurves.length === trainCurveCount) return;
+    trainCurveCount = manager.metroCurves.length;
+    const cleaned = stitchMetroCurves(manager.metroCurves).flatMap(splitAtSharpTurns);
+    if (trainRef.system) for (const t of trainRef.system.trains) t.dispose(scene);
+    trainRef.system = new TrainSystem(scene, cleaned);
+  }
+
   const pbar    = document.getElementById('pbar');
   const loadMsg2 = document.getElementById('load-msg');
   const loading = document.getElementById('loading');
   let shown = false;
   const poll = setInterval(() => {
     if (shown) return;
-    const done = initialKeys.reduce((n, k) => n + (manager.settled.has(k) ? 1 : 0), 0);
-    const total = initialKeys.length;
+    const done  = coreKeys.reduce((n, k) => n + (manager.settled.has(k) ? 1 : 0), 0);
+    const total = coreKeys.length;
     pbar.style.width = `${(done / total) * 100}%`;
     loadMsg2.textContent = `Loading map… ${done} / ${total} tiles`;
 
     if (done >= total) {
-      // Entire spawn grid is loaded — reveal the scene.
+      // Core grid loaded — reveal the scene; outer tiles keep loading in the background.
       shown = true;
       clearInterval(poll);
       loading.classList.add('fade-out');
       setTimeout(() => loading.remove(), 800);
-      if (manager.metroCurves.length) {
-        const stitched = stitchMetroCurves(manager.metroCurves);
-        const cleaned  = stitched.flatMap(splitAtSharpTurns);
-        trainRef.system = new TrainSystem(scene, cleaned);
-      }
+      syncTrains();
+      // Once the full radius has streamed in, rebuild trains so new track is covered.
+      const ringPoll = setInterval(() => {
+        if (!manager.busy && manager.queue.length === 0) {
+          clearInterval(ringPoll);
+          syncTrains();
+        }
+      }, 2000);
     }
   }, 200);
 }
