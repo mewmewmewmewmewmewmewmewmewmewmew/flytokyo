@@ -35,10 +35,10 @@ const BIRD_HEIGHT   = 3.96;   // 13 ft above terrain
 const BIRD_CAM_BACK = 8;      // metres behind bird
 const BIRD_CAM_UP   = 2;      // metres above bird
 // Fisheye (F3) constants
-const FISH_FOV_DEG  = 170;                    // wide render FOV fed into fisheye shader
-const FISH_CAM_BACK = 3.0;                    // tighter follow distance in fisheye mode
+const FISH_FOV_DEG  = 160;    // vertical FOV for the wide render pass
+const FISH_CAM_BACK = 3.0;
 const FISH_CAM_UP   = 0.8;
-const FISH_THETA    = 85 * Math.PI / 180;     // equidistant half-angle = half of FISH_FOV_DEG
+const FISH_K        = 3.8;    // tanh barrel strength — higher = more extreme
 
 // ─── Coordinate helpers ──────────────────────────────────────────────────────
 
@@ -1889,9 +1889,9 @@ function initScene(collision) {
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
-    rtSize = Math.min(w, h);
-    fisheyeRT.setSize(rtSize, rtSize);
-    fisheyeMat.uniforms.uAspect.value = w / h;
+    const pr = Math.min(devicePixelRatio, 2);
+    rtW = Math.round(w * pr); rtH = Math.round(h * pr);
+    fisheyeRT.setSize(rtW, rtH);
   }
   window.addEventListener('resize', onResize);
   // visualViewport fires when the iOS address bar slides in/out (innerHeight
@@ -1905,46 +1905,39 @@ function initScene(collision) {
   let lastTime = performance.now();
 
   // ── Fisheye post-process setup ────────────────────────────────────────────
-  // Square render target (same angular extent in X and Y).
-  let rtSize = Math.min(innerWidth, innerHeight);
-  const fisheyeRT = new THREE.WebGLRenderTarget(rtSize, rtSize, {
+  // Full-resolution render target (DPR-scaled so no pixelation).
+  const _dpr = Math.min(devicePixelRatio, 2);
+  let rtW = Math.round(innerWidth * _dpr), rtH = Math.round(innerHeight * _dpr);
+  const fisheyeRT = new THREE.WebGLRenderTarget(rtW, rtH, {
     minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
   });
 
-  // Fullscreen triangle (covers NDC from -1 to beyond 1 so the whole viewport is filled).
+  // Fullscreen triangle.
   const fsGeo = new THREE.BufferGeometry();
   fsGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1,-1,0, 3,-1,0, -1,3,0]), 3));
   fsGeo.setAttribute('uv',       new THREE.BufferAttribute(new Float32Array([0,0, 2,0, 0,2]), 2));
 
   const fisheyeMat = new THREE.ShaderMaterial({
     uniforms: {
-      tScene:    { value: fisheyeRT.texture },
-      uAspect:   { value: innerWidth / innerHeight },
-      uThetaMax: { value: FISH_THETA },
+      tScene: { value: fisheyeRT.texture },
+      uK:     { value: FISH_K },
     },
-    // Equidistant fisheye mapping: fisheye radius r ∝ angle θ from optical axis.
-    // We invert: for each output pixel at radius r, compute the corresponding
-    // rectilinear UV in the wide-FOV render target.
     vertexShader: /* glsl */`
       varying vec2 vUv;
       void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
     `,
+    // tanh barrel: rSample = tanh(r·k) / tanh(k)
+    // Works for every screen position including corners — no singularities, no black frame.
+    // Higher k = more extreme wrap. r > 1 at corners is handled gracefully by tanh saturation.
     fragmentShader: /* glsl */`
       uniform sampler2D tScene;
-      uniform float uAspect;   // screen width / height
-      uniform float uThetaMax; // half-angle of the fisheye circle (= half render FOV)
+      uniform float uK;
       varying vec2 vUv;
       void main() {
-        // Map screen UV to aspect-corrected space where the fisheye circle has radius 1.
-        vec2 p = (vUv * 2.0 - 1.0) * vec2(uAspect, 1.0);
+        vec2 p = vUv * 2.0 - 1.0;
         float r = length(p);
-        if (r > 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
-
-        // Equidistant: θ = r * θ_max  →  rectilinear: r_rect = tan(θ) / tan(θ_max)
-        float theta = r * uThetaMax;
-        float rRect = (r > 0.0001) ? tan(theta) / tan(uThetaMax) : 0.0;
-        vec2 sampleUv = (p / max(r, 0.0001)) * rRect * 0.5 + 0.5;
-
+        float rSample = (r > 0.0001) ? tanh(r * uK) / tanh(uK) : 0.0;
+        vec2 sampleUv = (p / max(r, 0.0001)) * rSample * 0.5 + 0.5;
         gl_FragColor = texture2D(tScene, clamp(sampleUv, 0.0, 1.0));
       }
     `,
@@ -1984,17 +1977,14 @@ function initScene(collision) {
     }
     if (fisheyeActive) {
       // Two-pass fisheye: render scene at wide FOV into square RT, then distort.
-      const savedFov    = camera.fov;
-      const savedAspect = camera.aspect;
-      camera.fov    = FISH_FOV_DEG;
-      camera.aspect = 1.0;
+      const savedFov = camera.fov;
+      camera.fov = FISH_FOV_DEG;
       camera.updateProjectionMatrix();
       renderer.setRenderTarget(fisheyeRT);
       renderer.render(scene, camera);
       renderer.setRenderTarget(null);
       renderer.render(fisheyeScene, fisheyeOrtho);
-      camera.fov    = savedFov;
-      camera.aspect = savedAspect;
+      camera.fov = savedFov;
       camera.updateProjectionMatrix();
     } else {
       camera.fov = 90;
