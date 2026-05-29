@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.6';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL } from './fisheye.js?v=11.6';
+import { TrainSystem } from './train.js?v=11.7';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL } from './fisheye.js?v=11.7';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1988,10 +1988,13 @@ function createBirdControls(camera, domElement) {
       }
 
       // Speed-driven fisheye. tt: 0 at rest, 1 at non-sprint max, up to 2 at
-      // sprint max. The warp blends in over the first speed band (0→1) and the
-      // angle widens 120°→220° there, then 220°→250° through the sprint band.
+      // sprint max. The warp eases in CUBICALLY over the first speed band so it
+      // stays near-normal at low/medium speed and only swings into full fisheye
+      // close to top speed. The angle widens 120°→220° over that band, then
+      // 220°→250° through the sprint band.
       const tt    = _vel.length() / MOVE_MAX;
-      const blend = Math.min(tt, 1);
+      const e     = Math.min(tt, 1);
+      const blend = e * e * e;                 // ease-in: gentle start, hard ramp near max
       const fovDeg = tt <= 1
         ? FOV_REST_DEG + (FOV_MAX_DEG - FOV_REST_DEG) * tt
         : FOV_MAX_DEG  + (FOV_SPRINT_DEG - FOV_MAX_DEG) * Math.min(tt - 1, 1);

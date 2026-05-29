@@ -79,9 +79,11 @@ export const FISH_FRAG_GLSL = /* glsl */`
   varying vec3  vFishView;
   void fishClip() {
     if (uFishBlend < 0.001) return;          // pure perspective: no clipping at all
-    // Behind the camera plane: large flat triangles straddle z=0 and the warp
-    // (output with w=1, so no GPU near-clip) would smear them across the screen.
-    if (vFishView.z > 0.0) discard;
+    // Discard only past the true field-of-view edge (recomputed per fragment so
+    // big triangles spanning the boundary are cut cleanly). NOTE: do NOT clip at
+    // the z=0 plane — at a 220°+ FOV the half-angle is >90°, so the outer ring of
+    // the fisheye legitimately lives behind the camera plane; clipping it there
+    // is what cropped the radial edge.
     float L       = length(vFishView);
     float theta   = acos(clamp(-vFishView.z / max(L, 1e-4), -1.0, 1.0));
     float clipAng = mix(3.14159, uFishHalfFov, uFishBlend);   // ~180° at rest → halfFov at full
