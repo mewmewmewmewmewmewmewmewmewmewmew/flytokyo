@@ -1440,19 +1440,17 @@ function createFPSControls(camera, domElement, collision) {
 
   domElement.addEventListener('contextmenu', e => e.preventDefault());
 
-  // Touch controls (mobile): tap-and-hold → move forward; drag → look camera.
+  // Touch controls (mobile): hold 200 ms → walk forward continuously while held;
+  // drag at any time → look around. Both work simultaneously so you can steer
+  // while moving by holding and dragging in the same gesture.
   // 2.5× sensitivity vs mouse since there is no pointer-lock damping on touch.
   const TOUCH_LOOK_SPEED = LOOK_SPEED * 2.5;
-  let touchLast = null, touchStartPos = null, touchDragging = false, touchHoldTimer = null;
+  let touchLast = null, touchHoldTimer = null;
 
   domElement.addEventListener('touchstart', e => {
     if (e.touches.length === 1) {
-      const x = e.touches[0].clientX, y = e.touches[0].clientY;
-      touchLast = { x, y };
-      touchStartPos = { x, y };
-      touchDragging = false;
-      // Hold without moving → start walking forward
-      touchHoldTimer = setTimeout(() => { if (!touchDragging) keys.add('KeyW'); }, 200);
+      touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      touchHoldTimer = setTimeout(() => keys.add('KeyW'), 200);
     }
     e.preventDefault();
   }, { passive: false });
@@ -1460,12 +1458,6 @@ function createFPSControls(camera, domElement, collision) {
   domElement.addEventListener('touchmove', e => {
     if (e.touches.length === 1 && touchLast) {
       const cx = e.touches[0].clientX, cy = e.touches[0].clientY;
-      // Once finger moves more than 8px cancel the hold-forward and enter look mode
-      if (!touchDragging && Math.hypot(cx - touchStartPos.x, cy - touchStartPos.y) > 8) {
-        touchDragging = true;
-        clearTimeout(touchHoldTimer);
-        keys.delete('KeyW');
-      }
       const dx = cx - touchLast.x, dy = cy - touchLast.y;
       touchLast = { x: cx, y: cy };
       yaw  += -dx * TOUCH_LOOK_SPEED;
@@ -1478,8 +1470,6 @@ function createFPSControls(camera, domElement, collision) {
 
   domElement.addEventListener('touchend', () => {
     touchLast = null;
-    touchStartPos = null;
-    touchDragging = false;
     clearTimeout(touchHoldTimer);
     touchHoldTimer = null;
     keys.delete('KeyW');
