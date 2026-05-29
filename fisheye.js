@@ -57,9 +57,18 @@ export const FISH_PROJ_GLSL = /* glsl */`
     vec4  fish  = vec4(xy, zc, 1.0);
 
     if (uFishBlend > 0.999) return fish;                           // top speed → full fisheye
-    if (persp.w <= 0.0)     return fish;                           // behind camera: perspective NDC is garbage
 
-    // Blend the two projections in normalised device coordinates.
+    // Behind the near plane (theta > 90°): perspective NDC is garbage here, and
+    // snapping straight to the fisheye position would stretch huge un-clipped
+    // triangles across the screen at the slightest blend. Instead carry the
+    // perspective w so the GPU keeps near-clipping these verts while the warp is
+    // weak, then ease them into their true fisheye periphery as blend → 1.
+    if (persp.w <= 0.0) {
+      float wb = mix(persp.w, 1.0, uFishBlend);                    // ≤0 at low blend (clipped) → 1 at full
+      return vec4(fish.xyz * wb, wb);
+    }
+
+    // In front of the camera: blend the two projections in normalised device coords.
     vec3 pndc = persp.xyz / persp.w;
     vec3 ndc  = mix(pndc, fish.xyz, uFishBlend);
     return vec4(ndc, 1.0);
