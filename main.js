@@ -34,11 +34,11 @@ const GROUND_SINK   = 0.6;
 const BIRD_HEIGHT   = 3.96;   // 13 ft above terrain
 const BIRD_CAM_BACK = 8;      // metres behind bird
 const BIRD_CAM_UP   = 2;      // metres above bird
-// Fisheye (F3) constants
-const FISH_FOV_DEG  = 160;    // vertical FOV for the wide render pass
-const FISH_CAM_BACK = 1.1;    // hug right behind the bird (wide FOV shrinks everything)
-const FISH_CAM_UP   = 0.35;
-const FISH_K        = 3.8;    // tanh barrel strength — higher = more extreme
+// Fisheye (F3) constants — true cubemap-based fisheye that wraps around the camera
+const FISH_FOV_DEG  = 210;    // total fisheye angle (>180° wraps behind the camera)
+const FISH_CAM_BACK = 4.0;    // follow distance in fisheye mode
+const FISH_CAM_UP   = 1.2;
+const FISH_CUBE_RES = 1024;   // per-face cubemap resolution
 
 // ─── Coordinate helpers ──────────────────────────────────────────────────────
 
@@ -1889,9 +1889,7 @@ function initScene(collision) {
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
-    const pr = Math.min(devicePixelRatio, 2);
-    rtW = Math.round(w * pr); rtH = Math.round(h * pr);
-    fisheyeRT.setSize(rtW, rtH);
+    if (fisheyeMat) fisheyeMat.uniforms.uAspect.value = w / h;
   }
   window.addEventListener('resize', onResize);
   // visualViewport fires when the iOS address bar slides in/out (innerHeight
@@ -1904,41 +1902,53 @@ function initScene(collision) {
   let fisheyeActive = false;
   let lastTime = performance.now();
 
-  // ── Fisheye post-process setup ────────────────────────────────────────────
-  // Full-resolution render target (DPR-scaled so no pixelation).
-  const _dpr = Math.min(devicePixelRatio, 2);
-  let rtW = Math.round(innerWidth * _dpr), rtH = Math.round(innerHeight * _dpr);
-  const fisheyeRT = new THREE.WebGLRenderTarget(rtW, rtH, {
+  // ── Fisheye post-process setup (cubemap → fisheye reprojection) ────────────
+  // A true fisheye can't come from one wide perspective render (rectilinear
+  // projection stretches to infinity past ~120°). Instead we render the scene
+  // into a cubemap from the camera position — six clean 90° faces — then in the
+  // post shader cast a fisheye ray per pixel and sample the cube. This wraps the
+  // whole world (>180°) around the camera with no edge-smearing.
+  const cubeRT = new THREE.WebGLCubeRenderTarget(FISH_CUBE_RES, {
     minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
   });
+  const cubeCam = new THREE.CubeCamera(0.15, 2000, cubeRT);
 
-  // Fullscreen triangle.
   const fsGeo = new THREE.BufferGeometry();
   fsGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1,-1,0, 3,-1,0, -1,3,0]), 3));
   fsGeo.setAttribute('uv',       new THREE.BufferAttribute(new Float32Array([0,0, 2,0, 0,2]), 2));
 
   const fisheyeMat = new THREE.ShaderMaterial({
     uniforms: {
-      tScene: { value: fisheyeRT.texture },
-      uK:     { value: FISH_K },
+      tCube:     { value: cubeRT.texture },
+      uHalfFov:  { value: (FISH_FOV_DEG * Math.PI / 180) / 2 },
+      uAspect:   { value: innerWidth / innerHeight },
+      uCamRot:   { value: new THREE.Matrix3() },   // view-space → world-space rotation
     },
     vertexShader: /* glsl */`
       varying vec2 vUv;
       void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
     `,
-    // tanh barrel: rSample = tanh(r·k) / tanh(k)
-    // Works for every screen position including corners — no singularities, no black frame.
-    // Higher k = more extreme wrap. r > 1 at corners is handled gracefully by tanh saturation.
+    // Equidistant fisheye: angle from the forward axis is proportional to screen
+    // radius. theta = r * uHalfFov; build a 3D ray (camera space) at that angle,
+    // rotate to world, and sample the cubemap. Fills the whole frame, no black.
     fragmentShader: /* glsl */`
-      uniform sampler2D tScene;
-      uniform float uK;
-      varying vec2 vUv;
+      uniform samplerCube tCube;
+      uniform float uHalfFov;
+      uniform float uAspect;
+      uniform mat3  uCamRot;
+      varying vec2  vUv;
       void main() {
+        // Aspect-correct so the fisheye stays circular and the FISH_FOV maps to
+        // the shorter screen axis; the longer axis simply shows more (wraps more).
         vec2 p = vUv * 2.0 - 1.0;
-        float r = length(p);
-        float rSample = (r > 0.0001) ? tanh(r * uK) / tanh(uK) : 0.0;
-        vec2 sampleUv = (p / max(r, 0.0001)) * rSample * 0.5 + 0.5;
-        gl_FragColor = texture2D(tScene, clamp(sampleUv, 0.0, 1.0));
+        if (uAspect >= 1.0) p.x *= uAspect; else p.y /= uAspect;
+        float r     = length(p);
+        float theta = r * uHalfFov;                 // angle off the forward (-Z) axis
+        float phi   = atan(p.y, p.x);
+        float st    = sin(theta);
+        // Camera-space ray: forward is -Z.
+        vec3 dir = vec3(st * cos(phi), st * sin(phi), -cos(theta));
+        gl_FragColor = textureCube(tCube, normalize(uCamRot * dir));
       }
     `,
     depthTest: false, depthWrite: false,
@@ -1948,7 +1958,9 @@ function initScene(collision) {
   const fisheyeOrtho  = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   fisheyeScene.add(new THREE.Mesh(fsGeo, fisheyeMat));
 
-  // F3 toggles true fisheye post-process (circular barrel distortion + close cam).
+  const _camRot4 = new THREE.Matrix4();
+
+  // F3 toggles true cubemap fisheye + closer follow camera.
   window.addEventListener('keydown', e => {
     if (e.code === 'F3') {
       e.preventDefault();
@@ -1976,16 +1988,16 @@ function initScene(collision) {
       }
     }
     if (fisheyeActive) {
-      // Two-pass fisheye: render scene at wide FOV into square RT, then distort.
-      const savedFov = camera.fov;
-      camera.fov = FISH_FOV_DEG;
-      camera.updateProjectionMatrix();
-      renderer.setRenderTarget(fisheyeRT);
-      renderer.render(scene, camera);
-      renderer.setRenderTarget(null);
+      // Render the scene into a cubemap from the camera position, then reproject.
+      cubeCam.position.copy(camera.position);
+      // Hide the bird only from the +Z (rear) face? Not needed — it's in front of us.
+      cubeCam.update(renderer, scene);
+      // Feed the camera's world-space orientation to the shader so fisheye rays
+      // point where the camera is looking.
+      camera.updateMatrixWorld();
+      _camRot4.extractRotation(camera.matrixWorld);
+      fisheyeMat.uniforms.uCamRot.value.setFromMatrix4(_camRot4);
       renderer.render(fisheyeScene, fisheyeOrtho);
-      camera.fov = savedFov;
-      camera.updateProjectionMatrix();
     } else {
       camera.fov = 90;
       camera.updateProjectionMatrix();
