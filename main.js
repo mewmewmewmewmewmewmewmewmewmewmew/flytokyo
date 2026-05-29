@@ -2055,7 +2055,6 @@ function initScene(collision) {
   }
 
   const _camRot4 = new THREE.Matrix4();
-  let fishFrame = 0;   // cubemap re-renders every other frame; reprojection runs every frame
 
   // F3 toggles true cubemap fisheye + closer follow camera.
   window.addEventListener('keydown', e => {
@@ -2094,7 +2093,7 @@ function initScene(collision) {
     if (fisheyeActive) {
       // Re-render the cubemap (the expensive 6-face pass) only every other frame.
       // The cheap reprojection + blend passes still run every frame.
-      if ((fishFrame++ & 1) === 0) renderCubeFaces();
+      renderCubeFaces();   // refresh the cubemap every frame so flight is judder-free
       // Feed the camera's world-space orientation to the fisheye shader.
       camera.updateMatrixWorld();
       _camRot4.extractRotation(camera.matrixWorld);
