@@ -1808,12 +1808,16 @@ function createBirdControls(camera, domElement) {
 
   const LOOK_SPEED  = 0.00175;
   const MOVE_SPEED  = 0.35;
+  const MOVE_MAX    = MOVE_SPEED * 2;  // top speed (non-sprint) — double the cruise speed
+  const MOVE_ACCEL  = 0.020;           // speed gain per frame toward target
+  const MOVE_DECEL  = 0.030;           // speed loss per frame when not thrusting
   const TURN_SPEED  = 0.022;   // A/D yaw turn rate (radians per frame)
   const LIFT_SPEED  = 0.30;    // spacebar ascent per frame
   const MIN_CLEAR   = 0.3;     // can skim almost to the ground
   const PITCH_LIMIT = 1.1;     // clamp so you can't loop over the top
   const TOUCH_SPEED = LOOK_SPEED * 2.5;
 
+  let speed       = 0;         // current movement magnitude, eases up/down
   let mouseThrust = false;     // true while left mouse held (with pointer locked)
 
   const birdPos = new THREE.Vector3(0, BIRD_HEIGHT, 0);
@@ -1931,20 +1935,29 @@ function createBirdControls(camera, domElement) {
       if (keys.has('KeyA')) { headYaw += TURN_SPEED; camYaw += TURN_SPEED; moved = true; }
       if (keys.has('KeyD')) { headYaw -= TURN_SPEED; camYaw -= TURN_SPEED; moved = true; }
 
+      // Ease speed up to MOVE_MAX while thrusting; coast to a stop when not.
+      const thrusting = keys.has('KeyW') || keys.has('KeyS') || mouseThrust;
+      const topSpeed  = MOVE_MAX * sprint;
+      if (thrusting) {
+        speed = Math.min(speed + MOVE_ACCEL * sprint, topSpeed);
+      } else {
+        speed = Math.max(speed - MOVE_DECEL, 0);
+      }
+
       // W flies forward in the bird's OWN heading — mouse orbit stays independent.
       // Left-click steers: bird chases where the camera is pointing.
       if (keys.has('KeyW')) {
-        birdPos.addScaledVector(getHeading(), MOVE_SPEED * sprint);
+        birdPos.addScaledVector(getHeading(), speed);
         moved = true;
       }
       if (mouseThrust) {
-        birdPos.addScaledVector(getLook(), MOVE_SPEED * sprint);
+        birdPos.addScaledVector(getLook(), speed);
         headYaw   += (camYaw   - headYaw)   * 0.12;
         headPitch += (camPitch - headPitch) * 0.12;
         moved = true;
       }
       if (keys.has('KeyS')) {
-        birdPos.addScaledVector(getHeading(), -MOVE_SPEED * sprint);
+        birdPos.addScaledVector(getHeading(), -speed);
         moved = true;
       }
       // Spacebar gains elevation.

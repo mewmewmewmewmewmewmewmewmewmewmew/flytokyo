@@ -62,6 +62,11 @@ export const FISH_FRAG_GLSL = /* glsl */`
   varying vec3  vFishView;
   void fishClip() {
     if (uFishOn < 0.5) return;
+    // Discard anything behind the camera plane. Large flat triangles (ground,
+    // roads, water) straddle the z=0 plane; GPU-interpolated vFishView is
+    // linear while the fisheye warp is not, so those fragments smear across
+    // the screen unless we hard-clip them here.
+    if (vFishView.z > 0.0) discard;
     float L     = length(vFishView);
     float theta = acos(clamp(-vFishView.z / max(L, 1e-4), -1.0, 1.0));
     if (theta > uFishHalfFov) discard;
