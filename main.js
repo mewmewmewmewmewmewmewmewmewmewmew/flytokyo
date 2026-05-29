@@ -1817,14 +1817,13 @@ function createBirdControls(camera, domElement) {
   const PITCH_LIMIT = 1.1;     // clamp so you can't loop over the top
   const TOUCH_SPEED = LOOK_SPEED * 2.5;
 
-  let speed       = 0;             // current movement magnitude, eases up/down
   let lastTime    = performance.now();
   let mouseThrust = false;     // true while left mouse held (with pointer locked)
 
   const birdPos = new THREE.Vector3(0, BIRD_HEIGHT, 0);
   const _look    = new THREE.Vector3();
   const _heading = new THREE.Vector3();
-  const _moveDir = new THREE.Vector3();  // direction momentum coasts along after release
+  const _vel     = new THREE.Vector3();  // current velocity vector (m/frame); coasts naturally
   const _euler   = new THREE.Euler(0, 0, 0, 'YXZ');
 
   const keys   = new Set();
@@ -1941,32 +1940,41 @@ function createBirdControls(camera, domElement) {
       if (keys.has('KeyA')) { headYaw += TURN_SPEED; camYaw += TURN_SPEED; moved = true; }
       if (keys.has('KeyD')) { headYaw -= TURN_SPEED; camYaw -= TURN_SPEED; moved = true; }
 
-      // Ease speed up to MOVE_MAX in ACCEL_TIME seconds; coast to stop in DECEL_TIME seconds.
+      // Velocity-based movement. _vel carries both direction and speed so coasting
+      // is natural — just bleed the magnitude each frame when not thrusting.
       const thrusting = keys.has('KeyW') || keys.has('KeyS') || mouseThrust;
       const topSpeed  = MOVE_MAX * sprint;
-      if (thrusting) {
-        speed = Math.min(speed + topSpeed / ACCEL_TIME * dt, topSpeed);
-      } else {
-        speed = Math.max(speed - MOVE_MAX / DECEL_TIME * dt, 0);
-      }
 
-      // While thrusting, capture the flight direction. W flies along the bird's
-      // OWN heading (mouse orbit stays independent); left-click steers, with the
-      // bird chasing where the camera points. The direction is stored so that
-      // after release the bird keeps coasting along it while speed bleeds off.
       if (thrusting) {
-        _moveDir.set(0, 0, 0);
-        if (keys.has('KeyW')) _moveDir.add(getHeading());
-        if (keys.has('KeyS')) _moveDir.sub(getHeading());
+        // Build desired direction. W and left-click are NOT additive in speed —
+        // directions are summed then normalised so holding both doesn't go faster.
+        const tx = new THREE.Vector3();
+        if (keys.has('KeyW'))  tx.add(getHeading());
+        if (keys.has('KeyS'))  tx.sub(getHeading());
         if (mouseThrust) {
-          _moveDir.add(getLook());
+          tx.add(getLook());
           headYaw   += (camYaw   - headYaw)   * 0.12;
           headPitch += (camPitch - headPitch) * 0.12;
         }
-        if (_moveDir.lengthSq() > 1e-6) _moveDir.normalize();
+        if (tx.lengthSq() > 1e-6) {
+          tx.normalize();
+          const curSpeed = _vel.length();
+          const newSpeed = Math.min(curSpeed + topSpeed / ACCEL_TIME * dt, topSpeed);
+          _vel.copy(tx).multiplyScalar(newSpeed);
+        }
+      } else {
+        // Coast: shrink magnitude, keep direction.
+        const curSpeed = _vel.length();
+        const decel    = MOVE_MAX / DECEL_TIME * dt;
+        if (curSpeed <= decel) {
+          _vel.set(0, 0, 0);
+        } else {
+          _vel.multiplyScalar((curSpeed - decel) / curSpeed);
+        }
       }
-      if (speed > 1e-4) {
-        birdPos.addScaledVector(_moveDir, speed);
+
+      if (_vel.lengthSq() > 1e-8) {
+        birdPos.add(_vel);
         moved = true;
       }
       // Spacebar gains elevation.
