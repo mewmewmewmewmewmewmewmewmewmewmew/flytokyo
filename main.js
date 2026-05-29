@@ -34,6 +34,11 @@ const GROUND_SINK   = 0.6;
 const BIRD_HEIGHT   = 3.96;   // 13 ft above terrain
 const BIRD_CAM_BACK = 8;      // metres behind bird
 const BIRD_CAM_UP   = 2;      // metres above bird
+// Fisheye (F3) constants
+const FISH_FOV_DEG  = 130;                    // wide render FOV fed into fisheye shader
+const FISH_CAM_BACK = 3.0;                    // tighter follow distance in fisheye mode
+const FISH_CAM_UP   = 0.8;
+const FISH_THETA    = 65 * Math.PI / 180;     // equidistant half-angle = half of FISH_FOV_DEG
 
 // ─── Coordinate helpers ──────────────────────────────────────────────────────
 
@@ -1687,9 +1692,10 @@ function buildBirdMesh() {
 // ─── Third-person bird controls ───────────────────────────────────────────────
 
 function createBirdControls(camera, domElement) {
-  let yaw   = 0;
-  let pitch = 0;     // look/flight pitch (radians); + = nose up. NOT inverted.
-  let roll  = 0;     // smoothed bank angle applied to the bird mesh
+  let yaw         = 0;
+  let pitch       = 0;     // look/flight pitch (radians); + = nose up. NOT inverted.
+  let roll        = 0;     // smoothed bank angle applied to the bird mesh
+  let fisheyeMode = false;
 
   const LOOK_SPEED  = 0.00175;
   const MOVE_SPEED  = 0.35;
@@ -1720,12 +1726,13 @@ function createBirdControls(camera, domElement) {
   }
 
   function updateCamera() {
-    const look = getLook();
-    // Sit behind the bird along its look direction, lifted a little.
+    const look    = getLook();
+    const camBack = fisheyeMode ? FISH_CAM_BACK : BIRD_CAM_BACK;
+    const camUp   = fisheyeMode ? FISH_CAM_UP   : BIRD_CAM_UP;
     camera.position.set(
-      birdPos.x - look.x * BIRD_CAM_BACK,
-      birdPos.y - look.y * BIRD_CAM_BACK + BIRD_CAM_UP,
-      birdPos.z - look.z * BIRD_CAM_BACK,
+      birdPos.x - look.x * camBack,
+      birdPos.y - look.y * camBack + camUp,
+      birdPos.z - look.z * camBack,
     );
     camera.lookAt(birdPos.x, birdPos.y, birdPos.z);
   }
@@ -1781,6 +1788,7 @@ function createBirdControls(camera, domElement) {
     getYaw()   { return yaw; },
     getPitch() { return pitch; },
     getRoll()  { return roll; },
+    setFisheye(on) { fisheyeMode = on; updateCamera(); },
     init(x, y, z) { birdPos.set(x, y, z); updateCamera(); },
     update() {
       const look = getLook();
@@ -1881,6 +1889,9 @@ function initScene(collision) {
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
+    rtSize = Math.min(w, h);
+    fisheyeRT.setSize(rtSize, rtSize);
+    fisheyeMat.uniforms.uAspect.value = w / h;
   }
   window.addEventListener('resize', onResize);
   // visualViewport fires when the iOS address bar slides in/out (innerHeight
@@ -1890,12 +1901,70 @@ function initScene(collision) {
   const trainRef  = { system: null };
   const labelsRef = { bldgGroup: null, poiGroup: null };
   const LABEL_DIST = 250;
-  let fovTarget = 90;
+  let fisheyeActive = false;
   let lastTime = performance.now();
 
-  // F3 toggles between normal (90°) and extreme fisheye (150°) FOV.
+  // ── Fisheye post-process setup ────────────────────────────────────────────
+  // Square render target (same angular extent in X and Y).
+  let rtSize = Math.min(innerWidth, innerHeight);
+  const fisheyeRT = new THREE.WebGLRenderTarget(rtSize, rtSize, {
+    minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+  });
+
+  // Fullscreen triangle (covers NDC from -1 to beyond 1 so the whole viewport is filled).
+  const fsGeo = new THREE.BufferGeometry();
+  fsGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1,-1,0, 3,-1,0, -1,3,0]), 3));
+  fsGeo.setAttribute('uv',       new THREE.BufferAttribute(new Float32Array([0,0, 2,0, 0,2]), 2));
+
+  const fisheyeMat = new THREE.ShaderMaterial({
+    uniforms: {
+      tScene:    { value: fisheyeRT.texture },
+      uAspect:   { value: innerWidth / innerHeight },
+      uThetaMax: { value: FISH_THETA },
+    },
+    // Equidistant fisheye mapping: fisheye radius r ∝ angle θ from optical axis.
+    // We invert: for each output pixel at radius r, compute the corresponding
+    // rectilinear UV in the wide-FOV render target.
+    vertexShader: /* glsl */`
+      varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
+    `,
+    fragmentShader: /* glsl */`
+      uniform sampler2D tScene;
+      uniform float uAspect;   // screen width / height
+      uniform float uThetaMax; // half-angle of the fisheye circle (= half render FOV)
+      varying vec2 vUv;
+      void main() {
+        // Map screen UV to aspect-corrected space where the fisheye circle has radius 1.
+        vec2 p = (vUv * 2.0 - 1.0) * vec2(uAspect, 1.0);
+        float r = length(p);
+        if (r > 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+
+        // Equidistant: θ = r * θ_max  →  rectilinear: r_rect = tan(θ) / tan(θ_max)
+        float theta = r * uThetaMax;
+        float rRect = (r > 0.0001) ? tan(theta) / tan(uThetaMax) : 0.0;
+        vec2 sampleUv = (p / max(r, 0.0001)) * rRect * 0.5 + 0.5;
+
+        vec4 col = texture2D(tScene, clamp(sampleUv, 0.0, 1.0));
+        // Subtle vignette toward the circular edge.
+        col.rgb *= 1.0 - smoothstep(0.72, 1.0, r) * 0.55;
+        gl_FragColor = col;
+      }
+    `,
+    depthTest: false, depthWrite: false,
+  });
+
+  const fisheyeScene  = new THREE.Scene();
+  const fisheyeOrtho  = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  fisheyeScene.add(new THREE.Mesh(fsGeo, fisheyeMat));
+
+  // F3 toggles true fisheye post-process (circular barrel distortion + close cam).
   window.addEventListener('keydown', e => {
-    if (e.code === 'F3') { e.preventDefault(); fovTarget = fovTarget === 90 ? 150 : 90; }
+    if (e.code === 'F3') {
+      e.preventDefault();
+      fisheyeActive = !fisheyeActive;
+      controls.setFisheye(fisheyeActive);
+    }
   });
 
   (function animate() {
@@ -1909,11 +1978,6 @@ function initScene(collision) {
     birdMesh.position.y += 0.1 * Math.sin(now * 0.002);   // gentle float bob
     birdMesh.rotation.set(controls.getPitch(), controls.getYaw(), controls.getRoll(), 'YXZ');
     if (trainRef.system) trainRef.system.update(dt);
-    // Smooth FOV lerp for fisheye toggle.
-    if (Math.abs(camera.fov - fovTarget) > 0.05) {
-      camera.fov += (fovTarget - camera.fov) * Math.min(dt * 8, 1);
-      camera.updateProjectionMatrix();
-    }
     // Declutter: only keep labels near the camera visible.
     const cp = camera.position;
     for (const grp of [labelsRef.bldgGroup, labelsRef.poiGroup]) {
@@ -1921,7 +1985,25 @@ function initScene(collision) {
         for (const s of grp.children) s.visible = cp.distanceTo(s.position) < LABEL_DIST;
       }
     }
-    renderer.render(scene, camera);
+    if (fisheyeActive) {
+      // Two-pass fisheye: render scene at wide FOV into square RT, then distort.
+      const savedFov    = camera.fov;
+      const savedAspect = camera.aspect;
+      camera.fov    = FISH_FOV_DEG;
+      camera.aspect = 1.0;
+      camera.updateProjectionMatrix();
+      renderer.setRenderTarget(fisheyeRT);
+      renderer.render(scene, camera);
+      renderer.setRenderTarget(null);
+      renderer.render(fisheyeScene, fisheyeOrtho);
+      camera.fov    = savedFov;
+      camera.aspect = savedAspect;
+      camera.updateProjectionMatrix();
+    } else {
+      camera.fov = 90;
+      camera.updateProjectionMatrix();
+      renderer.render(scene, camera);
+    }
   })();
 
   return { scene, camera, controls, trainRef, labelsRef, ground };
