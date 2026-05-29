@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { fishUniforms, FISH_PROJ_GLSL } from './fisheye.js';
 
 // ─── Car dimensions (metres) ──────────────────────────────────────────────────
 const CAR_L    = 20;
@@ -16,11 +17,12 @@ const TRAIN_SPACING = TRAIN_LEN * 4;                  // 1 train + 3 gap ≈ 678
 const CAR_VERT = /* glsl */`
   varying float vDist;
   varying vec3  vNorm;
+  ${FISH_PROJ_GLSL}
   void main() {
     vNorm = normalMatrix * normal;
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     vDist   = length(mv.xyz);
-    gl_Position = projectionMatrix * mv;
+    gl_Position = projectVertex(mv);
   }
 `;
 
@@ -57,6 +59,7 @@ function makeCarMat(colorHex, opacity) {
       uNear:    { value: 120 },
       uFar:     { value: 900 },
       uXray:    { value: 0.0 },
+      ...fishUniforms(),
     },
     depthTest:   true,
     depthWrite:  true,

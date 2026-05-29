@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
 import { TrainSystem } from './train.js';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL } from './fisheye.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -34,11 +35,14 @@ const GROUND_SINK   = 0.6;
 const BIRD_HEIGHT   = 3.96;   // 13 ft above terrain
 const BIRD_CAM_BACK = 8;      // metres behind bird
 const BIRD_CAM_UP   = 2;      // metres above bird
-// Fisheye (F3) constants — true cubemap-based fisheye that wraps around the camera
-const FISH_FOV_DEG  = 220;    // total fisheye angle
+// Fisheye (F3) constants — single-pass vertex-warp fisheye (1 render, not 6).
+// FISH_FOV_DEG + the projection live in fisheye.js (shared with train.js).
 const FISH_CAM_BACK = 4.0;    // follow distance in fisheye mode
 const FISH_CAM_UP   = 0.45;   // hug close to the bird's level
-const FISH_CUBE_RES = 512;    // per-face cubemap resolution (low for perf; AA recovers edges)
+// Max edge length (metres) for geometry tessellation, so long straight lines
+// curve smoothly once the fisheye warp bends them.
+const WALL_SEG      = 9;      // building wall grid cell
+const EDGE_SEG      = 7;      // wireframe outline segment
 
 // ─── Coordinate helpers ──────────────────────────────────────────────────────
 
@@ -627,12 +631,13 @@ const SURF_VERT = /* glsl */`
   varying vec3  vCol;
   varying float vDist;
   varying vec3  vNorm;
+  ${FISH_PROJ_GLSL}
   void main() {
     vCol  = color;
     vNorm = normalMatrix * normal;
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     vDist = length(mv.xyz);
-    gl_Position = projectionMatrix * mv;
+    gl_Position = projectVertex(mv);
   }
 `;
 
@@ -658,11 +663,12 @@ const LINE_VERT = /* glsl */`
   attribute vec3 color;
   varying vec3  vCol;
   varying float vDist;
+  ${FISH_PROJ_GLSL}
   void main() {
     vCol = color;
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     vDist = length(mv.xyz);
-    gl_Position = projectionMatrix * mv;
+    gl_Position = projectVertex(mv);
   }
 `;
 
@@ -717,7 +723,10 @@ const WATER_FRAG = /* glsl */`
 
 function fadeUniforms() {
   // uXray: 0 = solid (default), 1 = translucent x-ray (right-click held)
-  return { uNear: { value: FADE_NEAR }, uFar: { value: FADE_FAR }, uXray: { value: 0.0 } };
+  return {
+    uNear: { value: FADE_NEAR }, uFar: { value: FADE_FAR }, uXray: { value: 0.0 },
+    ...fishUniforms(),
+  };
 }
 
 function createMaterials() {
@@ -847,13 +856,31 @@ function buildSurfaceMesh(buildings, mat) {
       const j = (i + 1) % n;
       const [x0, z0] = ring[i], [x1, z1] = ring[j];
       // Extend wall bottoms below the sunk ground so no gap shows at the base.
-    const h0 = vertexH[i] - (GROUND_SINK + 0.5), h1 = vertexH[j] - (GROUND_SINK + 0.5);
+      const h0 = vertexH[i] - (GROUND_SINK + 0.5), h1 = vertexH[j] - (GROUND_SINK + 0.5);
       const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz) || 1;
+      const nxx = dz / len, nzz = -dx / len;
+      // Tessellate each wall into a grid so its silhouette curves under the
+      // fisheye warp instead of staying a straight chord. Small walls stay 1×1.
+      const cols = Math.min(6, Math.max(1, Math.ceil(len / WALL_SEG)));
+      const tall = topY - Math.min(h0, h1);
+      const rows = Math.min(8, Math.max(1, Math.ceil(tall / WALL_SEG)));
       const b = v;
-      pos.push(x0, h0, z0,  x1, h1, z1,  x1, topY, z1,  x0, topY, z0);
-      for (let k = 0; k < 4; k++) { norm.push(dz / len, 0, -dx / len); col.push(wc.r, wc.g, wc.b); }
-      idx.push(b, b+1, b+2,  b, b+2, b+3);
-      v += 4;
+      for (let cu = 0; cu <= cols; cu++) {
+        const u = cu / cols;
+        const wx = x0 + dx * u, wz = z0 + dz * u, base = h0 + (h1 - h0) * u;
+        for (let rv = 0; rv <= rows; rv++) {
+          const y = base + (topY - base) * (rv / rows);
+          pos.push(wx, y, wz); norm.push(nxx, 0, nzz); col.push(wc.r, wc.g, wc.b); v++;
+        }
+      }
+      const stride = rows + 1;
+      for (let cu = 0; cu < cols; cu++) {
+        for (let rv = 0; rv < rows; rv++) {
+          const a = b + cu * stride + rv;
+          const c = a + stride;
+          idx.push(a, c, c + 1,  a, c + 1, a + 1);
+        }
+      }
     }
   }
 
@@ -877,9 +904,19 @@ function buildEdgesGeoMesh(buildings, mat) {
     const edgesGeo = new THREE.EdgesGeometry(base);
     const posAttr  = edgesGeo.getAttribute('position');
     const c = wireColor(height);
-    for (let i = 0; i < posAttr.count; i++) {
-      allPos.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
-      allCol.push(c.r, c.g, c.b);
+    // Subdivide each outline segment so it curves smoothly under the fisheye warp.
+    for (let i = 0; i + 1 < posAttr.count; i += 2) {
+      const ax = posAttr.getX(i),   ay = posAttr.getY(i),   az = posAttr.getZ(i);
+      const bx = posAttr.getX(i+1), by = posAttr.getY(i+1), bz = posAttr.getZ(i+1);
+      const seg = Math.min(8, Math.max(1, Math.ceil(Math.hypot(bx-ax, by-ay, bz-az) / EDGE_SEG)));
+      let px = ax, py = ay, pz = az;
+      for (let s = 1; s <= seg; s++) {
+        const t = s / seg;
+        const qx = ax + (bx-ax)*t, qy = ay + (by-ay)*t, qz = az + (bz-az)*t;
+        allPos.push(px, py, pz, qx, qy, qz);
+        allCol.push(c.r, c.g, c.b, c.r, c.g, c.b);
+        px = qx; py = qy; pz = qz;
+      }
     }
     base.dispose();
     edgesGeo.dispose();
@@ -1638,11 +1675,24 @@ function createFPSControls(camera, domElement, collision) {
 
 // ─── Polygon bird mesh ────────────────────────────────────────────────────────
 
+// Patch a built-in material so its vertices route through the fisheye projection
+// (shared uFish* uniforms) — used for the bird, which isn't a ShaderMaterial.
+function applyFisheye(mat) {
+  mat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, fishUniforms());
+    shader.vertexShader = FISH_PROJ_GLSL + '\n' + shader.vertexShader.replace(
+      '#include <project_vertex>',
+      'vec4 mvPosition = modelViewMatrix * vec4(transformed, 1.0); gl_Position = projectVertex(mvPosition);',
+    );
+  };
+  return mat;
+}
+
 function buildBirdMesh() {
   const group   = new THREE.Group();
-  const matBody = new THREE.MeshBasicMaterial({ color: 0x2c8fc7, wireframe: true });
-  const matWing = new THREE.MeshBasicMaterial({ color: 0x46c0ff, wireframe: true });
-  const matBeak = new THREE.MeshBasicMaterial({ color: 0xff9a3c, wireframe: true });
+  const matBody = applyFisheye(new THREE.MeshBasicMaterial({ color: 0x2c8fc7, wireframe: true }));
+  const matWing = applyFisheye(new THREE.MeshBasicMaterial({ color: 0x46c0ff, wireframe: true }));
+  const matBeak = applyFisheye(new THREE.MeshBasicMaterial({ color: 0xff9a3c, wireframe: true }));
 
   // Bird faces −Z (Three.js default forward). Dorsal (top-down) layout:
   //  −Z = head/beak, +Z = tail, ±X = wingtips, +Y = up (back).
@@ -1926,15 +1976,17 @@ function initScene(collision) {
       uniforms: {
         uGround: { value: new THREE.Color(0xd8dce8) },
         uFar:    { value: FADE_FAR },
+        ...fishUniforms(),
       },
       transparent: true,
       depthWrite: true,   // solid default: ground occludes underground tunnels/trains
       vertexShader: /* glsl */`
         varying vec2 vXZ;
+        ${FISH_PROJ_GLSL}
         void main() {
           vec4 world = modelMatrix * vec4(position, 1.0);
           vXZ = world.xz;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          gl_Position = projectVertex(modelViewMatrix * vec4(position, 1.0));
         }
       `,
       fragmentShader: /* glsl */`
@@ -1973,11 +2025,7 @@ function initScene(collision) {
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
-    if (fisheyeMat) {
-      fisheyeMat.uniforms.uAspect.value = w / h;
-      const db = renderer.getDrawingBufferSize(new THREE.Vector2());
-      fisheyeMat.uniforms.uTexel.value.set(1 / db.x, 1 / db.y);
-    }
+    FISH_U.uFishAspect.value = w / h;
   }
   window.addEventListener('resize', onResize);
   // visualViewport fires when the iOS address bar slides in/out (innerHeight
@@ -1990,100 +2038,35 @@ function initScene(collision) {
   let fisheyeActive = false;
   let lastTime = performance.now();
 
-  // ── Fisheye post-process setup (cubemap → fisheye reprojection) ────────────
-  // A true fisheye can't come from one wide perspective render (rectilinear
-  // projection stretches to infinity past ~120°). Instead we render the scene
-  // into a cubemap from the camera position — six clean 90° faces — then in the
-  // post shader cast a fisheye ray per pixel and sample the cube. This wraps the
-  // whole world (>180°) around the camera with no edge-smearing.
-  // Low-res cubemap with mipmaps so distant geometry is minification-filtered
-  // (kills shimmer); the multi-tap reprojection below adds edge anti-aliasing.
-  const cubeRT = new THREE.WebGLCubeRenderTarget(FISH_CUBE_RES, {
-    minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter,
-    generateMipmaps: true,
-  });
-  // Far plane clipped to the fade distance: buildings past FADE_FAR are invisible
-  // anyway, so clipping here frustum-culls them out of the face renders.
-  const cubeCam = new THREE.CubeCamera(0.15, FADE_FAR, cubeRT);
-
-  // Render all 6 cube faces via CubeCamera (handles mipmap regen correctly).
-  function renderCubeFaces() {
-    cubeCam.position.copy(camera.position);
-    cubeCam.update(renderer, scene);
+  // ── Single-pass fisheye ────────────────────────────────────────────────────
+  // The whole scene is rendered ONCE; the fisheye warp lives in every vertex
+  // shader (FISH_PROJ_GLSL), toggled by the shared uFishOn uniform. This is as
+  // cheap as normal flight (1 pass vs the old cubemap's 6). Frustum culling is
+  // disabled while active so geometry off to the sides (visible at 220°, but
+  // outside the camera's normal frustum) isn't culled before it can be warped.
+  // Disable culling while fisheye is active (peripheral geometry visible at 220°
+  // lies outside the normal frustum). Preserve each object's original setting so
+  // objects that opt out of culling (e.g. trains) keep their behaviour on restore.
+  function fishCullEnter() {
+    scene.traverse(o => {
+      if (!(o.isMesh || o.isLine || o.isLineSegments || o.isPoints)) return;
+      if (o.userData._fc === undefined) o.userData._fc = o.frustumCulled;
+      o.frustumCulled = false;
+    });
+  }
+  function fishCullExit() {
+    scene.traverse(o => {
+      if (o.userData._fc !== undefined) { o.frustumCulled = o.userData._fc; delete o.userData._fc; }
+    });
   }
 
-  const fsGeo = new THREE.BufferGeometry();
-  fsGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1,-1,0, 3,-1,0, -1,3,0]), 3));
-  fsGeo.setAttribute('uv',       new THREE.BufferAttribute(new Float32Array([0,0, 2,0, 0,2]), 2));
-
-  const dbSize = renderer.getDrawingBufferSize(new THREE.Vector2());
-
-  // Cubemap → fisheye, with 4-tap anti-aliasing and a procedural sky for the
-  // empty (no-geometry) directions so the background isn't black.
-  const fisheyeMat = new THREE.ShaderMaterial({
-    uniforms: {
-      tCube:    { value: cubeRT.texture },
-      uHalfFov: { value: (FISH_FOV_DEG * Math.PI / 180) / 2 },
-      uAspect:  { value: innerWidth / innerHeight },
-      uCamRot:  { value: new THREE.Matrix3() },          // view-space → world-space rotation
-      uTexel:   { value: new THREE.Vector2(1 / dbSize.x, 1 / dbSize.y) },
-      uSkyTop:  { value: new THREE.Color(0xf4f8ff) },
-      uSkyBot:  { value: new THREE.Color(0xd8dce8) },
-    },
-    vertexShader: /* glsl */`
-      varying vec2 vUv;
-      void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
-    `,
-    fragmentShader: /* glsl */`
-      uniform samplerCube tCube;
-      uniform float uHalfFov;
-      uniform float uAspect;
-      uniform mat3  uCamRot;
-      uniform vec2  uTexel;
-      uniform vec3  uSkyTop;
-      uniform vec3  uSkyBot;
-      varying vec2  vUv;
-      // World-space ray for a screen UV (equidistant fisheye: angle off the
-      // forward −Z axis is proportional to screen radius).
-      vec3 rayDir(vec2 uv) {
-        vec2 p = uv * 2.0 - 1.0;
-        if (uAspect >= 1.0) p.x *= uAspect; else p.y /= uAspect;
-        float r     = length(p);
-        float theta = r * uHalfFov;
-        float phi   = atan(p.y, p.x);
-        float st    = sin(theta);
-        return normalize(uCamRot * vec3(st * cos(phi), st * sin(phi), -cos(theta)));
-      }
-      vec4 fishSample(vec2 uv) { return textureCube(tCube, rayDir(uv)); }
-      void main() {
-        // Rotated-grid 4× supersample to anti-alias the curved edges.
-        vec2 o = uTexel * 0.375;
-        vec4 acc = fishSample(vUv + vec2( o.x,  o.y))
-                 + fishSample(vUv + vec2(-o.y,  o.x))
-                 + fishSample(vUv + vec2(-o.x, -o.y))
-                 + fishSample(vUv + vec2( o.y, -o.x));
-        acc *= 0.25;
-        // Composite the (premultiplied) scene over a vertical sky gradient so
-        // empty directions show sky, not black.
-        vec3 sky = mix(uSkyBot, uSkyTop, clamp(rayDir(vUv).y * 0.5 + 0.5, 0.0, 1.0));
-        vec3 col = acc.rgb + sky * (1.0 - clamp(acc.a, 0.0, 1.0));
-        gl_FragColor = vec4(col, 1.0);
-      }
-    `,
-    depthTest: false, depthWrite: false,
-  });
-
-  const fisheyeOrtho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  const fisheyeScene = new THREE.Scene();
-  fisheyeScene.add(new THREE.Mesh(fsGeo, fisheyeMat));
-
-  const _camRot4 = new THREE.Matrix4();
-
-  // F3 toggles cubemap fisheye + closer follow camera.
+  // F3 toggles fisheye + closer follow camera.
   window.addEventListener('keydown', e => {
     if (e.code === 'F3') {
       e.preventDefault();
       fisheyeActive = !fisheyeActive;
+      FISH_U.uFishOn.value = fisheyeActive ? 1 : 0;
+      if (fisheyeActive) fishCullEnter(); else fishCullExit();
       controls.setFisheye(fisheyeActive);
     }
   });
@@ -2101,24 +2084,20 @@ function initScene(collision) {
     if (trainRef.system) trainRef.system.update(dt);
     // Declutter: only keep labels near the camera visible.
     const cp = camera.position;
+    // Labels are camera-facing billboards/sprites that use normal projection, so
+    // they'd float detached from the warped world — hide them while fisheye is on.
     for (const grp of [labelsRef.bldgGroup, labelsRef.poiGroup]) {
       if (grp && grp.visible) {
-        for (const s of grp.children) s.visible = cp.distanceTo(s.position) < LABEL_DIST;
+        for (const s of grp.children) s.visible = !fisheyeActive && cp.distanceTo(s.position) < LABEL_DIST;
       }
     }
     if (fisheyeActive) {
-      // Refresh the cubemap from the camera position, then reproject to fisheye.
-      renderCubeFaces();
-      camera.updateMatrixWorld();
-      _camRot4.extractRotation(camera.matrixWorld);
-      fisheyeMat.uniforms.uCamRot.value.setFromMatrix4(_camRot4);
-      renderer.setRenderTarget(null);
-      renderer.render(fisheyeScene, fisheyeOrtho);
-    } else {
-      camera.fov = 90;
-      camera.updateProjectionMatrix();
-      renderer.render(scene, camera);
+      // Newly streamed-in tiles must also skip frustum culling (they'd otherwise
+      // pop at the periphery). Cheap: a handful of merged meshes per tile.
+      fishCullEnter();
+      FISH_U.uFishAspect.value = camera.aspect;
     }
+    renderer.render(scene, camera);
   })();
 
   return { scene, camera, controls, trainRef, labelsRef, ground };
