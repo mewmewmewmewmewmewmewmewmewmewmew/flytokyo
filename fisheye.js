@@ -25,12 +25,15 @@ export function fishUniforms() {
   };
 }
 
+// Vertex side: declares the uniforms, the view-space position varying used by the
+// fragment FOV clip, and projectVertex(). Set vFishView = mv.xyz in each main().
 export const FISH_PROJ_GLSL = /* glsl */`
   uniform float uFishOn;
   uniform float uFishHalfFov;
   uniform float uFishAspect;
   uniform float uFishNear;
   uniform float uFishFar;
+  varying vec3  vFishView;
   // View-space position → clip space. Normal projection when off; equidistant
   // full-frame fisheye when on (in view space the camera looks down −Z).
   vec4 projectVertex(vec4 mv) {
@@ -45,5 +48,22 @@ export const FISH_PROJ_GLSL = /* glsl */`
     vec2  xy    = s * r * vec2(cos(phi), a * sin(phi));           // circular in pixels, fills frame
     float zc    = clamp((len - uFishNear) / (uFishFar - uFishNear), 0.0, 1.0) * 2.0 - 1.0;
     return vec4(xy, zc, 1.0);
+  }
+`;
+
+// Fragment side: discard anything beyond the fisheye field of view. Big flat
+// geometry (ground, road/river decals) can produce triangles that straddle the
+// FOV edge or wrap behind the camera; the warp interpolates them as straight
+// chords that smear across the screen. Recomputing the angle per-fragment and
+// discarding past the FOV removes those smears. Call fishClip() first in main().
+export const FISH_FRAG_GLSL = /* glsl */`
+  uniform float uFishOn;
+  uniform float uFishHalfFov;
+  varying vec3  vFishView;
+  void fishClip() {
+    if (uFishOn < 0.5) return;
+    float L     = length(vFishView);
+    float theta = acos(clamp(-vFishView.z / max(L, 1e-4), -1.0, 1.0));
+    if (theta > uFishHalfFov) discard;
   }
 `;

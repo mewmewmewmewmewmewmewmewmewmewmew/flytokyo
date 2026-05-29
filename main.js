@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
 import { TrainSystem } from './train.js';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL } from './fisheye.js';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL } from './fisheye.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -637,6 +637,7 @@ const SURF_VERT = /* glsl */`
     vNorm = normalMatrix * normal;
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     vDist = length(mv.xyz);
+    vFishView = mv.xyz;
     gl_Position = projectVertex(mv);
   }
 `;
@@ -648,7 +649,9 @@ const SURF_FRAG = /* glsl */`
   uniform float uNear;
   uniform float uFar;
   uniform float uXray;
+  ${FISH_FRAG_GLSL}
   void main() {
+    fishClip();
     vec3  L     = normalize(vec3(0.5, 1.0, 0.3));
     float diff  = max(dot(normalize(vNorm), L), 0.0);
     float light = 0.60 + 0.40 * diff;
@@ -668,6 +671,7 @@ const LINE_VERT = /* glsl */`
     vCol = color;
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     vDist = length(mv.xyz);
+    vFishView = mv.xyz;
     gl_Position = projectVertex(mv);
   }
 `;
@@ -677,7 +681,9 @@ const WIRE_FRAG = /* glsl */`
   varying float vDist;
   uniform float uNear;
   uniform float uFar;
+  ${FISH_FRAG_GLSL}
   void main() {
+    fishClip();
     float fade = 1.0 - smoothstep(uNear, uFar, vDist);
     if (fade < 0.01) discard;
     gl_FragColor = vec4(vCol, fade);
@@ -690,7 +696,9 @@ const STREET_FRAG = /* glsl */`
   uniform float uNear;
   uniform float uFar;
   uniform float uXray;
+  ${FISH_FRAG_GLSL}
   void main() {
+    fishClip();
     float fade = 1.0 - smoothstep(uNear, uFar, vDist);
     if (fade < 0.01) discard;
     gl_FragColor = vec4(vCol, mix(1.0, 0.5, uXray) * fade);
@@ -702,7 +710,9 @@ const METRO_FRAG = /* glsl */`
   varying float vDist;
   uniform float uNear;
   uniform float uFar;
+  ${FISH_FRAG_GLSL}
   void main() {
+    fishClip();
     float fade = 1.0 - smoothstep(uNear * 0.5, uFar, vDist);
     if (fade < 0.01) discard;
     gl_FragColor = vec4(vCol, 0.05 * fade);
@@ -714,7 +724,9 @@ const WATER_FRAG = /* glsl */`
   varying float vDist;
   uniform float uNear;
   uniform float uFar;
+  ${FISH_FRAG_GLSL}
   void main() {
+    fishClip();
     float fade = 1.0 - smoothstep(uNear, uFar, vDist);
     if (fade < 0.01) discard;
     gl_FragColor = vec4(vCol, 0.80 * fade);
@@ -1682,7 +1694,7 @@ function applyFisheye(mat) {
     Object.assign(shader.uniforms, fishUniforms());
     shader.vertexShader = FISH_PROJ_GLSL + '\n' + shader.vertexShader.replace(
       '#include <project_vertex>',
-      'vec4 mvPosition = modelViewMatrix * vec4(transformed, 1.0); gl_Position = projectVertex(mvPosition);',
+      'vec4 mvPosition = modelViewMatrix * vec4(transformed, 1.0); vFishView = mvPosition.xyz; gl_Position = projectVertex(mvPosition);',
     );
   };
   return mat;
@@ -1986,14 +1998,18 @@ function initScene(collision) {
         void main() {
           vec4 world = modelMatrix * vec4(position, 1.0);
           vXZ = world.xz;
-          gl_Position = projectVertex(modelViewMatrix * vec4(position, 1.0));
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          vFishView = mv.xyz;
+          gl_Position = projectVertex(mv);
         }
       `,
       fragmentShader: /* glsl */`
         uniform vec3  uGround;
         uniform float uFar;
         varying vec2  vXZ;
+        ${FISH_FRAG_GLSL}
         void main() {
+          fishClip();
           float d     = length(vXZ - cameraPosition.xz);
           float alpha = 1.0 - smoothstep(uFar * 0.5, uFar, d);
           if (alpha < 0.01) discard;

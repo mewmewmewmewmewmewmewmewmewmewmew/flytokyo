@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { fishUniforms, FISH_PROJ_GLSL } from './fisheye.js';
+import { fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL } from './fisheye.js';
 
 // ─── Car dimensions (metres) ──────────────────────────────────────────────────
 const CAR_L    = 20;
@@ -22,6 +22,7 @@ const CAR_VERT = /* glsl */`
     vNorm = normalMatrix * normal;
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     vDist   = length(mv.xyz);
+    vFishView = mv.xyz;
     gl_Position = projectVertex(mv);
   }
 `;
@@ -35,7 +36,9 @@ const CAR_FRAG = /* glsl */`
   uniform float uXray;
   varying float vDist;
   varying vec3  vNorm;
+  ${FISH_FRAG_GLSL}
   void main() {
+    fishClip();
     float fade = 1.0 - smoothstep(uNear, uFar, vDist);
     if (fade < 0.01) discard;
     if (uEndFade < 0.01) discard;
