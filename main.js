@@ -39,7 +39,6 @@ const FISH_FOV_DEG  = 220;    // total fisheye angle
 const FISH_CAM_BACK = 4.0;    // follow distance in fisheye mode
 const FISH_CAM_UP   = 0.45;   // hug close to the bird's level
 const FISH_CUBE_RES = 512;    // per-face cubemap resolution (low for perf; AA recovers edges)
-const FISH_BLUR     = 0.55;   // temporal motion-blur retention (0 = none, →1 = long trails)
 
 // ─── Coordinate helpers ──────────────────────────────────────────────────────
 
@@ -1693,8 +1692,13 @@ function buildBirdMesh() {
 // ─── Third-person bird controls ───────────────────────────────────────────────
 
 function createBirdControls(camera, domElement) {
-  let yaw         = 0;
-  let pitch       = 0;     // look/flight pitch (radians); + = nose up. NOT inverted.
+  // Camera look (controlled by mouse / A-D) is decoupled from the bird's heading.
+  // The mouse orbits the camera freely; the bird only turns to follow the camera
+  // while you're actively thrusting (holding left mouse / W).
+  let camYaw      = 0;
+  let camPitch    = 0;     // + = looking up. NOT inverted.
+  let headYaw     = 0;     // bird's facing/flight heading (eases toward camYaw while thrusting)
+  let headPitch   = 0;
   let roll        = 0;     // smoothed bank angle applied to the bird mesh
   let fisheyeMode = false;
 
@@ -1721,9 +1725,9 @@ function createBirdControls(camera, domElement) {
   });
   window.addEventListener('keyup', e => keys.delete(e.code));
 
-  // Unit vector pointing where the bird is looking (full 3D, includes pitch).
+  // Unit vector pointing where the camera looks (full 3D, includes pitch).
   function getLook() {
-    _euler.set(pitch, yaw, 0);
+    _euler.set(camPitch, camYaw, 0);
     _look.set(0, 0, -1).applyEuler(_euler);
     return _look;
   }
@@ -1756,8 +1760,8 @@ function createBirdControls(camera, domElement) {
   // Non-inverted: mouse up → look up (pitch increases), mouse right → turn right.
   document.addEventListener('mousemove', e => {
     if (document.pointerLockElement !== domElement) return;
-    yaw   += -e.movementX * LOOK_SPEED;
-    pitch  = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch - e.movementY * LOOK_SPEED));
+    camYaw   += -e.movementX * LOOK_SPEED;
+    camPitch  = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, camPitch - e.movementY * LOOK_SPEED));
     updateCamera();
     dispatcher.dispatchEvent({ type: 'change' });
   });
@@ -1778,8 +1782,8 @@ function createBirdControls(camera, domElement) {
       const cx = e.touches[0].clientX, cy = e.touches[0].clientY;
       const dx = cx - touchLast.x, dy = cy - touchLast.y;
       touchLast = { x: cx, y: cy };
-      yaw   += -dx * TOUCH_SPEED;
-      pitch  = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch - dy * TOUCH_SPEED));
+      camYaw   += -dx * TOUCH_SPEED;
+      camPitch  = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, camPitch - dy * TOUCH_SPEED));
       updateCamera();
       dispatcher.dispatchEvent({ type: 'change' });
     }
@@ -1793,12 +1797,12 @@ function createBirdControls(camera, domElement) {
     keys.delete('KeyW');
   });
 
-  let prevYaw = 0;
+  let prevHeadYaw = 0;
 
   const dispatcher = Object.assign(new THREE.EventDispatcher(), {
     birdPos,
-    getYaw()   { return yaw; },
-    getPitch() { return pitch; },
+    getYaw()   { return headYaw; },
+    getPitch() { return headPitch; },
     getRoll()  { return roll; },
     setFisheye(on) { fisheyeMode = on; updateCamera(); },
     init(x, y, z) { birdPos.set(x, y, z); updateCamera(); },
@@ -1806,16 +1810,22 @@ function createBirdControls(camera, domElement) {
       const sprint = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 2 : 1;
       let moved = false;
 
-      // A/D turn (yaw) left/right. Apply before reading the look vector so thrust
-      // this frame uses the updated heading.
-      if (keys.has('KeyA')) { yaw += TURN_SPEED; moved = true; }
-      if (keys.has('KeyD')) { yaw -= TURN_SPEED; moved = true; }
+      // A/D turn the camera look (keyboard alternative to the mouse).
+      if (keys.has('KeyA')) { camYaw += TURN_SPEED; moved = true; }
+      if (keys.has('KeyD')) { camYaw -= TURN_SPEED; moved = true; }
 
       const look = getLook();
+      const thrusting = mouseThrust || keys.has('KeyW');
 
-      // Thrust toward the camera direction: hold left mouse (or W). S reverses.
-      if (mouseThrust || keys.has('KeyW')) { birdPos.addScaledVector(look,  MOVE_SPEED * sprint); moved = true; }
-      if (keys.has('KeyS'))                { birdPos.addScaledVector(look, -MOVE_SPEED * sprint); moved = true; }
+      // Bird flies toward the camera direction while thrusting; it also turns to
+      // face that direction (so mouse-look alone never changes the bird's heading).
+      if (thrusting) {
+        birdPos.addScaledVector(look, MOVE_SPEED * sprint);
+        headYaw   += (camYaw   - headYaw)   * 0.12;
+        headPitch += (camPitch - headPitch) * 0.12;
+        moved = true;
+      }
+      if (keys.has('KeyS')) { birdPos.addScaledVector(look, -MOVE_SPEED * sprint); moved = true; }
       // Spacebar gains elevation.
       if (keys.has('Space')) { birdPos.y += LIFT_SPEED * sprint; moved = true; }
 
@@ -1823,10 +1833,10 @@ function createBirdControls(camera, domElement) {
       const groundY = terrain ? terrain.sample(birdPos.x, birdPos.z) : 0;
       if (birdPos.y < groundY + MIN_CLEAR) birdPos.y = groundY + MIN_CLEAR;
 
-      // Bank into turns: roll proportional to how fast yaw is changing.
-      const dYaw = yaw - prevYaw;
-      prevYaw = yaw;
-      const bankTarget = Math.max(-0.6, Math.min(0.6, dYaw * 9));
+      // Bank into turns: roll proportional to how fast the bird's heading changes.
+      const dHead = headYaw - prevHeadYaw;
+      prevHeadYaw = headYaw;
+      const bankTarget = Math.max(-0.6, Math.min(0.6, dHead * 9));
       roll += (bankTarget - roll) * 0.15;   // smooth toward target / back to level
 
       if (moved) dispatcher.dispatchEvent({ type: 'change' });
@@ -1908,9 +1918,6 @@ function initScene(collision) {
       fisheyeMat.uniforms.uAspect.value = w / h;
       const db = renderer.getDrawingBufferSize(new THREE.Vector2());
       fisheyeMat.uniforms.uTexel.value.set(1 / db.x, 1 / db.y);
-      sceneRT.setSize(db.x, db.y);
-      hist0.setSize(db.x, db.y);
-      hist1.setSize(db.x, db.y);
     }
   }
   window.addEventListener('resize', onResize);
@@ -1951,13 +1958,9 @@ function initScene(collision) {
   fsGeo.setAttribute('uv',       new THREE.BufferAttribute(new Float32Array([0,0, 2,0, 0,2]), 2));
 
   const dbSize = renderer.getDrawingBufferSize(new THREE.Vector2());
-  const rtOpts = { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter };
-  // sceneRT: this frame's fisheye image. hist0/hist1: ping-pong motion-blur history.
-  const sceneRT = new THREE.WebGLRenderTarget(dbSize.x, dbSize.y, rtOpts);
-  let   hist0   = new THREE.WebGLRenderTarget(dbSize.x, dbSize.y, rtOpts);
-  let   hist1   = new THREE.WebGLRenderTarget(dbSize.x, dbSize.y, rtOpts);
 
-  // Pass 1: cubemap → fisheye, with 4-tap rotated-grid anti-aliasing.
+  // Cubemap → fisheye, with 4-tap anti-aliasing and a procedural sky for the
+  // empty (no-geometry) directions so the background isn't black.
   const fisheyeMat = new THREE.ShaderMaterial({
     uniforms: {
       tCube:    { value: cubeRT.texture },
@@ -1965,6 +1968,8 @@ function initScene(collision) {
       uAspect:  { value: innerWidth / innerHeight },
       uCamRot:  { value: new THREE.Matrix3() },          // view-space → world-space rotation
       uTexel:   { value: new THREE.Vector2(1 / dbSize.x, 1 / dbSize.y) },
+      uSkyTop:  { value: new THREE.Color(0xf4f8ff) },
+      uSkyBot:  { value: new THREE.Color(0xd8dce8) },
     },
     vertexShader: /* glsl */`
       varying vec2 vUv;
@@ -1976,97 +1981,51 @@ function initScene(collision) {
       uniform float uAspect;
       uniform mat3  uCamRot;
       uniform vec2  uTexel;
+      uniform vec3  uSkyTop;
+      uniform vec3  uSkyBot;
       varying vec2  vUv;
-      // Equidistant fisheye: angle off the forward (-Z) axis ∝ screen radius.
-      vec3 fishSample(vec2 uv) {
+      // World-space ray for a screen UV (equidistant fisheye: angle off the
+      // forward −Z axis is proportional to screen radius).
+      vec3 rayDir(vec2 uv) {
         vec2 p = uv * 2.0 - 1.0;
         if (uAspect >= 1.0) p.x *= uAspect; else p.y /= uAspect;
         float r     = length(p);
         float theta = r * uHalfFov;
         float phi   = atan(p.y, p.x);
         float st    = sin(theta);
-        vec3 dir = vec3(st * cos(phi), st * sin(phi), -cos(theta));
-        return textureCube(tCube, normalize(uCamRot * dir)).rgb;
+        return normalize(uCamRot * vec3(st * cos(phi), st * sin(phi), -cos(theta)));
       }
+      vec4 fishSample(vec2 uv) { return textureCube(tCube, rayDir(uv)); }
       void main() {
         // Rotated-grid 4× supersample to anti-alias the curved edges.
         vec2 o = uTexel * 0.375;
-        vec3 c = fishSample(vUv + vec2( o.x,  o.y))
-               + fishSample(vUv + vec2(-o.y,  o.x))
-               + fishSample(vUv + vec2(-o.x, -o.y))
-               + fishSample(vUv + vec2( o.y, -o.x));
-        gl_FragColor = vec4(c * 0.25, 1.0);
+        vec4 acc = fishSample(vUv + vec2( o.x,  o.y))
+                 + fishSample(vUv + vec2(-o.y,  o.x))
+                 + fishSample(vUv + vec2(-o.x, -o.y))
+                 + fishSample(vUv + vec2( o.y, -o.x));
+        acc *= 0.25;
+        // Composite the (premultiplied) scene over a vertical sky gradient so
+        // empty directions show sky, not black.
+        vec3 sky = mix(uSkyBot, uSkyTop, clamp(rayDir(vUv).y * 0.5 + 0.5, 0.0, 1.0));
+        vec3 col = acc.rgb + sky * (1.0 - clamp(acc.a, 0.0, 1.0));
+        gl_FragColor = vec4(col, 1.0);
       }
-    `,
-    depthTest: false, depthWrite: false,
-  });
-
-  // Pass 2: temporal motion blur — blend this frame with the accumulated history.
-  const blurMat = new THREE.ShaderMaterial({
-    uniforms: {
-      tCurrent: { value: null },
-      tHistory: { value: null },
-      uMix:     { value: FISH_BLUR },
-    },
-    vertexShader: /* glsl */`
-      varying vec2 vUv;
-      void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
-    `,
-    fragmentShader: /* glsl */`
-      uniform sampler2D tCurrent;
-      uniform sampler2D tHistory;
-      uniform float uMix;
-      varying vec2 vUv;
-      void main() {
-        vec3 cur = texture2D(tCurrent, vUv).rgb;
-        vec3 his = texture2D(tHistory, vUv).rgb;
-        gl_FragColor = vec4(mix(cur, his, uMix), 1.0);
-      }
-    `,
-    depthTest: false, depthWrite: false,
-  });
-
-  // Pass 3: copy the blended history to the screen.
-  const copyMat = new THREE.ShaderMaterial({
-    uniforms: { tMap: { value: null } },
-    vertexShader: /* glsl */`
-      varying vec2 vUv;
-      void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
-    `,
-    fragmentShader: /* glsl */`
-      uniform sampler2D tMap;
-      varying vec2 vUv;
-      void main() { gl_FragColor = texture2D(tMap, vUv); }
     `,
     depthTest: false, depthWrite: false,
   });
 
   const fisheyeOrtho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  const fsMesh       = new THREE.Mesh(fsGeo, fisheyeMat);
   const fisheyeScene = new THREE.Scene();
-  fisheyeScene.add(fsMesh);
-
-  function fsPass(mat, target) {
-    fsMesh.material = mat;
-    renderer.setRenderTarget(target);
-    renderer.render(fisheyeScene, fisheyeOrtho);
-  }
+  fisheyeScene.add(new THREE.Mesh(fsGeo, fisheyeMat));
 
   const _camRot4 = new THREE.Matrix4();
 
-  // F3 toggles true cubemap fisheye + closer follow camera.
+  // F3 toggles cubemap fisheye + closer follow camera.
   window.addEventListener('keydown', e => {
     if (e.code === 'F3') {
       e.preventDefault();
       fisheyeActive = !fisheyeActive;
       controls.setFisheye(fisheyeActive);
-      if (fisheyeActive) {   // clear motion-blur history so we don't blend in stale frames
-        for (const rt of [hist0, hist1]) {
-          renderer.setRenderTarget(rt);
-          renderer.clear();
-        }
-        renderer.setRenderTarget(null);
-      }
     }
   });
 
@@ -2089,25 +2048,13 @@ function initScene(collision) {
       }
     }
     if (fisheyeActive) {
-      // Re-render the cubemap (the expensive 6-face pass) only every other frame.
-      // The cheap reprojection + blend passes still run every frame.
-      renderCubeFaces();   // refresh the cubemap every frame so flight is judder-free
-      // Feed the camera's world-space orientation to the fisheye shader.
+      // Refresh the cubemap from the camera position, then reproject to fisheye.
+      renderCubeFaces();
       camera.updateMatrixWorld();
       _camRot4.extractRotation(camera.matrixWorld);
       fisheyeMat.uniforms.uCamRot.value.setFromMatrix4(_camRot4);
-
-      // Pass 1: cube → anti-aliased fisheye into sceneRT.
-      fsPass(fisheyeMat, sceneRT);
-      // Pass 2: motion blur — mix(sceneRT, hist0) → hist1.
-      blurMat.uniforms.tCurrent.value = sceneRT.texture;
-      blurMat.uniforms.tHistory.value = hist0.texture;
-      fsPass(blurMat, hist1);
-      // Pass 3: present hist1 to the screen.
-      copyMat.uniforms.tMap.value = hist1.texture;
-      fsPass(copyMat, null);
-      // Ping-pong history.
-      const tmp = hist0; hist0 = hist1; hist1 = tmp;
+      renderer.setRenderTarget(null);
+      renderer.render(fisheyeScene, fisheyeOrtho);
     } else {
       camera.fov = 90;
       camera.updateProjectionMatrix();
