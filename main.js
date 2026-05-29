@@ -36,8 +36,8 @@ const BIRD_CAM_BACK = 8;      // metres behind bird
 const BIRD_CAM_UP   = 2;      // metres above bird
 // Fisheye (F3) constants
 const FISH_FOV_DEG  = 160;    // vertical FOV for the wide render pass
-const FISH_CAM_BACK = 3.0;
-const FISH_CAM_UP   = 0.8;
+const FISH_CAM_BACK = 1.1;    // hug right behind the bird (wide FOV shrinks everything)
+const FISH_CAM_UP   = 0.35;
 const FISH_K        = 3.8;    // tanh barrel strength — higher = more extreme
 
 // ─── Coordinate helpers ──────────────────────────────────────────────────────
