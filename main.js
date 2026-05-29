@@ -1822,9 +1822,10 @@ function createBirdControls(camera, domElement) {
       const sprint = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 2 : 1;
       let moved = false;
 
-      // A/D turn the bird's heading directly; camera follows so it stays behind.
-      if (keys.has('KeyA')) { headYaw += TURN_SPEED; camYaw = headYaw; moved = true; }
-      if (keys.has('KeyD')) { headYaw -= TURN_SPEED; camYaw = headYaw; moved = true; }
+      // A/D turn the bird's heading; shift camYaw by the same delta so the
+      // camera orbit offset relative to the bird is preserved (no snap).
+      if (keys.has('KeyA')) { headYaw += TURN_SPEED; camYaw += TURN_SPEED; moved = true; }
+      if (keys.has('KeyD')) { headYaw -= TURN_SPEED; camYaw -= TURN_SPEED; moved = true; }
 
       // W flies forward in the bird's OWN heading — mouse orbit stays independent.
       // Left-click steers: bird chases where the camera is pointing.
