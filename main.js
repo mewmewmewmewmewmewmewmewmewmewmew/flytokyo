@@ -253,12 +253,6 @@ async function fetchOSMBbox(bbox) {
     `way["building"](${south},${west},${north},${east});`,
     `way["highway"](${south},${west},${north},${east});`,
     `way["railway"](${south},${west},${north},${east});`,
-    // Named POIs (points) for the F1 label overlay — only those with a name tag
-    // so the payload stays small.
-    `node["shop"]["name"](${south},${west},${north},${east});`,
-    `node["amenity"]["name"](${south},${west},${north},${east});`,
-    `node["tourism"]["name"](${south},${west},${north},${east});`,
-    `node["office"]["name"](${south},${west},${north},${east});`,
     ');out body;>;out skel qt;',
   ].join('');
   // Round-robin across mirrors: one public endpoint only gives ~2 slots/IP and
@@ -283,6 +277,45 @@ async function fetchOSMBbox(bbox) {
     if (!Array.isArray(data.elements))
       throw new Error('Overpass: malformed response (no elements array)');
     cachePut(cacheKey, { ts: Date.now(), data });   // fire-and-forget; 3-day TTL
+    return data;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Separate lightweight query for named POIs only — fired in the background after
+// the scene reveals so it doesn't slow down first load. Uses its own cache key.
+async function fetchOSMPOIs(bbox) {
+  const { south, west, north, east } = bbox;
+  const cacheKey = `poi_${QUERY_VERSION}:${south.toFixed(6)},${west.toFixed(6)},${north.toFixed(6)},${east.toFixed(6)}`;
+  const cached = await cacheGet(cacheKey);
+  if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.data;
+
+  const query = [
+    '[out:json][timeout:25];(',
+    `node["shop"]["name"](${south},${west},${north},${east});`,
+    `node["amenity"]["name"](${south},${west},${north},${east});`,
+    `node["tourism"]["name"](${south},${west},${north},${east});`,
+    `node["office"]["name"](${south},${west},${north},${east});`,
+    ');out body;',
+  ].join('');
+  const url = OVERPASS_ENDPOINTS[_opIdx++ % OVERPASS_ENDPOINTS.length];
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30_000);
+  try {
+    const res = await fetch(url, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body:    'data=' + encodeURIComponent(query),
+      signal:  ctrl.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.remark && /error|timeout/i.test(data.remark))
+      throw new Error(`Overpass: ${data.remark}`);
+    if (!Array.isArray(data.elements))
+      throw new Error('Overpass: malformed response (no elements array)');
+    cachePut(cacheKey, { ts: Date.now(), data });
     return data;
   } finally {
     clearTimeout(timer);
@@ -1229,33 +1262,53 @@ class TileManager {
     return { keys, bbox };
   }
 
-  // Fetch a whole region in a SINGLE Overpass request (far fewer requests than
-  // one-per-tile, so much less likely to be rate-limited), then ingest it and
-  // mark every covered tile settled.
-  async loadRegion(keys, bbox, label, onStatus = () => {}) {
-    for (const k of keys) if (!this.tiles.has(k)) this.tiles.set(k, 'loading');
-    const settle = state => {
-      for (const k of keys) {
-        this.tiles.set(k, state);
-        if (!this.settled.has(k)) { this.settled.add(k); this.tilesLoaded++; }
-      }
-    };
+  // Fetch with retry, returning OSM data or null on give-up. Only fires onStatus
+  // on retries/failures (not the initial attempt) so it can run in parallel with
+  // terrain loading without overwriting the caller's status message.
+  async _fetchWithRetry(bbox, label, onStatus = () => {}) {
     for (let attempt = 0; ; attempt++) {
       try {
-        onStatus(attempt === 0 ? 'Fetching map data…' : `Network busy — retrying (${attempt}/6)…`, 0.45);
-        const osm = await fetchOSMBbox(bbox);
-        onStatus('Building the city…', 0.9);
-        await sleep(0);            // let the message paint before the synchronous build
-        this._ingest(osm);
-        settle('done');
-        return;
+        if (attempt > 0) onStatus(`Network busy — retrying (${attempt}/6)…`, 0.45);
+        return await fetchOSMBbox(bbox);
       } catch (err) {
         console.warn(`Region ${label}:`, err.message);
         if (attempt < 6) { await sleep([800, 1500, 3000, 5000, 8000, 8000][attempt]); continue; }
         onStatus('Map data unavailable — starting with what loaded.', 1);
-        settle('failed'); // give up so the loading screen can proceed
-        return;
+        return null;
       }
+    }
+  }
+
+  // Mark tiles as loading, ingest pre-fetched OSM, then settle all tile states.
+  _settleRegion(keys, osm) {
+    for (const k of keys) if (!this.tiles.has(k)) this.tiles.set(k, 'loading');
+    if (osm) this._ingest(osm);
+    for (const k of keys) {
+      this.tiles.set(k, osm ? 'done' : 'failed');
+      if (!this.settled.has(k)) { this.settled.add(k); this.tilesLoaded++; }
+    }
+  }
+
+  // Fetch a whole region in a SINGLE Overpass request (far fewer requests than
+  // one-per-tile, so much less likely to be rate-limited), then ingest it and
+  // mark every covered tile settled.
+  async loadRegion(keys, bbox, label, onStatus = () => {}) {
+    const osm = await this._fetchWithRetry(bbox, label, onStatus);
+    if (osm) { onStatus('Building the city…', 0.9); await sleep(0); }
+    this._settleRegion(keys, osm);
+  }
+
+  // Fetch named POIs for a region and add them to the POI label group. Called in
+  // the background after reveal — POIs are off by default (F2 to show).
+  async loadPOIs(bbox) {
+    try {
+      const osm = await fetchOSMPOIs(bbox);
+      const pois = parsePOIs(osm)
+        .filter(p => { if (this.seenIds.has(p.id)) return false; this.seenIds.add(p.id); return true; });
+      for (const p of pois)
+        this.poiLabelGroup.add(makePoiLabel(p.x, p.z, truncateLabel(p.name), this.footprints));
+    } catch (err) {
+      console.warn('POI load failed:', err.message);
     }
   }
 
@@ -1387,24 +1440,50 @@ function createFPSControls(camera, domElement, collision) {
 
   domElement.addEventListener('contextmenu', e => e.preventDefault());
 
-  // Touch look (for mobile — no pointer lock available)
-  let touchLast = null;
+  // Touch controls (mobile): tap-and-hold → move forward; drag → look camera.
+  // 2.5× sensitivity vs mouse since there is no pointer-lock damping on touch.
+  const TOUCH_LOOK_SPEED = LOOK_SPEED * 2.5;
+  let touchLast = null, touchStartPos = null, touchDragging = false, touchHoldTimer = null;
+
   domElement.addEventListener('touchstart', e => {
-    if (e.touches.length === 1) touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    if (e.touches.length === 1) {
+      const x = e.touches[0].clientX, y = e.touches[0].clientY;
+      touchLast = { x, y };
+      touchStartPos = { x, y };
+      touchDragging = false;
+      // Hold without moving → start walking forward
+      touchHoldTimer = setTimeout(() => { if (!touchDragging) keys.add('KeyW'); }, 200);
+    }
     e.preventDefault();
   }, { passive: false });
+
   domElement.addEventListener('touchmove', e => {
     if (e.touches.length === 1 && touchLast) {
-      const dx = e.touches[0].clientX - touchLast.x, dy = e.touches[0].clientY - touchLast.y;
-      touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-      yaw  += -dx * LOOK_SPEED;
-      pitch = Math.max(-Math.PI * 0.499, Math.min(Math.PI * 0.499, pitch + -dy * LOOK_SPEED));
+      const cx = e.touches[0].clientX, cy = e.touches[0].clientY;
+      // Once finger moves more than 8px cancel the hold-forward and enter look mode
+      if (!touchDragging && Math.hypot(cx - touchStartPos.x, cy - touchStartPos.y) > 8) {
+        touchDragging = true;
+        clearTimeout(touchHoldTimer);
+        keys.delete('KeyW');
+      }
+      const dx = cx - touchLast.x, dy = cy - touchLast.y;
+      touchLast = { x: cx, y: cy };
+      yaw  += -dx * TOUCH_LOOK_SPEED;
+      pitch = Math.max(-Math.PI * 0.499, Math.min(Math.PI * 0.499, pitch + -dy * TOUCH_LOOK_SPEED));
       applyRotation();
       dispatcher.dispatchEvent({ type: 'change' });
     }
     e.preventDefault();
   }, { passive: false });
-  domElement.addEventListener('touchend', () => { touchLast = null; });
+
+  domElement.addEventListener('touchend', () => {
+    touchLast = null;
+    touchStartPos = null;
+    touchDragging = false;
+    clearTimeout(touchHoldTimer);
+    touchHoldTimer = null;
+    keys.delete('KeyW');
+  });
 
   const dispatcher = Object.assign(new THREE.EventDispatcher(), {
     update() {
@@ -1643,23 +1722,6 @@ async function main() {
     if (frac != null) pbar.style.width = `${Math.round(frac * 100)}%`;
   };
 
-  // Load terrain elevation tiles before OSM tiles so geometry is placed correctly.
-  setLoad('Loading terrain…', 0.15);
-  terrain = await loadTerrain();
-  if (terrain) {
-    // Displace ground plane vertices. PlaneGeometry is in XY before rotation.x = -π/2,
-    // which maps local (x, y, z) → world (x, z, -y). To set world Y, set local Z.
-    const pos = ground.geometry.attributes.position;
-    for (let i = 0; i < pos.count; i++) {
-      pos.setZ(i, terrain.sample(pos.getX(i), -pos.getY(i)) - GROUND_SINK);
-    }
-    pos.needsUpdate = true;
-    ground.geometry.computeVertexNormals();
-    camera.position.y = terrain.sample(0, 0) + EYE_HEIGHT;
-  }
-
-  setLoad('Preparing…', 0.3);
-
   const mats    = createMaterials();
   const manager = new TileManager(scene, mats, statusEl);
 
@@ -1721,18 +1783,40 @@ async function main() {
     syncTrains();
   }
 
-  // Fetch the 3×3 core as ONE Overpass request and wait only for it — that's all
-  // the player can see at spawn, and one request is far less likely to be rate-
-  // limited than nine. The status text reflects each phase (fetching / retrying /
-  // building) so the bar never looks silently stuck. Then fetch the full radius as
-  // one more background request (dedup skips the core) and rebuild trains.
+  // Terrain tiles and core OSM data are independent network requests — fetch them
+  // in parallel so the slower one doesn't make us wait for the faster one.
   const core = manager.regionTiles(0, 0, 1);
   const full = manager.regionTiles(0, 0, LOAD_RADIUS);
   manager.tilesTotal = core.keys.length;
-  manager.loadRegion(core.keys, core.bbox, 'core', setLoad)
-    .then(() => reveal())
-    .then(() => manager.loadRegion(full.keys, full.bbox, 'ring'))
-    .then(() => syncTrains());   // ring done → rebuild trains so new track is covered
+
+  setLoad('Loading terrain & map data…', 0.2);
+  const [terrainResult, coreOsm] = await Promise.all([
+    loadTerrain(),
+    manager._fetchWithRetry(core.bbox, 'core', setLoad),
+  ]);
+
+  terrain = terrainResult;
+  if (terrain) {
+    // Displace ground plane vertices. PlaneGeometry is in XY before rotation.x = -π/2,
+    // which maps local (x, y, z) → world (x, z, -y). To set world Y, set local Z.
+    const pos = ground.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      pos.setZ(i, terrain.sample(pos.getX(i), -pos.getY(i)) - GROUND_SINK);
+    }
+    pos.needsUpdate = true;
+    ground.geometry.computeVertexNormals();
+    camera.position.y = terrain.sample(0, 0) + EYE_HEIGHT;
+  }
+
+  if (coreOsm) { setLoad('Building the city…', 0.9); await sleep(0); }
+  manager._settleRegion(core.keys, coreOsm);
+
+  reveal();
+  // Background: full radius (dedup skips core tiles already loaded), then POIs
+  // last — they are off by default (F2) so there is no rush to fetch them.
+  manager.loadRegion(full.keys, full.bbox, 'ring')
+    .then(() => syncTrains())
+    .then(() => manager.loadPOIs(full.bbox));
 }
 
 main();
