@@ -1733,15 +1733,17 @@ function createBirdControls(camera, domElement) {
   }
 
   function updateCamera() {
-    const look    = getLook();
     const camBack = fisheyeMode ? FISH_CAM_BACK : BIRD_CAM_BACK;
     const camUp   = fisheyeMode ? FISH_CAM_UP   : BIRD_CAM_UP;
+    // Position stays fixed behind the bird based on bird's heading (headYaw), not mouse look.
+    // Mouse (camYaw/camPitch) only rotates the camera in place — bird stays in frame.
+    const sinH = Math.sin(headYaw), cosH = Math.cos(headYaw);
     camera.position.set(
-      birdPos.x - look.x * camBack,
-      birdPos.y - look.y * camBack + camUp,
-      birdPos.z - look.z * camBack,
+      birdPos.x + sinH * camBack,
+      birdPos.y + camUp,
+      birdPos.z + cosH * camBack,
     );
-    camera.lookAt(birdPos.x, birdPos.y, birdPos.z);
+    camera.quaternion.setFromEuler(new THREE.Euler(camPitch, camYaw, 0, 'YXZ'));
   }
 
   domElement.addEventListener('click', () => {
