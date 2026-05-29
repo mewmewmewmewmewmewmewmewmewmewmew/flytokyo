@@ -35,10 +35,10 @@ const BIRD_HEIGHT   = 3.96;   // 13 ft above terrain
 const BIRD_CAM_BACK = 8;      // metres behind bird
 const BIRD_CAM_UP   = 2;      // metres above bird
 // Fisheye (F3) constants
-const FISH_FOV_DEG  = 130;                    // wide render FOV fed into fisheye shader
+const FISH_FOV_DEG  = 170;                    // wide render FOV fed into fisheye shader
 const FISH_CAM_BACK = 3.0;                    // tighter follow distance in fisheye mode
 const FISH_CAM_UP   = 0.8;
-const FISH_THETA    = 65 * Math.PI / 180;     // equidistant half-angle = half of FISH_FOV_DEG
+const FISH_THETA    = 85 * Math.PI / 180;     // equidistant half-angle = half of FISH_FOV_DEG
 
 // ─── Coordinate helpers ──────────────────────────────────────────────────────
 
@@ -1945,10 +1945,7 @@ function initScene(collision) {
         float rRect = (r > 0.0001) ? tan(theta) / tan(uThetaMax) : 0.0;
         vec2 sampleUv = (p / max(r, 0.0001)) * rRect * 0.5 + 0.5;
 
-        vec4 col = texture2D(tScene, clamp(sampleUv, 0.0, 1.0));
-        // Subtle vignette toward the circular edge.
-        col.rgb *= 1.0 - smoothstep(0.72, 1.0, r) * 0.55;
-        gl_FragColor = col;
+        gl_FragColor = texture2D(tScene, clamp(sampleUv, 0.0, 1.0));
       }
     `,
     depthTest: false, depthWrite: false,
