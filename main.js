@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.5';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL } from './fisheye.js?v=11.5';
+import { TrainSystem } from './train.js?v=11.6';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL } from './fisheye.js?v=11.6';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1804,7 +1804,7 @@ function createBirdControls(camera, domElement) {
   let headYaw     = 0;     // bird's facing/flight heading (eases toward camYaw while thrusting)
   let headPitch   = 0;
   let roll        = 0;     // smoothed bank angle applied to the bird mesh
-  let fisheyeMode = false;
+  let fisheyeMode = true;   // speed-driven fisheye is on by default (F3 toggles off)
 
   const LOOK_SPEED  = 0.00175;
   const MOVE_SPEED  = 0.35;
@@ -1816,6 +1816,12 @@ function createBirdControls(camera, domElement) {
   const MIN_CLEAR   = 0.3;     // can skim almost to the ground
   const PITCH_LIMIT = 1.1;     // clamp so you can't loop over the top
   const TOUCH_SPEED = LOOK_SPEED * 2.5;
+
+  // Speed-driven fisheye: the warp eases in from a normal view (rest) to a full
+  // fisheye at top speed, and the angle grows wider the faster you go.
+  const FOV_REST_DEG   = 120;  // angle the warp eases up from (barely visible at low speed)
+  const FOV_MAX_DEG    = 220;  // at top non-sprint speed
+  const FOV_SPRINT_DEG = 250;  // at top sprint speed
 
   let lastTime    = performance.now();
   let mouseThrust = false;     // true while left mouse held (with pointer locked)
@@ -1855,8 +1861,11 @@ function createBirdControls(camera, domElement) {
     // The bird's own heading (headYaw) is independent — mouse-look never rotates
     // the bird mesh, only the camera's vantage point around it.
     const look    = getLook();
-    const camBack = fisheyeMode ? FISH_CAM_BACK : BIRD_CAM_BACK;
-    const camUp   = fisheyeMode ? FISH_CAM_UP   : BIRD_CAM_UP;
+    // Follow distance eases from the normal framing (at rest / fisheye off) to the
+    // closer fisheye framing as the speed-driven warp blends in.
+    const b       = fisheyeMode ? FISH_U.uFishBlend.value : 0;
+    const camBack = BIRD_CAM_BACK + (FISH_CAM_BACK - BIRD_CAM_BACK) * b;
+    const camUp   = BIRD_CAM_UP   + (FISH_CAM_UP   - BIRD_CAM_UP)   * b;
     camera.position.set(
       birdPos.x - look.x * camBack,
       birdPos.y - look.y * camBack + camUp,
@@ -1977,6 +1986,18 @@ function createBirdControls(camera, domElement) {
         birdPos.add(_vel);
         moved = true;
       }
+
+      // Speed-driven fisheye. tt: 0 at rest, 1 at non-sprint max, up to 2 at
+      // sprint max. The warp blends in over the first speed band (0→1) and the
+      // angle widens 120°→220° there, then 220°→250° through the sprint band.
+      const tt    = _vel.length() / MOVE_MAX;
+      const blend = Math.min(tt, 1);
+      const fovDeg = tt <= 1
+        ? FOV_REST_DEG + (FOV_MAX_DEG - FOV_REST_DEG) * tt
+        : FOV_MAX_DEG  + (FOV_SPRINT_DEG - FOV_MAX_DEG) * Math.min(tt - 1, 1);
+      FISH_U.uFishBlend.value   = fisheyeMode ? blend : 0;
+      FISH_U.uFishHalfFov.value = (fovDeg * Math.PI / 180) / 2;
+
       // Spacebar gains elevation.
       if (keys.has('Space')) { birdPos.y += LIFT_SPEED * sprint; moved = true; }
 
@@ -2081,7 +2102,7 @@ function initScene(collision) {
   const trainRef  = { system: null };
   const labelsRef = { bldgGroup: null, poiGroup: null };
   const LABEL_DIST = 250;
-  let fisheyeActive = false;
+  let fisheyeActive = true;   // speed-driven fisheye on by default; F3 toggles it off
   let lastTime = performance.now();
 
   // ── Single-pass fisheye ────────────────────────────────────────────────────
@@ -2131,10 +2152,12 @@ function initScene(collision) {
     // Declutter: only keep labels near the camera visible.
     const cp = camera.position;
     // Labels are camera-facing billboards/sprites that use normal projection, so
-    // they'd float detached from the warped world — hide them while fisheye is on.
+    // they'd float detached from the warped world — hide them once the speed warp
+    // engages (blend > 0). At rest the view is plain perspective, so they show.
+    const warped = FISH_U.uFishBlend.value > 0.02;
     for (const grp of [labelsRef.bldgGroup, labelsRef.poiGroup]) {
       if (grp && grp.visible) {
-        for (const s of grp.children) s.visible = !fisheyeActive && cp.distanceTo(s.position) < LABEL_DIST;
+        for (const s of grp.children) s.visible = !warped && cp.distanceTo(s.position) < LABEL_DIST;
       }
     }
     if (fisheyeActive) {
