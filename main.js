@@ -1644,47 +1644,89 @@ function buildBirdMesh() {
   const matWing = new THREE.MeshBasicMaterial({ color: 0x46c0ff, wireframe: true });
   const matBeak = new THREE.MeshBasicMaterial({ color: 0xff9a3c, wireframe: true });
 
-  // Body — elongated along Z; bird faces −Z (Three.js default forward)
-  group.add(new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.30, 1.3, 2, 2, 2), matBody));
+  // Bird faces −Z (Three.js default forward). Dorsal (top-down) layout:
+  //  −Z = head/beak, +Z = tail, ±X = wingtips, +Y = up (back).
 
-  // Head
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.32, 0.34, 2, 2, 2), matBody);
-  head.position.set(0, 0.12, -0.68);
+  // ── Body: elongated ellipsoid, gives the lat/long grid of the reference ──
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.5, 16, 11), matBody);
+  body.scale.set(0.42, 0.40, 1.30);     // narrow, slightly flat, long
+  group.add(body);
+
+  // ── Head: smaller ellipsoid blended into the front ──
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.5, 12, 9), matBody);
+  head.scale.set(0.27, 0.27, 0.34);
+  head.position.set(0, 0.05, -0.66);
   group.add(head);
 
-  // Beak — ConeGeometry default axis is +Y; rotate so it points −Z
-  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.28, 3, 1), matBeak);
-  beak.rotation.x = Math.PI / 2;
-  beak.position.set(0, 0.07, -0.93);
+  // ── Beak: slim cone pointing −Z ──
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.36, 4, 1), matBeak);
+  beak.rotation.x = -Math.PI / 2;       // +Y axis → −Z
+  beak.position.set(0, 0.04, -0.92);
   group.add(beak);
 
-  // Wings — flat triangles swept back from body
-  function makeWing(sx) {
-    const verts = new Float32Array([
-      sx * 0.22,  0.02, -0.15,   // front root
-      sx * 0.22,  0.02,  0.30,   // back root
-      sx * 1.75, -0.18,  0.50,   // wingtip (swept back, drooping)
-    ]);
+  // Build a triangulated "fan" sheet from a leading-edge curve (base[]) to a
+  // trailing-edge curve (tip[]). The wireframe of the quads reads as rows of
+  // feathers radiating outward — the look of the reference wing/tail.
+  function makeFan(base, tip, mat) {
+    const n = base.length;
+    const pos = [];
+    for (const p of base) pos.push(p.x, p.y, p.z);
+    for (const p of tip)  pos.push(p.x, p.y, p.z);
+    const idx = [];
+    for (let i = 0; i < n - 1; i++) {
+      const b0 = i, b1 = i + 1, t0 = n + i, t1 = n + i + 1;
+      idx.push(b0, b1, t1,  b0, t1, t0);
+    }
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setIndex(idx);
     geo.computeVertexNormals();
-    return new THREE.Mesh(geo, matWing);
+    return new THREE.Mesh(geo, mat);
   }
-  group.add(makeWing( 1));
-  group.add(makeWing(-1));
 
-  // Tail fan
-  const tailVerts = new Float32Array([
-    -0.18,  0.02,  0.58,
-     0.18,  0.02,  0.58,
-     0.00, -0.06,  0.96,
-     0.00,  0.10,  0.90,
-  ]);
-  const tailGeo = new THREE.BufferGeometry();
-  tailGeo.setAttribute('position', new THREE.BufferAttribute(tailVerts, 3));
-  tailGeo.setIndex(new THREE.BufferAttribute(new Uint16Array([0, 2, 1,  0, 1, 3]), 1));
-  tailGeo.computeVertexNormals();
-  group.add(new THREE.Mesh(tailGeo, matBody));
+  // ── Wings: a swept fan of feathers from shoulder to wingtip ──
+  function buildWing(sx) {
+    const n = 16;
+    const base = [], tip = [];
+    for (let i = 0; i < n; i++) {
+      const t = i / (n - 1);
+      const e = t * t * (3 - 2 * t);          // smoothstep for a curved edge
+      // Leading edge: shoulder → wrist, sweeping slightly back & dropping.
+      base.push(new THREE.Vector3(
+        sx * (0.17 + 1.55 * t),
+        0.07 - 0.10 * e,
+        -0.20 + 0.40 * e,
+      ));
+      // Trailing edge: wider and swept further back, drooping at the tips.
+      tip.push(new THREE.Vector3(
+        sx * (0.30 + 1.95 * t),
+        0.03 - 0.22 * e,
+        0.22 + 0.78 * e,
+      ));
+    }
+    return makeFan(base, tip, matWing);
+  }
+  group.add(buildWing( 1));
+  group.add(buildWing(-1));
+
+  // ── Tail: a fan of feathers spreading behind the body ──
+  function buildTail() {
+    const n = 11;
+    const base = [], tip = [];
+    const rootZ = 0.55;
+    for (let i = 0; i < n; i++) {
+      const t = i / (n - 1);
+      const a = (t - 0.5) * 2;                 // −1 … 1 across the fan
+      base.push(new THREE.Vector3(a * 0.10, 0.01, rootZ));
+      tip.push(new THREE.Vector3(
+        a * 0.42,
+        -0.05,
+        rootZ + 0.62 - Math.abs(a) * 0.14,     // outer feathers a touch shorter
+      ));
+    }
+    return makeFan(base, tip, matBody);
+  }
+  group.add(buildTail());
 
   return group;
 }
@@ -1706,7 +1748,7 @@ function createBirdControls(camera, domElement) {
   const MOVE_SPEED  = 0.35;
   const TURN_SPEED  = 0.022;   // A/D yaw turn rate (radians per frame)
   const LIFT_SPEED  = 0.30;    // spacebar ascent per frame
-  const MIN_CLEAR   = 2.0;     // never sink closer than this to the terrain
+  const MIN_CLEAR   = 0.3;     // can skim almost to the ground
   const PITCH_LIMIT = 1.1;     // clamp so you can't loop over the top
   const TOUCH_SPEED = LOOK_SPEED * 2.5;
 
