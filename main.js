@@ -1565,7 +1565,13 @@ function initScene(collision) {
   const trainRef  = { system: null };
   const labelsRef = { bldgGroup: null, poiGroup: null };
   const LABEL_DIST = 250;
+  let fovTarget = 90;
   let lastTime = performance.now();
+
+  // F3 toggles between normal (90°) and extreme fisheye (150°) FOV.
+  window.addEventListener('keydown', e => {
+    if (e.code === 'F3') { e.preventDefault(); fovTarget = fovTarget === 90 ? 150 : 90; }
+  });
 
   (function animate() {
     requestAnimationFrame(animate);
@@ -1574,6 +1580,11 @@ function initScene(collision) {
     lastTime  = now;
     controls.update();
     if (trainRef.system) trainRef.system.update(dt);
+    // Smooth FOV lerp for fisheye toggle.
+    if (Math.abs(camera.fov - fovTarget) > 0.05) {
+      camera.fov += (fovTarget - camera.fov) * Math.min(dt * 8, 1);
+      camera.updateProjectionMatrix();
+    }
     // Declutter: only keep labels near the camera visible.
     const cp = camera.position;
     for (const grp of [labelsRef.bldgGroup, labelsRef.poiGroup]) {
