@@ -1814,22 +1814,35 @@ function createBirdControls(camera, domElement) {
       const sprint = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 2 : 1;
       let moved = false;
 
-      // A/D turn the camera look (keyboard alternative to the mouse).
-      if (keys.has('KeyA')) { camYaw += TURN_SPEED; moved = true; }
-      if (keys.has('KeyD')) { camYaw -= TURN_SPEED; moved = true; }
+      // A/D turn the bird's heading directly; camera follows so it stays behind.
+      if (keys.has('KeyA')) { headYaw += TURN_SPEED; camYaw = headYaw; moved = true; }
+      if (keys.has('KeyD')) { headYaw -= TURN_SPEED; camYaw = headYaw; moved = true; }
 
-      const look = getLook();
-      const thrusting = mouseThrust || keys.has('KeyW');
-
-      // Bird flies toward the camera direction while thrusting; it also turns to
-      // face that direction (so mouse-look alone never changes the bird's heading).
-      if (thrusting) {
+      // W flies forward in the bird's OWN heading — mouse orbit stays independent.
+      // Left-click steers: bird chases where the camera is pointing.
+      if (keys.has('KeyW')) {
+        const cp = Math.cos(headPitch), sp = Math.sin(headPitch);
+        const sh = Math.sin(headYaw),   ch = Math.cos(headYaw);
+        birdPos.x += sh * cp * MOVE_SPEED * sprint;
+        birdPos.y -= sp        * MOVE_SPEED * sprint;
+        birdPos.z -= ch * cp * MOVE_SPEED * sprint;
+        moved = true;
+      }
+      if (mouseThrust) {
+        const look = getLook();
         birdPos.addScaledVector(look, MOVE_SPEED * sprint);
         headYaw   += (camYaw   - headYaw)   * 0.12;
         headPitch += (camPitch - headPitch) * 0.12;
         moved = true;
       }
-      if (keys.has('KeyS')) { birdPos.addScaledVector(look, -MOVE_SPEED * sprint); moved = true; }
+      if (keys.has('KeyS')) {
+        const cp = Math.cos(headPitch), sp = Math.sin(headPitch);
+        const sh = Math.sin(headYaw),   ch = Math.cos(headYaw);
+        birdPos.x -= sh * cp * MOVE_SPEED * sprint;
+        birdPos.y += sp        * MOVE_SPEED * sprint;
+        birdPos.z += ch * cp * MOVE_SPEED * sprint;
+        moved = true;
+      }
       // Spacebar gains elevation.
       if (keys.has('Space')) { birdPos.y += LIFT_SPEED * sprint; moved = true; }
 
