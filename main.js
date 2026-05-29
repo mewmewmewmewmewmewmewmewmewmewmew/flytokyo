@@ -38,7 +38,8 @@ const BIRD_CAM_UP   = 2;      // metres above bird
 const FISH_FOV_DEG  = 210;    // total fisheye angle (>180° wraps behind the camera)
 const FISH_CAM_BACK = 4.0;    // follow distance in fisheye mode
 const FISH_CAM_UP   = 1.2;
-const FISH_CUBE_RES = 640;    // per-face cubemap resolution (perf vs sharpness)
+const FISH_CUBE_RES = 512;    // per-face cubemap resolution (low for perf; AA recovers edges)
+const FISH_BLUR     = 0.55;   // temporal motion-blur retention (0 = none, →1 = long trails)
 
 // ─── Coordinate helpers ──────────────────────────────────────────────────────
 
@@ -1889,7 +1890,14 @@ function initScene(collision) {
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
-    if (fisheyeMat) fisheyeMat.uniforms.uAspect.value = w / h;
+    if (fisheyeMat) {
+      fisheyeMat.uniforms.uAspect.value = w / h;
+      const db = renderer.getDrawingBufferSize(new THREE.Vector2());
+      fisheyeMat.uniforms.uTexel.value.set(1 / db.x, 1 / db.y);
+      sceneRT.setSize(db.x, db.y);
+      hist0.setSize(db.x, db.y);
+      hist1.setSize(db.x, db.y);
+    }
   }
   window.addEventListener('resize', onResize);
   // visualViewport fires when the iOS address bar slides in/out (innerHeight
@@ -1908,8 +1916,11 @@ function initScene(collision) {
   // into a cubemap from the camera position — six clean 90° faces — then in the
   // post shader cast a fisheye ray per pixel and sample the cube. This wraps the
   // whole world (>180°) around the camera with no edge-smearing.
+  // Low-res cubemap with mipmaps so distant geometry is minification-filtered
+  // (kills shimmer); the multi-tap reprojection below adds edge anti-aliasing.
   const cubeRT = new THREE.WebGLCubeRenderTarget(FISH_CUBE_RES, {
-    minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+    minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter,
+    generateMipmaps: true,
   });
   const cubeCam = new THREE.CubeCamera(0.15, 2000, cubeRT);
 
@@ -1917,46 +1928,107 @@ function initScene(collision) {
   fsGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1,-1,0, 3,-1,0, -1,3,0]), 3));
   fsGeo.setAttribute('uv',       new THREE.BufferAttribute(new Float32Array([0,0, 2,0, 0,2]), 2));
 
+  const dbSize = renderer.getDrawingBufferSize(new THREE.Vector2());
+  const rtOpts = { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter };
+  // sceneRT: this frame's fisheye image. hist0/hist1: ping-pong motion-blur history.
+  const sceneRT = new THREE.WebGLRenderTarget(dbSize.x, dbSize.y, rtOpts);
+  let   hist0   = new THREE.WebGLRenderTarget(dbSize.x, dbSize.y, rtOpts);
+  let   hist1   = new THREE.WebGLRenderTarget(dbSize.x, dbSize.y, rtOpts);
+
+  // Pass 1: cubemap → fisheye, with 4-tap rotated-grid anti-aliasing.
   const fisheyeMat = new THREE.ShaderMaterial({
     uniforms: {
-      tCube:     { value: cubeRT.texture },
-      uHalfFov:  { value: (FISH_FOV_DEG * Math.PI / 180) / 2 },
-      uAspect:   { value: innerWidth / innerHeight },
-      uCamRot:   { value: new THREE.Matrix3() },   // view-space → world-space rotation
+      tCube:    { value: cubeRT.texture },
+      uHalfFov: { value: (FISH_FOV_DEG * Math.PI / 180) / 2 },
+      uAspect:  { value: innerWidth / innerHeight },
+      uCamRot:  { value: new THREE.Matrix3() },          // view-space → world-space rotation
+      uTexel:   { value: new THREE.Vector2(1 / dbSize.x, 1 / dbSize.y) },
     },
     vertexShader: /* glsl */`
       varying vec2 vUv;
       void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
     `,
-    // Equidistant fisheye: angle from the forward axis is proportional to screen
-    // radius. theta = r * uHalfFov; build a 3D ray (camera space) at that angle,
-    // rotate to world, and sample the cubemap. Fills the whole frame, no black.
     fragmentShader: /* glsl */`
       uniform samplerCube tCube;
       uniform float uHalfFov;
       uniform float uAspect;
       uniform mat3  uCamRot;
+      uniform vec2  uTexel;
       varying vec2  vUv;
-      void main() {
-        // Aspect-correct so the fisheye stays circular and the FISH_FOV maps to
-        // the shorter screen axis; the longer axis simply shows more (wraps more).
-        vec2 p = vUv * 2.0 - 1.0;
+      // Equidistant fisheye: angle off the forward (-Z) axis ∝ screen radius.
+      vec3 fishSample(vec2 uv) {
+        vec2 p = uv * 2.0 - 1.0;
         if (uAspect >= 1.0) p.x *= uAspect; else p.y /= uAspect;
         float r     = length(p);
-        float theta = r * uHalfFov;                 // angle off the forward (-Z) axis
+        float theta = r * uHalfFov;
         float phi   = atan(p.y, p.x);
         float st    = sin(theta);
-        // Camera-space ray: forward is -Z.
         vec3 dir = vec3(st * cos(phi), st * sin(phi), -cos(theta));
-        gl_FragColor = textureCube(tCube, normalize(uCamRot * dir));
+        return textureCube(tCube, normalize(uCamRot * dir)).rgb;
+      }
+      void main() {
+        // Rotated-grid 4× supersample to anti-alias the curved edges.
+        vec2 o = uTexel * 0.375;
+        vec3 c = fishSample(vUv + vec2( o.x,  o.y))
+               + fishSample(vUv + vec2(-o.y,  o.x))
+               + fishSample(vUv + vec2(-o.x, -o.y))
+               + fishSample(vUv + vec2( o.y, -o.x));
+        gl_FragColor = vec4(c * 0.25, 1.0);
       }
     `,
     depthTest: false, depthWrite: false,
   });
 
-  const fisheyeScene  = new THREE.Scene();
-  const fisheyeOrtho  = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  fisheyeScene.add(new THREE.Mesh(fsGeo, fisheyeMat));
+  // Pass 2: temporal motion blur — blend this frame with the accumulated history.
+  const blurMat = new THREE.ShaderMaterial({
+    uniforms: {
+      tCurrent: { value: null },
+      tHistory: { value: null },
+      uMix:     { value: FISH_BLUR },
+    },
+    vertexShader: /* glsl */`
+      varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
+    `,
+    fragmentShader: /* glsl */`
+      uniform sampler2D tCurrent;
+      uniform sampler2D tHistory;
+      uniform float uMix;
+      varying vec2 vUv;
+      void main() {
+        vec3 cur = texture2D(tCurrent, vUv).rgb;
+        vec3 his = texture2D(tHistory, vUv).rgb;
+        gl_FragColor = vec4(mix(cur, his, uMix), 1.0);
+      }
+    `,
+    depthTest: false, depthWrite: false,
+  });
+
+  // Pass 3: copy the blended history to the screen.
+  const copyMat = new THREE.ShaderMaterial({
+    uniforms: { tMap: { value: null } },
+    vertexShader: /* glsl */`
+      varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
+    `,
+    fragmentShader: /* glsl */`
+      uniform sampler2D tMap;
+      varying vec2 vUv;
+      void main() { gl_FragColor = texture2D(tMap, vUv); }
+    `,
+    depthTest: false, depthWrite: false,
+  });
+
+  const fisheyeOrtho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const fsMesh       = new THREE.Mesh(fsGeo, fisheyeMat);
+  const fisheyeScene = new THREE.Scene();
+  fisheyeScene.add(fsMesh);
+
+  function fsPass(mat, target) {
+    fsMesh.material = mat;
+    renderer.setRenderTarget(target);
+    renderer.render(fisheyeScene, fisheyeOrtho);
+  }
 
   const _camRot4 = new THREE.Matrix4();
   let fishFrame = 0;   // cubemap re-renders every other frame; reprojection runs every frame
@@ -1967,6 +2039,13 @@ function initScene(collision) {
       e.preventDefault();
       fisheyeActive = !fisheyeActive;
       controls.setFisheye(fisheyeActive);
+      if (fisheyeActive) {   // clear motion-blur history so we don't blend in stale frames
+        for (const rt of [hist0, hist1]) {
+          renderer.setRenderTarget(rt);
+          renderer.clear();
+        }
+        renderer.setRenderTarget(null);
+      }
     }
   });
 
@@ -1990,18 +2069,27 @@ function initScene(collision) {
     }
     if (fisheyeActive) {
       // Re-render the cubemap (the expensive 6-face pass) only every other frame.
-      // The cheap fisheye reprojection still runs every frame, and the camera moves
-      // little between frames, so the staleness is imperceptible but halves GPU cost.
+      // The cheap reprojection + blend passes still run every frame.
       if ((fishFrame++ & 1) === 0) {
         cubeCam.position.copy(camera.position);
         cubeCam.update(renderer, scene);
       }
-      // Feed the camera's world-space orientation to the shader so fisheye rays
-      // point where the camera is looking.
+      // Feed the camera's world-space orientation to the fisheye shader.
       camera.updateMatrixWorld();
       _camRot4.extractRotation(camera.matrixWorld);
       fisheyeMat.uniforms.uCamRot.value.setFromMatrix4(_camRot4);
-      renderer.render(fisheyeScene, fisheyeOrtho);
+
+      // Pass 1: cube → anti-aliased fisheye into sceneRT.
+      fsPass(fisheyeMat, sceneRT);
+      // Pass 2: motion blur — mix(sceneRT, hist0) → hist1.
+      blurMat.uniforms.tCurrent.value = sceneRT.texture;
+      blurMat.uniforms.tHistory.value = hist0.texture;
+      fsPass(blurMat, hist1);
+      // Pass 3: present hist1 to the screen.
+      copyMat.uniforms.tMap.value = hist1.texture;
+      fsPass(copyMat, null);
+      // Ping-pong history.
+      const tmp = hist0; hist0 = hist1; hist1 = tmp;
     } else {
       camera.fov = 90;
       camera.updateProjectionMatrix();
