@@ -25,11 +25,15 @@ const LOAD_RADIUS = 2;
 
 const FADE_NEAR   = 120;
 const FADE_FAR    = 900;
-const METRO_DEPTH = -7;
-const EYE_HEIGHT  = 1.6;
+const METRO_DEPTH   = -7;
+const EYE_HEIGHT    = 1.6;
 // Sink the ground mesh this far below true terrain so its coarse triangles can
 // never poke up through the thin road/footpath decals laid just above terrain.
-const GROUND_SINK = 0.6;
+const GROUND_SINK   = 0.6;
+// Bird (third-person) constants
+const BIRD_HEIGHT   = 3.96;   // 13 ft above terrain
+const BIRD_CAM_BACK = 8;      // metres behind bird
+const BIRD_CAM_UP   = 2;      // metres above bird
 
 // ─── Coordinate helpers ──────────────────────────────────────────────────────
 
@@ -1627,6 +1631,159 @@ function createFPSControls(camera, domElement, collision) {
   return dispatcher;
 }
 
+// ─── Polygon bird mesh ────────────────────────────────────────────────────────
+
+function buildBirdMesh() {
+  const group   = new THREE.Group();
+  const matBody = new THREE.MeshPhongMaterial({ color: 0x2c5f7c, flatShading: true });
+  const matWing = new THREE.MeshPhongMaterial({ color: 0x1e4560, flatShading: true, side: THREE.DoubleSide });
+  const matBeak = new THREE.MeshPhongMaterial({ color: 0xe07833, flatShading: true });
+
+  // Body — elongated along Z; bird faces −Z (Three.js default forward)
+  group.add(new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.30, 1.3, 2, 2, 2), matBody));
+
+  // Head
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.32, 0.34, 2, 2, 2), matBody);
+  head.position.set(0, 0.12, -0.68);
+  group.add(head);
+
+  // Beak — ConeGeometry default axis is +Y; rotate so it points −Z
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.28, 3, 1), matBeak);
+  beak.rotation.x = Math.PI / 2;
+  beak.position.set(0, 0.07, -0.93);
+  group.add(beak);
+
+  // Wings — flat triangles swept back from body
+  function makeWing(sx) {
+    const verts = new Float32Array([
+      sx * 0.22,  0.02, -0.15,   // front root
+      sx * 0.22,  0.02,  0.30,   // back root
+      sx * 1.75, -0.18,  0.50,   // wingtip (swept back, drooping)
+    ]);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+    geo.computeVertexNormals();
+    return new THREE.Mesh(geo, matWing);
+  }
+  group.add(makeWing( 1));
+  group.add(makeWing(-1));
+
+  // Tail fan
+  const tailVerts = new Float32Array([
+    -0.18,  0.02,  0.58,
+     0.18,  0.02,  0.58,
+     0.00, -0.06,  0.96,
+     0.00,  0.10,  0.90,
+  ]);
+  const tailGeo = new THREE.BufferGeometry();
+  tailGeo.setAttribute('position', new THREE.BufferAttribute(tailVerts, 3));
+  tailGeo.setIndex(new THREE.BufferAttribute(new Uint16Array([0, 2, 1,  0, 1, 3]), 1));
+  tailGeo.computeVertexNormals();
+  group.add(new THREE.Mesh(tailGeo, matBody));
+
+  return group;
+}
+
+// ─── Third-person bird controls ───────────────────────────────────────────────
+
+function createBirdControls(camera, domElement) {
+  let yaw      = 0;
+  let camPitch = 0.20;   // camera elevation above bird (radians); higher = more top-down
+
+  const LOOK_SPEED  = 0.00175;
+  const MOVE_SPEED  = 0.35;
+  const TOUCH_SPEED = LOOK_SPEED * 2.5;
+
+  const birdPos = new THREE.Vector3(0, BIRD_HEIGHT, 0);
+  const _fwd    = new THREE.Vector3();
+  const _right  = new THREE.Vector3();
+  const _camOff = new THREE.Vector3();
+  const _euler  = new THREE.Euler(0, 0, 0, 'YXZ');
+
+  const keys   = new Set();
+  const typing = e => e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
+  window.addEventListener('keydown', e => { if (!typing(e)) keys.add(e.code); });
+  window.addEventListener('keyup',   e => keys.delete(e.code));
+
+  function updateCamera() {
+    _camOff.set(0, BIRD_CAM_UP, BIRD_CAM_BACK);
+    _euler.set(-camPitch, yaw, 0);
+    _camOff.applyEuler(_euler);
+    camera.position.copy(birdPos).add(_camOff);
+    camera.lookAt(birdPos.x, birdPos.y + 0.5, birdPos.z);
+  }
+
+  domElement.addEventListener('click', () => {
+    if (document.pointerLockElement !== domElement) domElement.requestPointerLock();
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (document.pointerLockElement !== domElement) return;
+    yaw       += -e.movementX * LOOK_SPEED;
+    camPitch   = Math.max(0.02, Math.min(1.2, camPitch - e.movementY * LOOK_SPEED));
+    updateCamera();
+    dispatcher.dispatchEvent({ type: 'change' });
+  });
+
+  domElement.addEventListener('contextmenu', e => e.preventDefault());
+
+  let touchLast = null, touchHoldTimer = null;
+  domElement.addEventListener('touchstart', e => {
+    if (e.touches.length === 1) {
+      touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      touchHoldTimer = setTimeout(() => keys.add('KeyW'), 200);
+    }
+    e.preventDefault();
+  }, { passive: false });
+
+  domElement.addEventListener('touchmove', e => {
+    if (e.touches.length === 1 && touchLast) {
+      const cx = e.touches[0].clientX, cy = e.touches[0].clientY;
+      const dx = cx - touchLast.x, dy = cy - touchLast.y;
+      touchLast = { x: cx, y: cy };
+      yaw      += -dx * TOUCH_SPEED;
+      camPitch  = Math.max(0.02, Math.min(1.2, camPitch - dy * TOUCH_SPEED));
+      updateCamera();
+      dispatcher.dispatchEvent({ type: 'change' });
+    }
+    e.preventDefault();
+  }, { passive: false });
+
+  domElement.addEventListener('touchend', () => {
+    touchLast = null;
+    clearTimeout(touchHoldTimer);
+    touchHoldTimer = null;
+    keys.delete('KeyW');
+  });
+
+  const dispatcher = Object.assign(new THREE.EventDispatcher(), {
+    birdPos,
+    getYaw() { return yaw; },
+    init(x, y, z) { birdPos.set(x, y, z); updateCamera(); },
+    update() {
+      // Always hover at BIRD_HEIGHT above the terrain (ignores building roofs)
+      const groundY = terrain ? terrain.sample(birdPos.x, birdPos.z) : 0;
+      birdPos.y = groundY + BIRD_HEIGHT;
+
+      if (keys.has('KeyW') || keys.has('KeyS') || keys.has('KeyA') || keys.has('KeyD')) {
+        _fwd.set(-Math.sin(yaw), 0, -Math.cos(yaw));
+        _right.set(-_fwd.z, 0, _fwd.x);
+        const sprint = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 2 : 1;
+        if (keys.has('KeyW')) { birdPos.x += _fwd.x   * MOVE_SPEED       * sprint; birdPos.z += _fwd.z   * MOVE_SPEED       * sprint; }
+        if (keys.has('KeyS')) { birdPos.x -= _fwd.x   * MOVE_SPEED       * sprint; birdPos.z -= _fwd.z   * MOVE_SPEED       * sprint; }
+        if (keys.has('KeyD')) { birdPos.x += _right.x * MOVE_SPEED * 0.6 * sprint; birdPos.z += _right.z * MOVE_SPEED * 0.6 * sprint; }
+        if (keys.has('KeyA')) { birdPos.x -= _right.x * MOVE_SPEED * 0.6 * sprint; birdPos.z -= _right.z * MOVE_SPEED * 0.6 * sprint; }
+        dispatcher.dispatchEvent({ type: 'change' });
+      }
+
+      updateCamera();
+    },
+  });
+
+  updateCamera();
+  return dispatcher;
+}
+
 // ─── Scene setup ─────────────────────────────────────────────────────────────
 
 function initScene(collision) {
@@ -1675,7 +1832,18 @@ function initScene(collision) {
   ground.renderOrder = -1; // render before streets/buildings so they always paint over it
   scene.add(ground);
 
-  const controls = createFPSControls(camera, renderer.domElement, collision);
+  // Lights — only the bird uses MeshPhongMaterial; city is all ShaderMaterial so unaffected
+  scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+  const sunLight = new THREE.DirectionalLight(0xfffde8, 0.9);
+  sunLight.position.set(60, 150, 80);
+  scene.add(sunLight);
+
+  // Bird mesh — player avatar for third-person view
+  const birdMesh = buildBirdMesh();
+  birdMesh.position.set(0, BIRD_HEIGHT, 0);
+  scene.add(birdMesh);
+
+  const controls = createBirdControls(camera, renderer.domElement);
 
   function onResize() {
     const w = innerWidth, h = innerHeight;
@@ -1705,6 +1873,10 @@ function initScene(collision) {
     const dt  = Math.min((now - lastTime) / 1000, 0.1);
     lastTime  = now;
     controls.update();
+    // Sync bird mesh: hover at logical position with a gentle float bob
+    birdMesh.position.copy(controls.birdPos);
+    birdMesh.position.y += 0.1 * Math.sin(now * 0.002);
+    birdMesh.rotation.y  = controls.getYaw();
     if (trainRef.system) trainRef.system.update(dt);
     // Smooth FOV lerp for fisheye toggle.
     if (Math.abs(camera.fov - fovTarget) > 0.05) {
@@ -1886,7 +2058,7 @@ async function main() {
     const now = Date.now();
     if (now - lastCheck > 1000) {
       lastCheck = now;
-      manager.update(camera.position.x, camera.position.z);
+      manager.update(controls.birdPos.x, controls.birdPos.z);
     }
   });
 
@@ -1932,7 +2104,7 @@ async function main() {
     }
     pos.needsUpdate = true;
     ground.geometry.computeVertexNormals();
-    camera.position.y = terrain.sample(0, 0) + EYE_HEIGHT;
+    controls.init(0, terrain.sample(0, 0) + BIRD_HEIGHT, 0);
   }
 
   if (coreOsm) { setLoad('Building the city…', 0.9); await sleep(0); }
