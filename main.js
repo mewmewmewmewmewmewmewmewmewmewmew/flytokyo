@@ -1700,14 +1700,16 @@ function createBirdControls(camera, domElement) {
 
   const LOOK_SPEED  = 0.00175;
   const MOVE_SPEED  = 0.35;
-  const LIFT_SPEED  = 0.30;   // spacebar ascent per frame
-  const MIN_CLEAR   = 2.0;    // never sink closer than this to the terrain
-  const PITCH_LIMIT = 1.1;    // clamp so you can't loop over the top
+  const TURN_SPEED  = 0.022;   // A/D yaw turn rate (radians per frame)
+  const LIFT_SPEED  = 0.30;    // spacebar ascent per frame
+  const MIN_CLEAR   = 2.0;     // never sink closer than this to the terrain
+  const PITCH_LIMIT = 1.1;     // clamp so you can't loop over the top
   const TOUCH_SPEED = LOOK_SPEED * 2.5;
+
+  let mouseThrust = false;     // true while left mouse held (with pointer locked)
 
   const birdPos = new THREE.Vector3(0, BIRD_HEIGHT, 0);
   const _look   = new THREE.Vector3();
-  const _right  = new THREE.Vector3();
   const _euler  = new THREE.Euler(0, 0, 0, 'YXZ');
 
   const keys   = new Set();
@@ -1741,6 +1743,15 @@ function createBirdControls(camera, domElement) {
   domElement.addEventListener('click', () => {
     if (document.pointerLockElement !== domElement) domElement.requestPointerLock();
   });
+
+  // Mouse = camera only (look around). Holding left mouse thrusts the bird in the
+  // camera direction; the lock-acquiring click doesn't lurch because thrust only
+  // engages once the pointer is already locked.
+  domElement.addEventListener('mousedown', e => {
+    if (e.button === 0 && document.pointerLockElement === domElement) mouseThrust = true;
+  });
+  window.addEventListener('mouseup', e => { if (e.button === 0) mouseThrust = false; });
+  window.addEventListener('blur', () => { mouseThrust = false; });
 
   // Non-inverted: mouse up → look up (pitch increases), mouse right → turn right.
   document.addEventListener('mousemove', e => {
@@ -1792,16 +1803,19 @@ function createBirdControls(camera, domElement) {
     setFisheye(on) { fisheyeMode = on; updateCamera(); },
     init(x, y, z) { birdPos.set(x, y, z); updateCamera(); },
     update() {
-      const look = getLook();
-      _right.set(-look.z, 0, look.x).normalize();   // horizontal strafe axis
       const sprint = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 2 : 1;
       let moved = false;
 
-      // W flies toward where you're looking (full 3D); S reverses.
-      if (keys.has('KeyW')) { birdPos.addScaledVector(look,  MOVE_SPEED * sprint);       moved = true; }
-      if (keys.has('KeyS')) { birdPos.addScaledVector(look, -MOVE_SPEED * sprint);       moved = true; }
-      if (keys.has('KeyD')) { birdPos.addScaledVector(_right,  MOVE_SPEED * 0.6 * sprint); moved = true; }
-      if (keys.has('KeyA')) { birdPos.addScaledVector(_right, -MOVE_SPEED * 0.6 * sprint); moved = true; }
+      // A/D turn (yaw) left/right. Apply before reading the look vector so thrust
+      // this frame uses the updated heading.
+      if (keys.has('KeyA')) { yaw += TURN_SPEED; moved = true; }
+      if (keys.has('KeyD')) { yaw -= TURN_SPEED; moved = true; }
+
+      const look = getLook();
+
+      // Thrust toward the camera direction: hold left mouse (or W). S reverses.
+      if (mouseThrust || keys.has('KeyW')) { birdPos.addScaledVector(look,  MOVE_SPEED * sprint); moved = true; }
+      if (keys.has('KeyS'))                { birdPos.addScaledVector(look, -MOVE_SPEED * sprint); moved = true; }
       // Spacebar gains elevation.
       if (keys.has('Space')) { birdPos.y += LIFT_SPEED * sprint; moved = true; }
 
