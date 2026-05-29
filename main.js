@@ -1809,15 +1809,16 @@ function createBirdControls(camera, domElement) {
   const LOOK_SPEED  = 0.00175;
   const MOVE_SPEED  = 0.35;
   const MOVE_MAX    = MOVE_SPEED * 2;  // top speed (non-sprint) — double the cruise speed
-  const MOVE_ACCEL  = 0.020;           // speed gain per frame toward target
-  const MOVE_DECEL  = 0.030;           // speed loss per frame when not thrusting
+  const ACCEL_TIME  = 2.0;             // seconds from standstill to top speed
+  const DECEL_TIME  = 1.2;             // seconds to coast back to a stop
   const TURN_SPEED  = 0.022;   // A/D yaw turn rate (radians per frame)
   const LIFT_SPEED  = 0.30;    // spacebar ascent per frame
   const MIN_CLEAR   = 0.3;     // can skim almost to the ground
   const PITCH_LIMIT = 1.1;     // clamp so you can't loop over the top
   const TOUCH_SPEED = LOOK_SPEED * 2.5;
 
-  let speed       = 0;         // current movement magnitude, eases up/down
+  let speed       = 0;             // current movement magnitude, eases up/down
+  let lastTime    = performance.now();
   let mouseThrust = false;     // true while left mouse held (with pointer locked)
 
   const birdPos = new THREE.Vector3(0, BIRD_HEIGHT, 0);
@@ -1927,6 +1928,10 @@ function createBirdControls(camera, domElement) {
     setFisheye(on) { fisheyeMode = on; updateCamera(); },
     init(x, y, z) { birdPos.set(x, y, z); updateCamera(); },
     update() {
+      const now    = performance.now();
+      const dt     = Math.min((now - lastTime) / 1000, 0.1);  // seconds, capped
+      lastTime     = now;
+
       const sprint = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 2 : 1;
       let moved = false;
 
@@ -1935,13 +1940,13 @@ function createBirdControls(camera, domElement) {
       if (keys.has('KeyA')) { headYaw += TURN_SPEED; camYaw += TURN_SPEED; moved = true; }
       if (keys.has('KeyD')) { headYaw -= TURN_SPEED; camYaw -= TURN_SPEED; moved = true; }
 
-      // Ease speed up to MOVE_MAX while thrusting; coast to a stop when not.
+      // Ease speed up to MOVE_MAX in ACCEL_TIME seconds; coast to stop in DECEL_TIME seconds.
       const thrusting = keys.has('KeyW') || keys.has('KeyS') || mouseThrust;
       const topSpeed  = MOVE_MAX * sprint;
       if (thrusting) {
-        speed = Math.min(speed + MOVE_ACCEL * sprint, topSpeed);
+        speed = Math.min(speed + topSpeed / ACCEL_TIME * dt, topSpeed);
       } else {
-        speed = Math.max(speed - MOVE_DECEL, 0);
+        speed = Math.max(speed - MOVE_MAX / DECEL_TIME * dt, 0);
       }
 
       // W flies forward in the bird's OWN heading — mouse orbit stays independent.
