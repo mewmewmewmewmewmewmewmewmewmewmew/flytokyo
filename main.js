@@ -1635,9 +1635,9 @@ function createFPSControls(camera, domElement, collision) {
 
 function buildBirdMesh() {
   const group   = new THREE.Group();
-  const matBody = new THREE.MeshPhongMaterial({ color: 0x2c5f7c, flatShading: true });
-  const matWing = new THREE.MeshPhongMaterial({ color: 0x1e4560, flatShading: true, side: THREE.DoubleSide });
-  const matBeak = new THREE.MeshPhongMaterial({ color: 0xe07833, flatShading: true });
+  const matBody = new THREE.MeshBasicMaterial({ color: 0x2c8fc7, wireframe: true });
+  const matWing = new THREE.MeshBasicMaterial({ color: 0x46c0ff, wireframe: true });
+  const matBeak = new THREE.MeshBasicMaterial({ color: 0xff9a3c, wireframe: true });
 
   // Body — elongated along Z; bird faces −Z (Three.js default forward)
   group.add(new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.30, 1.3, 2, 2, 2), matBody));
@@ -1687,40 +1687,58 @@ function buildBirdMesh() {
 // ─── Third-person bird controls ───────────────────────────────────────────────
 
 function createBirdControls(camera, domElement) {
-  let yaw      = 0;
-  let camPitch = 0.20;   // camera elevation above bird (radians); higher = more top-down
+  let yaw   = 0;
+  let pitch = 0;     // look/flight pitch (radians); + = nose up. NOT inverted.
+  let roll  = 0;     // smoothed bank angle applied to the bird mesh
 
   const LOOK_SPEED  = 0.00175;
   const MOVE_SPEED  = 0.35;
+  const LIFT_SPEED  = 0.30;   // spacebar ascent per frame
+  const MIN_CLEAR   = 2.0;    // never sink closer than this to the terrain
+  const PITCH_LIMIT = 1.1;    // clamp so you can't loop over the top
   const TOUCH_SPEED = LOOK_SPEED * 2.5;
 
   const birdPos = new THREE.Vector3(0, BIRD_HEIGHT, 0);
-  const _fwd    = new THREE.Vector3();
+  const _look   = new THREE.Vector3();
   const _right  = new THREE.Vector3();
-  const _camOff = new THREE.Vector3();
   const _euler  = new THREE.Euler(0, 0, 0, 'YXZ');
 
   const keys   = new Set();
   const typing = e => e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
-  window.addEventListener('keydown', e => { if (!typing(e)) keys.add(e.code); });
-  window.addEventListener('keyup',   e => keys.delete(e.code));
+  window.addEventListener('keydown', e => {
+    if (typing(e)) return;
+    keys.add(e.code);
+    if (e.code === 'Space') e.preventDefault();
+  });
+  window.addEventListener('keyup', e => keys.delete(e.code));
+
+  // Unit vector pointing where the bird is looking (full 3D, includes pitch).
+  function getLook() {
+    _euler.set(pitch, yaw, 0);
+    _look.set(0, 0, -1).applyEuler(_euler);
+    return _look;
+  }
 
   function updateCamera() {
-    _camOff.set(0, BIRD_CAM_UP, BIRD_CAM_BACK);
-    _euler.set(-camPitch, yaw, 0);
-    _camOff.applyEuler(_euler);
-    camera.position.copy(birdPos).add(_camOff);
-    camera.lookAt(birdPos.x, birdPos.y + 0.5, birdPos.z);
+    const look = getLook();
+    // Sit behind the bird along its look direction, lifted a little.
+    camera.position.set(
+      birdPos.x - look.x * BIRD_CAM_BACK,
+      birdPos.y - look.y * BIRD_CAM_BACK + BIRD_CAM_UP,
+      birdPos.z - look.z * BIRD_CAM_BACK,
+    );
+    camera.lookAt(birdPos.x, birdPos.y, birdPos.z);
   }
 
   domElement.addEventListener('click', () => {
     if (document.pointerLockElement !== domElement) domElement.requestPointerLock();
   });
 
+  // Non-inverted: mouse up → look up (pitch increases), mouse right → turn right.
   document.addEventListener('mousemove', e => {
     if (document.pointerLockElement !== domElement) return;
-    yaw       += -e.movementX * LOOK_SPEED;
-    camPitch   = Math.max(0.02, Math.min(1.2, camPitch - e.movementY * LOOK_SPEED));
+    yaw   += -e.movementX * LOOK_SPEED;
+    pitch  = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch - e.movementY * LOOK_SPEED));
     updateCamera();
     dispatcher.dispatchEvent({ type: 'change' });
   });
@@ -1741,8 +1759,8 @@ function createBirdControls(camera, domElement) {
       const cx = e.touches[0].clientX, cy = e.touches[0].clientY;
       const dx = cx - touchLast.x, dy = cy - touchLast.y;
       touchLast = { x: cx, y: cy };
-      yaw      += -dx * TOUCH_SPEED;
-      camPitch  = Math.max(0.02, Math.min(1.2, camPitch - dy * TOUCH_SPEED));
+      yaw   += -dx * TOUCH_SPEED;
+      pitch  = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch - dy * TOUCH_SPEED));
       updateCamera();
       dispatcher.dispatchEvent({ type: 'change' });
     }
@@ -1756,26 +1774,39 @@ function createBirdControls(camera, domElement) {
     keys.delete('KeyW');
   });
 
+  let prevYaw = 0;
+
   const dispatcher = Object.assign(new THREE.EventDispatcher(), {
     birdPos,
-    getYaw() { return yaw; },
+    getYaw()   { return yaw; },
+    getPitch() { return pitch; },
+    getRoll()  { return roll; },
     init(x, y, z) { birdPos.set(x, y, z); updateCamera(); },
     update() {
-      // Always hover at BIRD_HEIGHT above the terrain (ignores building roofs)
+      const look = getLook();
+      _right.set(-look.z, 0, look.x).normalize();   // horizontal strafe axis
+      const sprint = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 2 : 1;
+      let moved = false;
+
+      // W flies toward where you're looking (full 3D); S reverses.
+      if (keys.has('KeyW')) { birdPos.addScaledVector(look,  MOVE_SPEED * sprint);       moved = true; }
+      if (keys.has('KeyS')) { birdPos.addScaledVector(look, -MOVE_SPEED * sprint);       moved = true; }
+      if (keys.has('KeyD')) { birdPos.addScaledVector(_right,  MOVE_SPEED * 0.6 * sprint); moved = true; }
+      if (keys.has('KeyA')) { birdPos.addScaledVector(_right, -MOVE_SPEED * 0.6 * sprint); moved = true; }
+      // Spacebar gains elevation.
+      if (keys.has('Space')) { birdPos.y += LIFT_SPEED * sprint; moved = true; }
+
+      // Stay above the ground.
       const groundY = terrain ? terrain.sample(birdPos.x, birdPos.z) : 0;
-      birdPos.y = groundY + BIRD_HEIGHT;
+      if (birdPos.y < groundY + MIN_CLEAR) birdPos.y = groundY + MIN_CLEAR;
 
-      if (keys.has('KeyW') || keys.has('KeyS') || keys.has('KeyA') || keys.has('KeyD')) {
-        _fwd.set(-Math.sin(yaw), 0, -Math.cos(yaw));
-        _right.set(-_fwd.z, 0, _fwd.x);
-        const sprint = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 2 : 1;
-        if (keys.has('KeyW')) { birdPos.x += _fwd.x   * MOVE_SPEED       * sprint; birdPos.z += _fwd.z   * MOVE_SPEED       * sprint; }
-        if (keys.has('KeyS')) { birdPos.x -= _fwd.x   * MOVE_SPEED       * sprint; birdPos.z -= _fwd.z   * MOVE_SPEED       * sprint; }
-        if (keys.has('KeyD')) { birdPos.x += _right.x * MOVE_SPEED * 0.6 * sprint; birdPos.z += _right.z * MOVE_SPEED * 0.6 * sprint; }
-        if (keys.has('KeyA')) { birdPos.x -= _right.x * MOVE_SPEED * 0.6 * sprint; birdPos.z -= _right.z * MOVE_SPEED * 0.6 * sprint; }
-        dispatcher.dispatchEvent({ type: 'change' });
-      }
+      // Bank into turns: roll proportional to how fast yaw is changing.
+      const dYaw = yaw - prevYaw;
+      prevYaw = yaw;
+      const bankTarget = Math.max(-0.6, Math.min(0.6, dYaw * 9));
+      roll += (bankTarget - roll) * 0.15;   // smooth toward target / back to level
 
+      if (moved) dispatcher.dispatchEvent({ type: 'change' });
       updateCamera();
     },
   });
@@ -1873,10 +1904,10 @@ function initScene(collision) {
     const dt  = Math.min((now - lastTime) / 1000, 0.1);
     lastTime  = now;
     controls.update();
-    // Sync bird mesh: hover at logical position with a gentle float bob
+    // Sync bird mesh: position + flight orientation (yaw, nose pitch, bank roll)
     birdMesh.position.copy(controls.birdPos);
-    birdMesh.position.y += 0.1 * Math.sin(now * 0.002);
-    birdMesh.rotation.y  = controls.getYaw();
+    birdMesh.position.y += 0.1 * Math.sin(now * 0.002);   // gentle float bob
+    birdMesh.rotation.set(controls.getPitch(), controls.getYaw(), controls.getRoll(), 'YXZ');
     if (trainRef.system) trainRef.system.update(dt);
     // Smooth FOV lerp for fisheye toggle.
     if (Math.abs(camera.fov - fovTarget) > 0.05) {
