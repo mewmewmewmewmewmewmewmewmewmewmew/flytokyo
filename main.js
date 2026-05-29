@@ -38,7 +38,7 @@ const BIRD_CAM_UP   = 2;      // metres above bird
 const FISH_FOV_DEG  = 210;    // total fisheye angle (>180° wraps behind the camera)
 const FISH_CAM_BACK = 4.0;    // follow distance in fisheye mode
 const FISH_CAM_UP   = 1.2;
-const FISH_CUBE_RES = 1024;   // per-face cubemap resolution
+const FISH_CUBE_RES = 640;    // per-face cubemap resolution (perf vs sharpness)
 
 // ─── Coordinate helpers ──────────────────────────────────────────────────────
 
@@ -1959,6 +1959,7 @@ function initScene(collision) {
   fisheyeScene.add(new THREE.Mesh(fsGeo, fisheyeMat));
 
   const _camRot4 = new THREE.Matrix4();
+  let fishFrame = 0;   // cubemap re-renders every other frame; reprojection runs every frame
 
   // F3 toggles true cubemap fisheye + closer follow camera.
   window.addEventListener('keydown', e => {
@@ -1988,10 +1989,13 @@ function initScene(collision) {
       }
     }
     if (fisheyeActive) {
-      // Render the scene into a cubemap from the camera position, then reproject.
-      cubeCam.position.copy(camera.position);
-      // Hide the bird only from the +Z (rear) face? Not needed — it's in front of us.
-      cubeCam.update(renderer, scene);
+      // Re-render the cubemap (the expensive 6-face pass) only every other frame.
+      // The cheap fisheye reprojection still runs every frame, and the camera moves
+      // little between frames, so the staleness is imperceptible but halves GPU cost.
+      if ((fishFrame++ & 1) === 0) {
+        cubeCam.position.copy(camera.position);
+        cubeCam.update(renderer, scene);
+      }
       // Feed the camera's world-space orientation to the shader so fisheye rays
       // point where the camera is looking.
       camera.updateMatrixWorld();
