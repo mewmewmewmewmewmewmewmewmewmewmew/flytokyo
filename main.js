@@ -1922,7 +1922,9 @@ function initScene(collision) {
     minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter,
     generateMipmaps: true,
   });
-  const cubeCam = new THREE.CubeCamera(0.15, 2000, cubeRT);
+  // Far plane clipped to the fade distance: buildings past FADE_FAR are invisible
+  // anyway, so clipping here frustum-culls them out of all 6 face renders.
+  const cubeCam = new THREE.CubeCamera(0.15, FADE_FAR, cubeRT);
 
   const fsGeo = new THREE.BufferGeometry();
   fsGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1,-1,0, 3,-1,0, -1,3,0]), 3));
