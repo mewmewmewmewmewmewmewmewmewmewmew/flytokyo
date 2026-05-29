@@ -35,9 +35,9 @@ const BIRD_HEIGHT   = 3.96;   // 13 ft above terrain
 const BIRD_CAM_BACK = 8;      // metres behind bird
 const BIRD_CAM_UP   = 2;      // metres above bird
 // Fisheye (F3) constants — true cubemap-based fisheye that wraps around the camera
-const FISH_FOV_DEG  = 210;    // total fisheye angle (>180° wraps behind the camera)
+const FISH_FOV_DEG  = 250;    // total fisheye angle (125° off-axis — still never hits the rear face)
 const FISH_CAM_BACK = 4.0;    // follow distance in fisheye mode
-const FISH_CAM_UP   = 1.2;
+const FISH_CAM_UP   = 0.45;   // hug close to the bird's level
 const FISH_CUBE_RES = 512;    // per-face cubemap resolution (low for perf; AA recovers edges)
 const FISH_BLUR     = 0.55;   // temporal motion-blur retention (0 = none, →1 = long trails)
 
@@ -1923,8 +1923,30 @@ function initScene(collision) {
     generateMipmaps: true,
   });
   // Far plane clipped to the fade distance: buildings past FADE_FAR are invisible
-  // anyway, so clipping here frustum-culls them out of all 6 face renders.
+  // anyway, so clipping here frustum-culls them out of the face renders.
   const cubeCam = new THREE.CubeCamera(0.15, FADE_FAR, cubeRT);
+
+  // Render only the cube faces the fisheye can actually sample. Our view points
+  // along −Z (face 5) with a 125° half-angle, so rays stay within the forward
+  // face + the 4 side faces; the rear +Z face (index 4) is never sampled, so we
+  // skip it — that's 5 renders of the city instead of 6. CubeCamera's children
+  // are the 6 correctly-oriented face cameras: [+X,−X,+Y,−Y,+Z,−Z].
+  const CUBE_FACES = [0, 1, 2, 3, 5];   // omit 4 (+Z, behind us)
+  function renderCubeFaces() {
+    cubeCam.position.copy(camera.position);
+    cubeCam.updateMatrixWorld(true);
+    const cams = cubeCam.children;
+    const tex  = cubeRT.texture;
+    tex.generateMipmaps = false;
+    for (let i = 0; i < CUBE_FACES.length; i++) {
+      const f = CUBE_FACES[i];
+      // Regenerate the cube's mipmaps when writing the final face.
+      if (i === CUBE_FACES.length - 1) tex.generateMipmaps = true;
+      renderer.setRenderTarget(cubeRT, f);
+      renderer.render(scene, cams[f]);
+    }
+    renderer.setRenderTarget(null);
+  }
 
   const fsGeo = new THREE.BufferGeometry();
   fsGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1,-1,0, 3,-1,0, -1,3,0]), 3));
@@ -2072,10 +2094,7 @@ function initScene(collision) {
     if (fisheyeActive) {
       // Re-render the cubemap (the expensive 6-face pass) only every other frame.
       // The cheap reprojection + blend passes still run every frame.
-      if ((fishFrame++ & 1) === 0) {
-        cubeCam.position.copy(camera.position);
-        cubeCam.update(renderer, scene);
-      }
+      if ((fishFrame++ & 1) === 0) renderCubeFaces();
       // Feed the camera's world-space orientation to the fisheye shader.
       camera.updateMatrixWorld();
       _camRot4.extractRotation(camera.matrixWorld);
