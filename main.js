@@ -183,7 +183,7 @@ function bldgTerrainInfo(ring, height) {
 
 const CACHE_DB = 'tokyo3d', CACHE_STORE = 'overpass';
 const CACHE_TTL = 3 * 24 * 60 * 60 * 1000;   // 3 days
-const QUERY_VERSION = 'v1';                  // bump to invalidate cache when the query changes
+const QUERY_VERSION = 'v2';                  // bump to invalidate cache when the query changes
 
 let _dbPromise = null;
 function openCache() {
@@ -253,6 +253,9 @@ async function fetchOSMBbox(bbox) {
     `way["building"](${south},${west},${north},${east});`,
     `way["highway"](${south},${west},${north},${east});`,
     `way["railway"](${south},${west},${north},${east});`,
+    `way["natural"="water"](${south},${west},${north},${east});`,
+    `way["waterway"](${south},${west},${north},${east});`,
+    `way["landuse"="reservoir"](${south},${west},${north},${east});`,
     ');out body;>;out skel qt;',
   ].join('');
   // Round-robin across mirrors: one public endpoint only gives ~2 slots/IP and
@@ -401,6 +404,39 @@ function parseRailways(osm, nodeMap) {
     const isBridge = el.tags.bridge === 'yes' || el.tags.bridge === 'viaduct';
     const isTunnel = el.tags.tunnel === 'yes' || (el.tags.railway === 'subway' && !isBridge);
     out.push({ id: el.id, coords, type: el.tags.railway, isTunnel });
+  }
+  return out;
+}
+
+const WATERWAY_RENDER = new Set(['river','canal','stream','drain']);
+
+function parseWaterAreas(osm, nodeMap) {
+  const out = [];
+  for (const el of osm.elements) {
+    if (el.type !== 'way') continue;
+    const t = el.tags;
+    if (!t) continue;
+    if (t.natural !== 'water' && t.landuse !== 'reservoir' && t.waterway !== 'riverbank') continue;
+    const ring = el.nodes.map(id => nodeMap.get(id)).filter(Boolean);
+    if (ring.length > 1) {
+      const [ax, az] = ring[0], [bx, bz] = ring[ring.length - 1];
+      if (ax === bx && az === bz) ring.pop();
+    }
+    if (ring.length < 3) continue;
+    out.push({ id: el.id, ring });
+  }
+  return out;
+}
+
+function parseWaterways(osm, nodeMap) {
+  const out = [];
+  for (const el of osm.elements) {
+    if (el.type !== 'way' || !el.tags?.waterway) continue;
+    if (!WATERWAY_RENDER.has(el.tags.waterway)) continue;
+    if (el.tags.area === 'yes') continue;   // rendered as polygon by parseWaterAreas
+    const coords = el.nodes.map(id => nodeMap.get(id)).filter(Boolean);
+    if (coords.length < 2) continue;
+    out.push({ id: el.id, coords, type: el.tags.waterway });
   }
   return out;
 }
@@ -658,6 +694,18 @@ const METRO_FRAG = /* glsl */`
   }
 `;
 
+const WATER_FRAG = /* glsl */`
+  varying vec3  vCol;
+  varying float vDist;
+  uniform float uNear;
+  uniform float uFar;
+  void main() {
+    float fade = 1.0 - smoothstep(uNear, uFar, vDist);
+    if (fade < 0.01) discard;
+    gl_FragColor = vec4(vCol, 0.80 * fade);
+  }
+`;
+
 function fadeUniforms() {
   // uXray: 0 = solid (default), 1 = translucent x-ray (right-click held)
   return { uNear: { value: FADE_NEAR }, uFar: { value: FADE_FAR }, uXray: { value: 0.0 } };
@@ -704,6 +752,14 @@ function createMaterials() {
       vertexShader: LINE_VERT, fragmentShader: METRO_FRAG,
       uniforms: fadeUniforms(), transparent: true, depthWrite: false,
       depthTest: true, side: THREE.DoubleSide,
+    }),
+    // Water sits just above terrain, below roads. depthWrite:false so it
+    // doesn't occlude footpaths/roads drawn on its surface.
+    water: new THREE.ShaderMaterial({
+      vertexShader: LINE_VERT, fragmentShader: WATER_FRAG,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2,
+      side: THREE.DoubleSide,
     }),
   };
 }
@@ -951,6 +1007,61 @@ function buildRailLines(rails, yLevel, mat) {
   return new THREE.LineSegments(geo, mat);
 }
 
+function waterwayHalfWidth(type) {
+  switch (type) {
+    case 'river':  return 12;
+    case 'canal':  return 5;
+    case 'stream': return 2;
+    default:       return 1.5;
+  }
+}
+
+// Triangulated fill for water-area polygons (lakes, reservoirs, river banks).
+function buildWaterAreaMesh(areas, mat) {
+  const pos = [], col = [], idx = [];
+  let v = 0;
+  const wc = new THREE.Color(0x4488bb);
+
+  for (const { ring } of areas) {
+    const flat = ring.flatMap(([x, z]) => [x, z]);
+    const tris = earcut(flat);
+    if (!tris.length) continue;
+    const base = v;
+    for (const [x, z] of ring) {
+      const y = (terrain ? terrain.sample(x, z) : 0) + 0.12;
+      pos.push(x, y, z);
+      col.push(wc.r, wc.g, wc.b);
+      v++;
+    }
+    for (const i of tris) idx.push(base + i);
+  }
+
+  if (!pos.length) return null;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
+  geo.setIndex(idx);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 0;
+  return mesh;
+}
+
+// Ribbon geometry for river/canal centre-lines (where no area polygon exists).
+function buildWaterLines(waterways, mat) {
+  const pos = [], col = [];
+  const wc = new THREE.Color(0x4488bb);
+  for (const { coords, type } of waterways) {
+    addRibbonToBuffers(coords, waterwayHalfWidth(type), pos, col, wc, 0.12);
+  }
+  if (!pos.length) return null;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 0;
+  return mesh;
+}
+
 // Returns { mesh, curves } — curves are at METRO_DEPTH, same as tube geometry.
 // Train cars use depthTest:false so they render through the ground plane.
 function buildMetroTubes(rails, mat) {
@@ -1185,6 +1296,10 @@ class TileManager {
       .filter(r => { if (this.seenIds.has(r.id)) return false; this.seenIds.add(r.id); return true; });
     const pois  = parsePOIs(osm)
       .filter(p => { if (this.seenIds.has(p.id)) return false; this.seenIds.add(p.id); return true; });
+    const waterAreas = parseWaterAreas(osm, nodeMap)
+      .filter(w => { if (this.seenIds.has(w.id)) return false; this.seenIds.add(w.id); return true; });
+    const waterways  = parseWaterways(osm, nodeMap)
+      .filter(w => { if (this.seenIds.has(w.id)) return false; this.seenIds.add(w.id); return true; });
 
     // Register footprints for collision; add a name label above named buildings.
     for (const { ring, height, name } of bldgs) {
@@ -1241,6 +1356,12 @@ class TileManager {
           this.metroCurves.push(new THREE.CatmullRomCurve3(pts, false, 'centripetal', 0.5));
       }
       this.rails += rails.length;
+    }
+    if (waterAreas.length || waterways.length) {
+      const am = buildWaterAreaMesh(waterAreas, this.mats.water);
+      const wm = buildWaterLines(waterways, this.mats.water);
+      if (am) group.add(am);
+      if (wm) group.add(wm);
     }
 
     this.scene.add(group);
