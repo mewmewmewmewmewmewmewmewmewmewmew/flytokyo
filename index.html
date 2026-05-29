@@ -1,14 +1,19 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v7.7 -->
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8"><!-- v7.8 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Tokyo 3D</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { height: 100%; overflow: hidden; }
     body { background: linear-gradient(to bottom, #f4f8ff 0%, #f0f2f8 42%, #e4e8f2 58%, #d8dce8 100%);
-           overflow: hidden; font-family: system-ui, sans-serif; color: #1a1e30; }
-    canvas { display: block; }
+           overflow: hidden; overscroll-behavior: none;
+           font-family: system-ui, sans-serif; color: #1a1e30; }
+    /* position:fixed + inset:0 fills the visual viewport even when the mobile
+       browser chrome (address bar) shows/hides. touch-action:none hands all
+       touch events to JS so drag look works correctly on iOS/Android. */
+    canvas { display: block; position: fixed; inset: 0; touch-action: none; }
 
     #overlay {
       position: fixed;
@@ -164,7 +169,7 @@
     <div id="search-msg"></div>
     <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
     <div id="load-msg"></div>
-    <div id="load-version">v7.7</div>
+    <div id="load-version">v7.8</div>
   </div>
 
   <div id="overlay">
@@ -172,7 +177,7 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v7.7</div>
+  <div id="version">v7.8</div>
 
   <div id="hint">
     Click · Look &nbsp;|&nbsp; WASD · Move<br>

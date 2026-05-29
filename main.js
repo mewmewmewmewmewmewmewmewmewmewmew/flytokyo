@@ -1556,11 +1556,16 @@ function initScene(collision) {
 
   const controls = createFPSControls(camera, renderer.domElement, collision);
 
-  window.addEventListener('resize', () => {
-    camera.aspect = innerWidth / innerHeight;
+  function onResize() {
+    const w = innerWidth, h = innerHeight;
+    camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    renderer.setSize(innerWidth, innerHeight);
-  });
+    renderer.setSize(w, h);
+  }
+  window.addEventListener('resize', onResize);
+  // visualViewport fires when the iOS address bar slides in/out (innerHeight
+  // doesn't change in that case, but the visible area does).
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', onResize);
 
   const trainRef  = { system: null };
   const labelsRef = { bldgGroup: null, poiGroup: null };
