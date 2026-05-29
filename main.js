@@ -426,8 +426,8 @@ function roundRectPath(ctx, x, y, w, h, r) {
 
 // Render label text to a canvas. `bg` draws a rounded pill behind it (for floating
 // POI labels); `stroke` outlines the glyphs so signage reads on any wall colour.
-function renderLabelCanvas(text, { bg, stroke, fg = '#fff' }) {
-  const fontSize = 48, padX = 16, padY = 12;
+function renderLabelCanvas(text, { bg, stroke, fg = '#fff', fontSize = 48 }) {
+  const padX = Math.round(fontSize / 3), padY = Math.round(fontSize / 4);
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   const font = `700 ${fontSize}px system-ui, sans-serif`;
@@ -437,9 +437,9 @@ function renderLabelCanvas(text, { bg, stroke, fg = '#fff' }) {
   canvas.height = Math.ceil(fontSize + padY * 2);
   ctx.font = font;                 // reset — resizing the canvas clears context state
   ctx.textBaseline = 'middle';
-  if (bg) { roundRectPath(ctx, 0, 0, canvas.width, canvas.height, 14); ctx.fillStyle = bg; ctx.fill(); }
+  if (bg) { roundRectPath(ctx, 0, 0, canvas.width, canvas.height, Math.round(fontSize * 0.29)); ctx.fillStyle = bg; ctx.fill(); }
   const tx = padX, ty = canvas.height / 2 + 1;
-  if (stroke) { ctx.lineWidth = 7; ctx.lineJoin = 'round'; ctx.strokeStyle = stroke; ctx.strokeText(text, tx, ty); }
+  if (stroke) { ctx.lineWidth = Math.round(fontSize * 0.15) || 1; ctx.lineJoin = 'round'; ctx.strokeStyle = stroke; ctx.strokeText(text, tx, ty); }
   ctx.fillStyle = fg;
   ctx.fillText(text, tx, ty);
   const tex = new THREE.CanvasTexture(canvas);
@@ -525,17 +525,17 @@ function nearestWall(px, pz, footprints, maxDist) {
 // A POI sign laid flat on the nearest building wall (storefront height). Falls back
 // to a floating billboard when the POI isn't near any building.
 function makePoiLabel(px, pz, text, footprints) {
-  const { tex, aspect } = renderLabelCanvas(text, { bg: 'rgba(40,70,140,0.88)' });
-  const wall = nearestWall(px, pz, footprints, 12);
+  const { tex, aspect } = renderLabelCanvas(text, { bg: 'rgba(40,70,140,0.88)', fontSize: 24 });
+  const wall = nearestWall(px, pz, footprints, 25);
   if (wall) {
     const { nx, nz } = outwardNormal(wall.fp.ring, wall.ex, wall.ez, wall.qx, wall.qz);
-    let h = 2.6, w = h * aspect;
+    let h = 1.3, w = h * aspect;
     if (w > wall.len * 0.9) { const f = wall.len * 0.9 / w; w *= f; h *= f; }
     const y = (terrain ? terrain.sample(wall.qx, wall.qz) : 0) + 3.5;
     return wallPlaneMesh(tex, w, h, wall.qx, wall.qz, nx, nz, y);
   }
   const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
-  spr.scale.set(4 * aspect, 4, 1);
+  spr.scale.set(2 * aspect, 2, 1);
   spr.renderOrder = 5;
   const y = (terrain ? terrain.sample(px, pz) : 0) + 4;
   spr.position.set(px, y, pz);
@@ -1082,10 +1082,13 @@ class TileManager {
     this.tilesLoaded  = 0;
     this._retries     = new Map(); // k → retry count
     this.settled      = new Set(); // tile keys that reached a terminal state (done or gave up)
-    this.metroCurves  = [];   // CatmullRomCurve3 paths collected as tiles load
-    this.labelGroup   = new THREE.Group();   // name/POI labels — toggled with F1
-    this.labelGroup.visible = false;         // off by default
-    scene.add(this.labelGroup);
+    this.metroCurves        = [];   // CatmullRomCurve3 paths collected as tiles load
+    this.buildingLabelGroup = new THREE.Group();   // building names — toggled with F1
+    this.buildingLabelGroup.visible = false;
+    scene.add(this.buildingLabelGroup);
+    this.poiLabelGroup = new THREE.Group();        // POI labels — toggled with F2
+    this.poiLabelGroup.visible = false;
+    scene.add(this.poiLabelGroup);
   }
 
   key(tx, ty) { return `${tx}_${ty}`; }
@@ -1162,13 +1165,13 @@ class TileManager {
       });
       if (name) {
         const label = makeBuildingLabel(ring, bTop, truncateLabel(name));
-        if (label) this.labelGroup.add(label);
+        if (label) this.buildingLabelGroup.add(label);
       }
     }
 
     // POI signs laid on the nearest building wall (floating fallback if none near).
     for (const p of pois) {
-      this.labelGroup.add(makePoiLabel(p.x, p.z, truncateLabel(p.name), this.footprints));
+      this.poiLabelGroup.add(makePoiLabel(p.x, p.z, truncateLabel(p.name), this.footprints));
     }
 
     const group = new THREE.Group();
@@ -1229,7 +1232,7 @@ class TileManager {
   // Fetch a whole region in a SINGLE Overpass request (far fewer requests than
   // one-per-tile, so much less likely to be rate-limited), then ingest it and
   // mark every covered tile settled.
-  async loadRegion(keys, bbox, label) {
+  async loadRegion(keys, bbox, label, onStatus = () => {}) {
     for (const k of keys) if (!this.tiles.has(k)) this.tiles.set(k, 'loading');
     const settle = state => {
       for (const k of keys) {
@@ -1239,12 +1242,17 @@ class TileManager {
     };
     for (let attempt = 0; ; attempt++) {
       try {
-        this._ingest(await fetchOSMBbox(bbox));
+        onStatus(attempt === 0 ? 'Fetching map data…' : `Network busy — retrying (${attempt}/6)…`, 0.45);
+        const osm = await fetchOSMBbox(bbox);
+        onStatus('Building the city…', 0.9);
+        await sleep(0);            // let the message paint before the synchronous build
+        this._ingest(osm);
         settle('done');
         return;
       } catch (err) {
         console.warn(`Region ${label}:`, err.message);
         if (attempt < 6) { await sleep([800, 1500, 3000, 5000, 8000, 8000][attempt]); continue; }
+        onStatus('Map data unavailable — starting with what loaded.', 1);
         settle('failed'); // give up so the loading screen can proceed
         return;
       }
@@ -1486,8 +1494,8 @@ function initScene(collision) {
   });
 
   const trainRef  = { system: null };
-  const labelsRef = { group: null };   // set once tiles load; toggled by F1
-  const LABEL_DIST = 250;               // only show labels within this many metres
+  const labelsRef = { bldgGroup: null, poiGroup: null };
+  const LABEL_DIST = 250;
   let lastTime = performance.now();
 
   (function animate() {
@@ -1498,9 +1506,11 @@ function initScene(collision) {
     controls.update();
     if (trainRef.system) trainRef.system.update(dt);
     // Declutter: only keep labels near the camera visible.
-    if (labelsRef.group && labelsRef.group.visible) {
-      const cp = camera.position;
-      for (const s of labelsRef.group.children) s.visible = cp.distanceTo(s.position) < LABEL_DIST;
+    const cp = camera.position;
+    for (const grp of [labelsRef.bldgGroup, labelsRef.poiGroup]) {
+      if (grp && grp.visible) {
+        for (const s of grp.children) s.visible = cp.distanceTo(s.position) < LABEL_DIST;
+      }
     }
     renderer.render(scene, camera);
   })();
@@ -1626,8 +1636,15 @@ async function main() {
   document.getElementById('search-msg').style.display  = 'none';
   document.getElementById('pbar-bg').style.display = '';
 
+  const pbar    = document.getElementById('pbar');
+  const loading = document.getElementById('loading');
+  const setLoad = (text, frac) => {
+    loadMsg.textContent = text;
+    if (frac != null) pbar.style.width = `${Math.round(frac * 100)}%`;
+  };
+
   // Load terrain elevation tiles before OSM tiles so geometry is placed correctly.
-  loadMsg.textContent = 'Loading terrain…';
+  setLoad('Loading terrain…', 0.15);
   terrain = await loadTerrain();
   if (terrain) {
     // Displace ground plane vertices. PlaneGeometry is in XY before rotation.x = -π/2,
@@ -1641,7 +1658,7 @@ async function main() {
     camera.position.y = terrain.sample(0, 0) + EYE_HEIGHT;
   }
 
-  loadMsg.textContent = `Fetching ${place.shortLabel} from OpenStreetMap…`;
+  setLoad('Preparing…', 0.3);
 
   const mats    = createMaterials();
   const manager = new TileManager(scene, mats, statusEl);
@@ -1650,12 +1667,17 @@ async function main() {
   collision.fn      = (x, z, y, R) => manager.isInBuilding(x, z, y, R);
   collision.floorFn = (x, z)    => manager.getFloorHeight(x, z);
 
-  // F1 toggles the name/POI label overlay (off by default).
-  labelsRef.group = manager.labelGroup;
+  // F1 = building names, F2 = POI labels (both off by default).
+  labelsRef.bldgGroup = manager.buildingLabelGroup;
+  labelsRef.poiGroup  = manager.poiLabelGroup;
   window.addEventListener('keydown', e => {
     if (e.code === 'F1') {
       e.preventDefault();
-      manager.labelGroup.visible = !manager.labelGroup.visible;
+      manager.buildingLabelGroup.visible = !manager.buildingLabelGroup.visible;
+    }
+    if (e.code === 'F2') {
+      e.preventDefault();
+      manager.poiLabelGroup.visible = !manager.poiLabelGroup.visible;
     }
   });
 
@@ -1669,18 +1691,6 @@ async function main() {
   window.addEventListener('contextmenu', e => e.preventDefault());
   // Reset on blur so a button released off-window doesn't leave us stuck in x-ray.
   window.addEventListener('blur', () => setXray(false));
-
-  // Fetch the 3×3 core as ONE Overpass request and wait only for it — that's all
-  // the player can see at spawn, and one request is far less likely to be rate-
-  // limited than nine. Then fetch the full radius as one more request in the
-  // background (dedup skips the core), so the surroundings fill in without holes.
-  const core = manager.regionTiles(0, 0, 1);
-  const full = manager.regionTiles(0, 0, LOAD_RADIUS);
-  const coreKeys = core.keys;
-  manager.tilesTotal = coreKeys.length;
-  manager.loadRegion(core.keys, core.bbox, 'core')
-    .then(() => manager.loadRegion(full.keys, full.bbox, 'ring'))
-    .then(() => syncTrains());   // ring done → rebuild trains so new track is covered
 
   let lastCheck = 0;
   controls.addEventListener('change', () => {
@@ -1704,29 +1714,25 @@ async function main() {
     trainRef.system = new TrainSystem(scene, cleaned);
   }
 
-  const pbar    = document.getElementById('pbar');
-  const loadMsg2 = document.getElementById('load-msg');
-  const loading = document.getElementById('loading');
-  let shown = false, fake = 0;
-  loadMsg2.textContent = 'Loading map…';
-  const poll = setInterval(() => {
-    if (shown) return;
-    const ready = coreKeys.every(k => manager.settled.has(k));
-    if (!ready) {
-      // Single-request load has no granular progress — ease the bar toward 90%
-      // so it reads as working rather than stuck while we wait on Overpass.
-      fake += (0.9 - fake) * 0.05;
-      pbar.style.width = `${fake * 100}%`;
-      return;
-    }
-    // Core loaded — reveal the scene; the outer ring keeps loading in the background.
-    shown = true;
-    clearInterval(poll);
-    pbar.style.width = '100%';
+  function reveal() {
+    setLoad('Ready', 1);
     loading.classList.add('fade-out');
     setTimeout(() => loading.remove(), 800);
     syncTrains();
-  }, 200);
+  }
+
+  // Fetch the 3×3 core as ONE Overpass request and wait only for it — that's all
+  // the player can see at spawn, and one request is far less likely to be rate-
+  // limited than nine. The status text reflects each phase (fetching / retrying /
+  // building) so the bar never looks silently stuck. Then fetch the full radius as
+  // one more background request (dedup skips the core) and rebuild trains.
+  const core = manager.regionTiles(0, 0, 1);
+  const full = manager.regionTiles(0, 0, LOAD_RADIUS);
+  manager.tilesTotal = core.keys.length;
+  manager.loadRegion(core.keys, core.bbox, 'core', setLoad)
+    .then(() => reveal())
+    .then(() => manager.loadRegion(full.keys, full.bbox, 'ring'))
+    .then(() => syncTrains());   // ring done → rebuild trains so new track is covered
 }
 
 main();
