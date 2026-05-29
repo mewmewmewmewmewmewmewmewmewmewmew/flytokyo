@@ -1713,8 +1713,9 @@ function createBirdControls(camera, domElement) {
   let mouseThrust = false;     // true while left mouse held (with pointer locked)
 
   const birdPos = new THREE.Vector3(0, BIRD_HEIGHT, 0);
-  const _look   = new THREE.Vector3();
-  const _euler  = new THREE.Euler(0, 0, 0, 'YXZ');
+  const _look    = new THREE.Vector3();
+  const _heading = new THREE.Vector3();
+  const _euler   = new THREE.Euler(0, 0, 0, 'YXZ');
 
   const keys   = new Set();
   const typing = e => e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
@@ -1730,6 +1731,13 @@ function createBirdControls(camera, domElement) {
     _euler.set(camPitch, camYaw, 0);
     _look.set(0, 0, -1).applyEuler(_euler);
     return _look;
+  }
+
+  // Unit vector for the direction the bird is actually facing (its heading).
+  function getHeading() {
+    _euler.set(headPitch, headYaw, 0);
+    _heading.set(0, 0, -1).applyEuler(_euler);
+    return _heading;
   }
 
   function updateCamera() {
@@ -1821,26 +1829,17 @@ function createBirdControls(camera, domElement) {
       // W flies forward in the bird's OWN heading — mouse orbit stays independent.
       // Left-click steers: bird chases where the camera is pointing.
       if (keys.has('KeyW')) {
-        const cp = Math.cos(headPitch), sp = Math.sin(headPitch);
-        const sh = Math.sin(headYaw),   ch = Math.cos(headYaw);
-        birdPos.x += sh * cp * MOVE_SPEED * sprint;
-        birdPos.y -= sp        * MOVE_SPEED * sprint;
-        birdPos.z -= ch * cp * MOVE_SPEED * sprint;
+        birdPos.addScaledVector(getHeading(), MOVE_SPEED * sprint);
         moved = true;
       }
       if (mouseThrust) {
-        const look = getLook();
-        birdPos.addScaledVector(look, MOVE_SPEED * sprint);
+        birdPos.addScaledVector(getLook(), MOVE_SPEED * sprint);
         headYaw   += (camYaw   - headYaw)   * 0.12;
         headPitch += (camPitch - headPitch) * 0.12;
         moved = true;
       }
       if (keys.has('KeyS')) {
-        const cp = Math.cos(headPitch), sp = Math.sin(headPitch);
-        const sh = Math.sin(headYaw),   ch = Math.cos(headYaw);
-        birdPos.x -= sh * cp * MOVE_SPEED * sprint;
-        birdPos.y += sp        * MOVE_SPEED * sprint;
-        birdPos.z += ch * cp * MOVE_SPEED * sprint;
+        birdPos.addScaledVector(getHeading(), -MOVE_SPEED * sprint);
         moved = true;
       }
       // Spacebar gains elevation.
