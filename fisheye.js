@@ -88,14 +88,20 @@ export const FISH_FRAG_GLSL = /* glsl */`
   varying vec3  vFishView;
   void fishClip() {
     if (uFishBlend < 0.001) return;          // pure perspective: no clipping at all
-    // Discard only past the true field-of-view edge (recomputed per fragment so
-    // big triangles spanning the boundary are cut cleanly). NOTE: do NOT clip at
-    // the z=0 plane — at a 220°+ FOV the half-angle is >90°, so the outer ring of
-    // the fisheye legitimately lives behind the camera plane; clipping it there
-    // is what cropped the radial edge.
-    float L       = length(vFishView);
-    float theta   = acos(clamp(-vFishView.z / max(L, 1e-4), -1.0, 1.0));
-    float clipAng = mix(3.14159, uFishHalfFov, uFishBlend);   // ~180° at rest → halfFov at full
-    if (theta > clipAng) discard;
+    float L     = length(vFishView);
+    float theta = acos(clamp(-vFishView.z / max(L, 1e-4), -1.0, 1.0));
+    if (vFishView.z > 0.0) {
+      // Behind the camera plane (theta > 90°). During acceleration the FOV is
+      // still < 180° (half-FOV < 90°), so this whole hemisphere must be bounded
+      // by the TRUE FOV — otherwise huge flat triangles (the ground) stretch
+      // across the screen as grey smears. Only once the FOV opens past 180° does
+      // any of it legitimately appear as the fisheye periphery.
+      if (theta > uFishHalfFov) discard;
+    } else {
+      // In front of the camera: widen the clip toward ~180° as blend → 0 so a
+      // near-perspective (low-speed) view is never cropped into a circle.
+      float clipAng = mix(3.14159, uFishHalfFov, uFishBlend);
+      if (theta > clipAng) discard;
+    }
   }
 `;
