@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.42';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.42';
+import { TrainSystem } from './train.js?v=11.43';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.43';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1882,10 +1882,10 @@ function createBirdControls(camera, domElement, collision) {
 
   // Speed-driven fisheye: the warp eases in from a normal view (rest) to a full
   // fisheye at top speed, and the angle grows wider the faster you go.
-  const FOV_REST_DEG   = 120;  // angle the warp eases up from (barely visible at low speed)
-  const FOV_MAX_DEG    = 220;  // at top non-sprint speed
-  const FOV_SPRINT_DEG = 250;  // at top sprint speed
-  const FOV_DIVE_DEG   = 290;  // keeps widening past sprint speed while diving
+  const FOV_REST_DEG   = 110;  // angle the warp eases up from (barely visible at low speed)
+  const FOV_MAX_DEG    = 160;  // at top non-sprint speed
+  const FOV_SPRINT_DEG = 168;  // at top sprint speed
+  const FOV_DIVE_DEG   = 170;  // keeps widening past sprint speed while diving — capped < 180° so no behind-camera smear
   const DIVE_BOOST     = MOVE_MAX * 2;  // extra top speed gained in a full vertical dive
 
   let lastTime    = performance.now();
