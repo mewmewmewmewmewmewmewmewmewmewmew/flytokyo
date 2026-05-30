@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.41';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.41';
+import { TrainSystem } from './train.js?v=11.42';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.42';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -41,7 +41,7 @@ const FISH_CAM_BACK = 4.0;    // follow distance in fisheye mode
 const FISH_CAM_UP   = 0.45;   // hug close to the bird's level
 // Max edge length (metres) for geometry tessellation, so long straight lines
 // curve smoothly once the fisheye warp bends them.
-const WALL_SEG      = 9;      // building wall grid cell
+const WALL_SEG      = 5;      // building wall grid cell
 const EDGE_SEG      = 7;      // wireframe outline segment
 const DECAL_SEG     = 8;      // water/road area max triangle edge (fisheye subdivision)
 
@@ -868,7 +868,7 @@ function buildSurfaceMesh(buildings, mat) {
       const x1 = ring[i1][0], z1 = ring[i1][1];
       const x2 = ring[i2][0], z2 = ring[i2][1];
       const maxEdge = Math.max(Math.hypot(x1-x0,z1-z0), Math.hypot(x2-x1,z2-z1), Math.hypot(x0-x2,z0-z2));
-      const N = Math.min(4, Math.max(1, Math.ceil(maxEdge / WALL_SEG)));
+      const N = Math.min(10, Math.max(1, Math.ceil(maxEdge / WALL_SEG)));
       const vbase = v;
       for (let j = 0; j <= N; j++) {
         const vv = j / N;
@@ -898,9 +898,9 @@ function buildSurfaceMesh(buildings, mat) {
       const nxx = dz / len, nzz = -dx / len;
       // Tessellate each wall into a grid so its silhouette curves under the
       // fisheye warp instead of staying a straight chord. Small walls stay 1×1.
-      const cols = Math.min(6, Math.max(1, Math.ceil(len / WALL_SEG)));
+      const cols = Math.min(14, Math.max(1, Math.ceil(len / WALL_SEG)));
       const tall = topY - Math.min(h0, h1);
-      const rows = Math.min(8, Math.max(1, Math.ceil(tall / WALL_SEG)));
+      const rows = Math.min(14, Math.max(1, Math.ceil(tall / WALL_SEG)));
       const b = v;
       for (let cu = 0; cu <= cols; cu++) {
         const u = cu / cols;
