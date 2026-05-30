@@ -58,13 +58,17 @@ export const FISH_PROJ_GLSL = /* glsl */`
 
     if (uFishBlend > 0.999) return fish;                           // top speed → full fisheye
 
-    // Behind the near plane (theta > 90°): perspective NDC is garbage here, and
-    // snapping straight to the fisheye position would stretch huge un-clipped
-    // triangles across the screen at the slightest blend. Instead carry the
-    // perspective w so the GPU keeps near-clipping these verts while the warp is
-    // weak, then ease them into their true fisheye periphery as blend → 1.
     if (persp.w <= 0.0) {
-      float wb = mix(persp.w, 1.0, uFishBlend);                    // ≤0 at low blend (clipped) → 1 at full
+      // Behind-camera vertex. Only assign a fisheye position once the FOV is
+      // genuinely wide enough to show behind-camera geometry — that requires a
+      // total FOV > 180° (half-angle > PI/2 ≈ 1.5708). Below that threshold,
+      // return the raw perspective result so the GPU near-clips this vertex;
+      // the alternative (any positive wb at tiny blend) collapses the vertex to
+      // the full fisheye periphery regardless of blend, stretching huge grey
+      // triangles across the screen the instant you start moving.
+      if (uFishHalfFov <= 1.5708) return persp;
+      float wb = mix(persp.w, 1.0, uFishBlend);
+      if (wb <= 0.0) return persp;
       return vec4(fish.xyz * wb, wb);
     }
 
