@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.23';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.23';
+import { TrainSystem } from './train.js?v=11.24';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.24';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1862,11 +1862,19 @@ function createBirdControls(camera, domElement, collision) {
   const _vel     = new THREE.Vector3();  // current velocity vector (m/frame); coasts naturally
   const _euler   = new THREE.Euler(0, 0, 0, 'YXZ');
 
-  // Ground-bounce pitch easing. On impact the velocity reflects instantly (physics)
-  // but the bird's nose eases toward the reflected pitch over a few frames so the
-  // redirect reads as a smooth curve, not a snap. null = no bounce in progress.
-  let _bouncePitch = null;
-  const BOUNCE_EASE = 0.14;   // per-frame approach toward the reflected pitch
+  // Auto-pilot pitch easing. When a bounce or wall-ramp redirects the bird, the
+  // velocity changes instantly (physics) but the bird's nose eases toward the new
+  // pitch over a few frames so the redirect reads as a smooth curve, not a snap.
+  // null = no redirect in progress; otherwise the target pitch in radians.
+  let _pitchTarget = null;
+  const PITCH_EASE = 0.14;    // per-frame approach toward the target pitch
+
+  // Wall-ramp state. A head-on building hit sends the bird climbing vertically up
+  // the face (parallel to the wall); once it clears the roof it peels forward at a
+  // shallow climb. We remember the approach direction + speed to resume with.
+  const _ramp = { active: false, dirX: 0, dirZ: 0, speed: 0 };
+  const RAMP_CLIMB_PITCH = 1.45;            // ~83°: nose near-vertical up the wall
+  const RAMP_EXIT_ANGLE  = Math.PI / 6;     // 30° forward climb once over the roof
 
   const keys   = new Set();
   const typing = e => e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
@@ -2049,15 +2057,33 @@ function createBirdControls(camera, domElement, collision) {
           if (!cf(nx, birdPos.z, ny, BIRD_RADIUS))      { birdPos.x = nx; _vel.z = 0; birdPos.y = ny; }
           else if (!cf(birdPos.x, nz, ny, BIRD_RADIUS)) { birdPos.z = nz; _vel.x = 0; birdPos.y = ny; }
           else {
-            // Head-on into a wall — ramp upward. Convert the horizontal speed
-            // into a steep climb (and keep at least the current ascent), then
-            // rise this frame so we scale the face instead of stalling.
+            // Head-on into a wall — RAMP. Fly straight up the face, parallel to
+            // the wall, keeping the approach direction so we can peel forward
+            // once we clear the roof. Capture that direction on the first frame
+            // of contact (before the horizontal speed is zeroed for the climb).
             const horizSpeed = Math.hypot(_vel.x, _vel.z);
-            _vel.x = 0; _vel.z = 0;
-            _vel.y = Math.max(_vel.y, horizSpeed * RAMP_GAIN);
-            birdPos.y += _vel.y;
+            const climb = Math.max(_vel.y, horizSpeed * RAMP_GAIN);
+            if (!_ramp.active && horizSpeed > 1e-4) {
+              _ramp.active = true;
+              _ramp.dirX   = _vel.x / horizSpeed;
+              _ramp.dirZ   = _vel.z / horizSpeed;
+              _ramp.speed  = climb;
+            }
+            _vel.set(0, climb, 0);
+            birdPos.y += climb;
+            _pitchTarget = RAMP_CLIMB_PITCH;   // ease the nose toward vertical
           }
         } else {
+          if (_ramp.active) {
+            // Cleared the roof: peel off into a 30° forward climb in the approach
+            // direction, splitting the climb speed between forward and up so the
+            // bird arcs over the edge instead of shooting straight past it.
+            const v = Math.max(_vel.y, _ramp.speed);
+            const h = v * Math.cos(RAMP_EXIT_ANGLE);
+            _vel.set(_ramp.dirX * h, v * Math.sin(RAMP_EXIT_ANGLE), _ramp.dirZ * h);
+            _pitchTarget = RAMP_EXIT_ANGLE;    // nose to the 30° climb
+            _ramp.active = false;
+          }
           birdPos.add(_vel);
         }
         moved = true;
@@ -2097,16 +2123,17 @@ function createBirdControls(camera, domElement, collision) {
           // Aim the bird's nose at the reflected direction, but ease into it over
           // the next frames (below) instead of snapping so the arc reads smoothly.
           const horizSpeed = Math.hypot(_vel.x, _vel.z);
-          _bouncePitch = Math.atan2(_vel.y, Math.max(horizSpeed, 0.001));
+          _pitchTarget = Math.atan2(_vel.y, Math.max(horizSpeed, 0.001));
         }
       }
 
-      // Animate the bounce redirect: glide headPitch/camPitch toward the reflected
-      // target with an ease-out approach, then release control once we're there.
-      if (_bouncePitch !== null) {
-        headPitch += (_bouncePitch - headPitch) * BOUNCE_EASE;
-        camPitch  += (_bouncePitch - camPitch)  * BOUNCE_EASE;
-        if (Math.abs(_bouncePitch - headPitch) < 0.01) _bouncePitch = null;
+      // Animate any auto-pilot redirect (bounce or wall-ramp): glide headPitch and
+      // camPitch toward the target with an ease-out approach, then release control
+      // back to thrust/look once we're there.
+      if (_pitchTarget !== null) {
+        headPitch += (_pitchTarget - headPitch) * PITCH_EASE;
+        camPitch  += (_pitchTarget - camPitch)  * PITCH_EASE;
+        if (Math.abs(_pitchTarget - headPitch) < 0.01) _pitchTarget = null;
       }
 
       // Bank into turns: roll proportional to how fast the bird's heading changes.
