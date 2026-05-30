@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.12';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL } from './fisheye.js?v=11.12';
+import { TrainSystem } from './train.js?v=11.13';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL } from './fisheye.js?v=11.13';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1795,7 +1795,7 @@ function buildBirdMesh() {
 
 // ─── Third-person bird controls ───────────────────────────────────────────────
 
-function createBirdControls(camera, domElement) {
+function createBirdControls(camera, domElement, collision) {
   // Camera look (controlled by mouse / A-D) is decoupled from the bird's heading.
   // The mouse orbits the camera freely; the bird only turns to follow the camera
   // while you're actively thrusting (holding left mouse / W).
@@ -1814,6 +1814,7 @@ function createBirdControls(camera, domElement) {
   const TURN_SPEED  = 0.022;   // A/D yaw turn rate (radians per frame)
   const LIFT_SPEED  = 0.30;    // spacebar ascent per frame
   const MIN_CLEAR   = 0.3;     // can skim almost to the ground
+  const BIRD_RADIUS = 2.0;     // collision radius against building walls
   const PITCH_LIMIT = 1.1;     // clamp so you can't loop over the top
   const TOUCH_SPEED = LOOK_SPEED * 2.5;
 
@@ -1822,6 +1823,8 @@ function createBirdControls(camera, domElement) {
   const FOV_REST_DEG   = 120;  // angle the warp eases up from (barely visible at low speed)
   const FOV_MAX_DEG    = 220;  // at top non-sprint speed
   const FOV_SPRINT_DEG = 250;  // at top sprint speed
+  const FOV_DIVE_DEG   = 290;  // keeps widening past sprint speed while diving
+  const DIVE_BOOST     = MOVE_MAX * 2;  // extra top speed gained in a full vertical dive
 
   let lastTime    = performance.now();
   let mouseThrust = false;     // true while left mouse held (with pointer locked)
@@ -1967,8 +1970,16 @@ function createBirdControls(camera, domElement) {
         }
         if (tx.lengthSq() > 1e-6) {
           tx.normalize();
+          // Diving (tx.y < 0) builds speed PAST the normal top speed and pulls
+          // harder the steeper the dive; pulling level lets the extra speed bleed
+          // off through the normal deceleration instead of snapping back.
+          const dive     = Math.max(0, -tx.y);                 // 0 level … 1 straight down
+          const cap      = topSpeed + DIVE_BOOST * dive;       // dive can exceed top speed
+          const accel    = (topSpeed / ACCEL_TIME) * (1 + 2 * dive);
           const curSpeed = _vel.length();
-          const newSpeed = Math.min(curSpeed + topSpeed / ACCEL_TIME * dt, topSpeed);
+          let   newSpeed;
+          if (curSpeed > cap) newSpeed = Math.max(cap, curSpeed - (MOVE_MAX / DECEL_TIME) * dt);
+          else                newSpeed = Math.min(curSpeed + accel * dt, cap);
           _vel.copy(tx).multiplyScalar(newSpeed);
         }
       } else {
@@ -1983,7 +1994,20 @@ function createBirdControls(camera, domElement) {
       }
 
       if (_vel.lengthSq() > 1e-8) {
-        birdPos.add(_vel);
+        // Building collision: try the full move; if it lands inside a building
+        // (below its roof), slide along whichever horizontal axis is clear and
+        // kill the blocked component. Vertical motion is always allowed so the
+        // bird can climb/dive over rooftops. Flying above roofs stays clear.
+        const cf = collision && collision.fn;
+        const nx = birdPos.x + _vel.x, nz = birdPos.z + _vel.z, ny = birdPos.y + _vel.y;
+        if (cf && cf(nx, nz, ny, BIRD_RADIUS)) {
+          if (!cf(nx, birdPos.z, ny, BIRD_RADIUS))      { birdPos.x = nx; _vel.z = 0; }
+          else if (!cf(birdPos.x, nz, ny, BIRD_RADIUS)) { birdPos.z = nz; _vel.x = 0; }
+          else { _vel.x = 0; _vel.z = 0; }
+          birdPos.y = ny;
+        } else {
+          birdPos.add(_vel);
+        }
         moved = true;
       }
 
@@ -1995,18 +2019,24 @@ function createBirdControls(camera, domElement) {
       const tt    = _vel.length() / MOVE_MAX;
       const e     = Math.min(tt, 1);
       const blend = e * e * e;                 // ease-in: gentle start, hard ramp near max
-      const fovDeg = tt <= 1
-        ? FOV_REST_DEG + (FOV_MAX_DEG - FOV_REST_DEG) * tt
-        : FOV_MAX_DEG  + (FOV_SPRINT_DEG - FOV_MAX_DEG) * Math.min(tt - 1, 1);
+      // FOV widens with speed: rest→max over band 0-1, max→sprint over 1-2, then
+      // keeps opening sprint→dive over 2-4 as a dive pushes past top speed.
+      let fovDeg;
+      if (tt <= 1)      fovDeg = FOV_REST_DEG   + (FOV_MAX_DEG    - FOV_REST_DEG)   * tt;
+      else if (tt <= 2) fovDeg = FOV_MAX_DEG    + (FOV_SPRINT_DEG - FOV_MAX_DEG)    * (tt - 1);
+      else              fovDeg = FOV_SPRINT_DEG + (FOV_DIVE_DEG   - FOV_SPRINT_DEG) * Math.min((tt - 2) / 2, 1);
       FISH_U.uFishBlend.value   = fisheyeMode ? blend : 0;
       FISH_U.uFishHalfFov.value = (fovDeg * Math.PI / 180) / 2;
 
       // Spacebar gains elevation.
       if (keys.has('Space')) { birdPos.y += LIFT_SPEED * sprint; moved = true; }
 
-      // Stay above the ground.
-      const groundY = terrain ? terrain.sample(birdPos.x, birdPos.z) : 0;
-      if (birdPos.y < groundY + MIN_CLEAR) birdPos.y = groundY + MIN_CLEAR;
+      // Stay above the floor: terrain outside buildings, rooftop when over one
+      // (so a dive lands the bird on the roof instead of sinking through it).
+      const floorY = (collision && collision.floorFn)
+        ? collision.floorFn(birdPos.x, birdPos.z)
+        : (terrain ? terrain.sample(birdPos.x, birdPos.z) : 0);
+      if (birdPos.y < floorY + MIN_CLEAR) birdPos.y = floorY + MIN_CLEAR;
 
       // Bank into turns: roll proportional to how fast the bird's heading changes.
       const dHead = headYaw - prevHeadYaw;
@@ -2088,7 +2118,7 @@ function initScene(collision) {
   birdMesh.position.set(0, BIRD_HEIGHT, 0);
   scene.add(birdMesh);
 
-  const controls = createBirdControls(camera, renderer.domElement);
+  const controls = createBirdControls(camera, renderer.domElement, collision);
 
   function onResize() {
     const w = innerWidth, h = innerHeight;
