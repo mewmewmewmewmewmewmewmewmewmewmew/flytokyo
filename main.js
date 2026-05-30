@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.26';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.26';
+import { TrainSystem } from './train.js?v=11.27';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.27';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2079,13 +2079,19 @@ function createBirdControls(camera, domElement, collision) {
                 _ramp.dirX = h.x;
                 _ramp.dirZ = h.z;
               }
+              // Capture climb speed once — capped at MOVE_MAX so a dive impact can't
+              // produce a runaway exit speed. Per-frame recalculation of climb from
+              // horizSpeed * RAMP_GAIN caused a positive-feedback loop (speed growing
+              // 1.3× per frame while pitch was still near-horizontal), launching the
+              // bird at thousands of km/h on peel-off.
+              const totalSpeed = _vel.length();
+              _ramp.speed = Math.min(
+                Math.max(Math.hypot(_vel.x, _vel.z) * RAMP_GAIN, totalSpeed * 0.6, MOVE_SPEED),
+                MOVE_MAX
+              );
             }
-            const horizSpeed = Math.hypot(_vel.x, _vel.z);
-            const totalSpeed = _vel.length();
-            const climb = Math.max(horizSpeed * RAMP_GAIN, totalSpeed * 0.6, MOVE_SPEED);
-            _ramp.speed = Math.max(_ramp.speed, climb);
-            _vel.set(0, climb, 0);
-            birdPos.y += climb;
+            _vel.set(0, _ramp.speed, 0);
+            birdPos.y += _ramp.speed;
             _pitchTarget = RAMP_CLIMB_PITCH;
           }
         } else {
@@ -2093,7 +2099,7 @@ function createBirdControls(camera, domElement, collision) {
             // Cleared the roof: peel off into a 30° forward climb in the approach
             // direction, splitting the climb speed between forward and up so the
             // bird arcs over the edge instead of shooting straight past it.
-            const v = Math.max(_vel.y, _ramp.speed);
+            const v = _ramp.speed;
             const h = v * Math.cos(RAMP_EXIT_ANGLE);
             _vel.set(_ramp.dirX * h, v * Math.sin(RAMP_EXIT_ANGLE), _ramp.dirZ * h);
             _pitchTarget = RAMP_EXIT_ANGLE;
