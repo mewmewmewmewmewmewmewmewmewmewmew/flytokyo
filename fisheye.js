@@ -109,3 +109,24 @@ export const FISH_FRAG_GLSL = /* glsl */`
     }
   }
 `;
+
+// ─── Anime cel / toon shading (shared by buildings + trains) ──────────────────
+// Quantises the diffuse term into a few flat bands instead of a smooth gradient,
+// so surfaces read as painted cels rather than photoreal lit faces. A cool-tinted
+// rim term adds the bright edge sheen typical of anime character/prop rendering.
+// N, V, L are unit vectors in VIEW space (V = normalize(-vFishView) = toward eye).
+export const TOON_GLSL = /* glsl */`
+  vec3 celShade(vec3 base, vec3 N, vec3 V, vec3 L) {
+    // Half-Lambert wrap keeps shadow sides readable, then snap to 3 flat bands
+    // with anti-aliased steps so the cel boundaries don't shimmer at distance.
+    float d    = dot(N, L) * 0.5 + 0.5;
+    float band = 0.55
+               + 0.22 * smoothstep(0.46, 0.50, d)
+               + 0.23 * smoothstep(0.72, 0.76, d);
+    vec3  col  = base * band;
+    // Rim light: bright cool edge where the surface turns away from the eye.
+    float rim  = pow(1.0 - max(dot(N, V), 0.0), 3.5);
+    col += vec3(0.34, 0.40, 0.52) * rim * 0.6;
+    return col;
+  }
+`;

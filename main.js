@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.14';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL } from './fisheye.js?v=11.14';
+import { TrainSystem } from './train.js?v=11.15';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.15';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -650,15 +650,17 @@ const SURF_FRAG = /* glsl */`
   uniform float uFar;
   uniform float uXray;
   ${FISH_FRAG_GLSL}
+  ${TOON_GLSL}
   void main() {
     fishClip();
-    vec3  L     = normalize(vec3(0.5, 1.0, 0.3));
-    float diff  = max(dot(normalize(vNorm), L), 0.0);
-    float light = 0.60 + 0.40 * diff;
-    float fade  = 1.0 - smoothstep(uNear, uFar, vDist);
-    float a     = mix(1.0, 0.80, uXray) * fade;
+    vec3  N      = normalize(vNorm);
+    vec3  V      = normalize(-vFishView);
+    vec3  L      = normalize(vec3(0.5, 1.0, 0.3));
+    vec3  shaded = celShade(vCol, N, V, L);
+    float fade   = 1.0 - smoothstep(uNear, uFar, vDist);
+    float a      = mix(1.0, 0.80, uXray) * fade;
     if (a < 0.01) discard;
-    gl_FragColor = vec4(vCol * light, a);
+    gl_FragColor = vec4(shaded, a);
   }
 `;
 
