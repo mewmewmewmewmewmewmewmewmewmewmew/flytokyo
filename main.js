@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.16';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.16';
+import { TrainSystem } from './train.js?v=11.17';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.17';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -467,11 +467,10 @@ function heightColor(h) {
 
 function wireColor(h) {
   const t = Math.min(h / 150, 1);
-  // Deep ink-blue, near-black: heavy manga linework that reads as drawn outlines.
   return new THREE.Color().setHSL(
     220 / 360,
-    0.35 + t * 0.30,
-    0.20 - t * 0.10,
+    t * 0.60,
+    0.32 - t * 0.12,
   );
 }
 
@@ -693,45 +692,6 @@ const WIRE_FRAG = /* glsl */`
   }
 `;
 
-// Outline ribbon: each building edge is emitted as a quad (two triangles). The
-// vertex shader expands it sideways in SCREEN space to a constant pixel width,
-// so ink strokes stay heavy at any distance — GPU line width (linewidth) is
-// ignored on virtually all WebGL/OpenGL-ES drivers, so we can't rely on it.
-// aOther = the segment's other endpoint, aSide = which side (+/-1) to push.
-const OUTLINE_VERT = /* glsl */`
-  attribute vec3  color;
-  attribute vec3  aOther;
-  attribute float aSide;
-  uniform   float uThick;
-  varying vec3  vCol;
-  varying float vDist;
-  ${FISH_PROJ_GLSL}
-  void main() {
-    vCol = color;
-    vec4 mvA  = modelViewMatrix * vec4(position, 1.0);
-    vDist     = length(mvA.xyz);
-    vFishView = mvA.xyz;
-    vec4 clipA = projectVertex(mvA);
-    vec4 mvB   = modelViewMatrix * vec4(aOther, 1.0);
-    vec4 clipB = projectVertex(mvB);
-    // Only widen when both ends are in front of the camera; otherwise the screen
-    // projection is undefined and the stroke would smear, so leave it un-expanded.
-    if (clipA.w > 0.0 && clipB.w > 0.0) {
-      vec2 a   = clipA.xy / clipA.w;
-      vec2 b   = clipB.xy / clipB.w;
-      vec2 dir = (b - a) * vec2(uFishAspect, 1.0);
-      float dl = length(dir);
-      if (dl > 1e-5) {
-        dir /= dl;
-        vec2 nrm = vec2(-dir.y, dir.x) * (aSide * uThick);
-        nrm.x /= uFishAspect;
-        clipA.xy += nrm * clipA.w;
-      }
-    }
-    gl_Position = clipA;
-  }
-`;
-
 const STREET_FRAG = /* glsl */`
   varying vec3  vCol;
   varying float vDist;
@@ -767,12 +727,11 @@ const WATER_FRAG = /* glsl */`
   uniform float uNear;
   uniform float uFar;
   ${FISH_FRAG_GLSL}
-  ${TOON_GLSL}
   void main() {
     fishClip();
     float fade = 1.0 - smoothstep(uNear, uFar, vDist);
     if (fade < 0.01) discard;
-    gl_FragColor = vec4(posterize(vCol, 5.0), 0.80 * fade);
+    gl_FragColor = vec4(vCol, 0.80 * fade);
   }
 `;
 
@@ -793,9 +752,8 @@ function createMaterials() {
       side: THREE.DoubleSide,
     }),
     wireframe: new THREE.ShaderMaterial({
-      vertexShader: OUTLINE_VERT, fragmentShader: WIRE_FRAG,
-      uniforms: { uThick: { value: 0.0028 }, ...fadeUniforms() },
-      transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      vertexShader: LINE_VERT, fragmentShader: WIRE_FRAG,
+      uniforms: fadeUniforms(), transparent: true, depthWrite: false,
     }),
     // Streets/footpaths/rails are flat decals: they never write depth (so they
     // can't z-fight each other or the ground) and use a negative polygonOffset to
@@ -973,16 +931,7 @@ function buildSurfaceMesh(buildings, mat) {
 }
 
 function buildEdgesGeoMesh(buildings, mat) {
-  const pos = [], col = [], other = [], side = [], idx = [];
-  let v = 0;
-
-  // Emit each tessellated edge segment as a quad ribbon (4 verts, 2 tris); the
-  // OUTLINE_VERT shader widens it in screen space. aOther carries the segment's
-  // opposite endpoint so the shader can find the on-screen perpendicular.
-  const pushVert = (x, y, z, ox, oy, oz, sgn, c) => {
-    pos.push(x, y, z); other.push(ox, oy, oz); side.push(sgn);
-    col.push(c.r, c.g, c.b); v++;
-  };
+  const allPos = [], allCol = [];
 
   for (const { ring, height } of buildings) {
     const { topY, vertexH } = bldgTerrainInfo(ring, height);
@@ -1000,12 +949,8 @@ function buildEdgesGeoMesh(buildings, mat) {
       for (let s = 1; s <= seg; s++) {
         const t = s / seg;
         const qx = ax + (bx-ax)*t, qy = ay + (by-ay)*t, qz = az + (bz-az)*t;
-        const b = v;
-        pushVert(px, py, pz, qx, qy, qz, +1, c);   // 0: p, +side
-        pushVert(px, py, pz, qx, qy, qz, -1, c);   // 1: p, -side
-        pushVert(qx, qy, qz, px, py, pz, +1, c);   // 2: q, +side (= other screen side)
-        pushVert(qx, qy, qz, px, py, pz, -1, c);   // 3: q, -side
-        idx.push(b, b + 3, b + 2,  b, b + 2, b + 1);
+        allPos.push(px, py, pz, qx, qy, qz);
+        allCol.push(c.r, c.g, c.b, c.r, c.g, c.b);
         px = qx; py = qy; pz = qz;
       }
     }
@@ -1014,14 +959,11 @@ function buildEdgesGeoMesh(buildings, mat) {
   }
 
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos,   3));
-  geo.setAttribute('color',    new THREE.Float32BufferAttribute(col,   3));
-  geo.setAttribute('aOther',   new THREE.Float32BufferAttribute(other, 3));
-  geo.setAttribute('aSide',    new THREE.Float32BufferAttribute(side,  1));
-  geo.setIndex(idx);
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.renderOrder = 2;
-  return mesh;
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(allPos, 3));
+  geo.setAttribute('color',    new THREE.Float32BufferAttribute(allCol, 3));
+  const lines = new THREE.LineSegments(geo, mat);
+  lines.renderOrder = 2;
+  return lines;
 }
 
 // Insert intermediate points so no segment is longer than maxLen, letting the
@@ -2060,9 +2002,11 @@ function createBirdControls(camera, domElement, collision) {
           const cap      = topSpeed + DIVE_BOOST * dive;       // dive can exceed top speed
           const accel    = (topSpeed / ACCEL_TIME) * (1 + 2 * dive);
           const curSpeed = _vel.length();
-          let   newSpeed;
-          if (curSpeed > cap) newSpeed = Math.max(cap, curSpeed - (MOVE_MAX / DECEL_TIME) * dt);
-          else                newSpeed = Math.min(curSpeed + accel * dt, cap);
+          // Never bleed speed while actively thrusting — only accelerate up to cap
+          // or hold steady if already at/above it. Speed only decays in the else branch.
+          const newSpeed = curSpeed >= cap
+            ? curSpeed
+            : Math.min(curSpeed + accel * dt, cap);
           _vel.copy(tx).multiplyScalar(newSpeed);
         }
       } else {
@@ -2175,13 +2119,12 @@ function initScene(collision) {
         uniform float uFar;
         varying vec2  vXZ;
         ${FISH_FRAG_GLSL}
-        ${TOON_GLSL}
         void main() {
           fishClip();
           float d     = length(vXZ - cameraPosition.xz);
           float alpha = 1.0 - smoothstep(uFar * 0.5, uFar, d);
           if (alpha < 0.01) discard;
-          gl_FragColor = vec4(posterize(uGround, 5.0), alpha);
+          gl_FragColor = vec4(uGround, alpha);
         }
       `,
     }),
