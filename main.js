@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.32';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.32';
+import { TrainSystem } from './train.js?v=11.33';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.33';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1840,6 +1840,7 @@ function createBirdControls(camera, domElement, collision) {
   const TURN_SPEED  = 0.022;   // A/D yaw turn rate (radians per frame)
   const LIFT_SPEED  = 0.30;    // spacebar ascent per frame
   const MIN_CLEAR   = 0.3;     // can skim almost to the ground
+  const CAM_FLOOR_CLEAR = 1.2; // keep the orbit camera this far above the floor
   const BIRD_RADIUS = 2.0;     // collision radius against building walls
   const RAMP_GAIN   = 1.3;     // head-on into a wall → climb at 1.3× the blocked speed
   const PITCH_LIMIT = 1.1;     // clamp so you can't loop over the top
@@ -1917,6 +1918,14 @@ function createBirdControls(camera, domElement, collision) {
       birdPos.y - look.y * camBack + camUp,
       birdPos.z - look.z * camBack,
     );
+    // Keep the camera from dipping below the ground when the bird skims low:
+    // sample the floor under the camera's own xz and clamp its y to a small
+    // margin above it. Otherwise the orbit camera pokes under the terrain and
+    // the bottom of the screen clips through the ground behind the bird.
+    if (collision && collision.floorFn) {
+      const camFloor = collision.floorFn(camera.position.x, camera.position.z) + CAM_FLOOR_CLEAR;
+      if (camera.position.y < camFloor) camera.position.y = camFloor;
+    }
     camera.lookAt(birdPos.x, birdPos.y, birdPos.z);
   }
 
