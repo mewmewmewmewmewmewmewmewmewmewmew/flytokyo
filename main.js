@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.21';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.21';
+import { TrainSystem } from './train.js?v=11.22';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.22';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2087,7 +2087,12 @@ function createBirdControls(camera, domElement, collision) {
       if (birdPos.y < floorY + MIN_CLEAR) {
         birdPos.y = floorY + MIN_CLEAR;
         if (_vel.y < -0.01) {
-          _vel.y = -_vel.y * 0.75;   // reflect + light damping; x/z carry on unchanged
+          _vel.y = -_vel.y * 0.75;
+          // Point the bird in the reflected direction so thrust doesn't fight the bounce.
+          const horizSpeed = Math.hypot(_vel.x, _vel.z);
+          const reflectedPitch = Math.atan2(_vel.y, Math.max(horizSpeed, 0.001));
+          headPitch = reflectedPitch;
+          camPitch  = reflectedPitch;
         }
       }
 
