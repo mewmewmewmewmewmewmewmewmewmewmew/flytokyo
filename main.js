@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.34';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.34';
+import { TrainSystem } from './train.js?v=11.35';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.35';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -43,6 +43,7 @@ const FISH_CAM_UP   = 0.45;   // hug close to the bird's level
 // curve smoothly once the fisheye warp bends them.
 const WALL_SEG      = 9;      // building wall grid cell
 const EDGE_SEG      = 7;      // wireframe outline segment
+const DECAL_SEG     = 8;      // water/road area max triangle edge (fisheye subdivision)
 
 // ─── Coordinate helpers ──────────────────────────────────────────────────────
 
@@ -986,7 +987,7 @@ function densifyCoords(coords, maxLen) {
 // eliminating the overlapping-rectangle artifact at road bends. yOff lifts the ribbon
 // above the terrain so it layers cleanly over the ground.
 function addRibbonToBuffers(rawCoords, halfW, pos, col, color, yOff) {
-  const coords = terrain ? densifyCoords(rawCoords, 10) : rawCoords;
+  const coords = terrain ? densifyCoords(rawCoords, DECAL_SEG) : rawCoords;
   const n = coords.length;
   if (n < 2) return;
 
@@ -1098,31 +1099,64 @@ function waterwayHalfWidth(type) {
   }
 }
 
+// Emit a triangle (xz plane) into pos/col, recursively bisecting its longest
+// edge until every edge is shorter than maxEdge. Big flat triangles look fine
+// in plain perspective but the fisheye warp bends only their vertices, leaving
+// straight chords that read as huge faceted smears when you fly low over them.
+// Fine triangles let the per-vertex warp curve the surface smoothly. y is
+// sampled from the terrain per emitted vertex so the fill hugs the ground.
+function emitTriSubdivided(ax, az, bx, bz, cx, cz, maxEdge, pos, col, color, yOff, depth = 0) {
+  const eAB = Math.hypot(bx - ax, bz - az);
+  const eBC = Math.hypot(cx - bx, cz - bz);
+  const eCA = Math.hypot(ax - cx, az - cz);
+  const maxE = Math.max(eAB, eBC, eCA);
+  if (depth >= 7 || maxE <= maxEdge) {
+    const push = (x, z) => {
+      pos.push(x, (terrain ? terrain.sample(x, z) : 0) + yOff, z);
+      col.push(color.r, color.g, color.b);
+    };
+    push(ax, az); push(bx, bz); push(cx, cz);
+    return;
+  }
+  // Bisect the longest edge — keeps sub-triangles well-shaped and terminates.
+  if (eAB >= eBC && eAB >= eCA) {
+    const mx = (ax + bx) / 2, mz = (az + bz) / 2;
+    emitTriSubdivided(ax, az, mx, mz, cx, cz, maxEdge, pos, col, color, yOff, depth + 1);
+    emitTriSubdivided(mx, mz, bx, bz, cx, cz, maxEdge, pos, col, color, yOff, depth + 1);
+  } else if (eBC >= eAB && eBC >= eCA) {
+    const mx = (bx + cx) / 2, mz = (bz + cz) / 2;
+    emitTriSubdivided(ax, az, bx, bz, mx, mz, maxEdge, pos, col, color, yOff, depth + 1);
+    emitTriSubdivided(ax, az, mx, mz, cx, cz, maxEdge, pos, col, color, yOff, depth + 1);
+  } else {
+    const mx = (cx + ax) / 2, mz = (cz + az) / 2;
+    emitTriSubdivided(ax, az, bx, bz, mx, mz, maxEdge, pos, col, color, yOff, depth + 1);
+    emitTriSubdivided(mx, mz, bx, bz, cx, cz, maxEdge, pos, col, color, yOff, depth + 1);
+  }
+}
+
 // Triangulated fill for water-area polygons (lakes, reservoirs, river banks).
 function buildWaterAreaMesh(areas, mat) {
-  const pos = [], col = [], idx = [];
-  let v = 0;
+  const pos = [], col = [];
   const wc = new THREE.Color(0x4488bb);
 
   for (const { ring } of areas) {
     const flat = ring.flatMap(([x, z]) => [x, z]);
     const tris = earcut(flat);
     if (!tris.length) continue;
-    const base = v;
-    for (const [x, z] of ring) {
-      const y = (terrain ? terrain.sample(x, z) : 0) + 0.12;
-      pos.push(x, y, z);
-      col.push(wc.r, wc.g, wc.b);
-      v++;
+    // Subdivide each earcut triangle so the fisheye warp curves it smoothly
+    // instead of smearing across the screen as a giant flat facet.
+    for (let i = 0; i < tris.length; i += 3) {
+      const [ax, az] = ring[tris[i]];
+      const [bx, bz] = ring[tris[i + 1]];
+      const [cx, cz] = ring[tris[i + 2]];
+      emitTriSubdivided(ax, az, bx, bz, cx, cz, DECAL_SEG, pos, col, wc, 0.12);
     }
-    for (const i of tris) idx.push(base + i);
   }
 
   if (!pos.length) return null;
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geo.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
-  geo.setIndex(idx);
   const mesh = new THREE.Mesh(geo, mat);
   mesh.renderOrder = 0;
   return mesh;
