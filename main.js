@@ -1820,8 +1820,8 @@ function createBirdControls(camera, domElement) {
   // Speed-driven fisheye: the warp eases in from a normal view (rest) to a full
   // fisheye at top speed, and the angle grows wider the faster you go.
   const FOV_REST_DEG   = 120;  // angle the warp eases up from (barely visible at low speed)
-  const FOV_MAX_DEG    = 250;  // at top non-sprint speed
-  const FOV_SPRINT_DEG = 270;  // at top sprint (dash) speed
+  const FOV_MAX_DEG    = 220;  // at top non-sprint speed
+  const FOV_SPRINT_DEG = 250;  // at top sprint speed
 
   let lastTime    = performance.now();
   let mouseThrust = false;     // true while left mouse held (with pointer locked)
