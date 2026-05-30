@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.22';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.22';
+import { TrainSystem } from './train.js?v=11.23';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.23';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1862,6 +1862,12 @@ function createBirdControls(camera, domElement, collision) {
   const _vel     = new THREE.Vector3();  // current velocity vector (m/frame); coasts naturally
   const _euler   = new THREE.Euler(0, 0, 0, 'YXZ');
 
+  // Ground-bounce pitch easing. On impact the velocity reflects instantly (physics)
+  // but the bird's nose eases toward the reflected pitch over a few frames so the
+  // redirect reads as a smooth curve, not a snap. null = no bounce in progress.
+  let _bouncePitch = null;
+  const BOUNCE_EASE = 0.14;   // per-frame approach toward the reflected pitch
+
   const keys   = new Set();
   const typing = e => e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
   window.addEventListener('keydown', e => {
@@ -2088,12 +2094,19 @@ function createBirdControls(camera, domElement, collision) {
         birdPos.y = floorY + MIN_CLEAR;
         if (_vel.y < -0.01) {
           _vel.y = -_vel.y * 0.75;
-          // Point the bird in the reflected direction so thrust doesn't fight the bounce.
+          // Aim the bird's nose at the reflected direction, but ease into it over
+          // the next frames (below) instead of snapping so the arc reads smoothly.
           const horizSpeed = Math.hypot(_vel.x, _vel.z);
-          const reflectedPitch = Math.atan2(_vel.y, Math.max(horizSpeed, 0.001));
-          headPitch = reflectedPitch;
-          camPitch  = reflectedPitch;
+          _bouncePitch = Math.atan2(_vel.y, Math.max(horizSpeed, 0.001));
         }
+      }
+
+      // Animate the bounce redirect: glide headPitch/camPitch toward the reflected
+      // target with an ease-out approach, then release control once we're there.
+      if (_bouncePitch !== null) {
+        headPitch += (_bouncePitch - headPitch) * BOUNCE_EASE;
+        camPitch  += (_bouncePitch - camPitch)  * BOUNCE_EASE;
+        if (Math.abs(_bouncePitch - headPitch) < 0.01) _bouncePitch = null;
       }
 
       // Bank into turns: roll proportional to how fast the bird's heading changes.
