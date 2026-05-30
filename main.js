@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.13';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL } from './fisheye.js?v=11.13';
+import { TrainSystem } from './train.js?v=11.14';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL } from './fisheye.js?v=11.14';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -858,11 +858,33 @@ function buildSurfaceMesh(buildings, mat) {
 
     const { topY, vertexH } = bldgTerrainInfo(ring, height);
 
-    const rb = v;
-    for (const [x, z] of ring) {
-      pos.push(x, topY, z); norm.push(0, 1, 0); col.push(rc.r, rc.g, rc.b); v++;
+    // Tessellate each earcut roof triangle so fisheye has enough vertices to curve it
+    for (let t = 0; t < tris.length; t += 3) {
+      const i0 = tris[t], i1 = tris[t+1], i2 = tris[t+2];
+      const x0 = ring[i0][0], z0 = ring[i0][1];
+      const x1 = ring[i1][0], z1 = ring[i1][1];
+      const x2 = ring[i2][0], z2 = ring[i2][1];
+      const maxEdge = Math.max(Math.hypot(x1-x0,z1-z0), Math.hypot(x2-x1,z2-z1), Math.hypot(x0-x2,z0-z2));
+      const N = Math.min(4, Math.max(1, Math.ceil(maxEdge / WALL_SEG)));
+      const vbase = v;
+      for (let j = 0; j <= N; j++) {
+        const vv = j / N;
+        for (let i = 0; i <= N - j; i++) {
+          const u = i / N, w = 1 - u - vv;
+          pos.push(x0*w + x1*u + x2*vv, topY, z0*w + z1*u + z2*vv);
+          norm.push(0, 1, 0); col.push(rc.r, rc.g, rc.b); v++;
+        }
+      }
+      for (let j = 0; j < N; j++) {
+        const rs0 = j*(N+1) - j*(j-1)/2;
+        const rs1 = (j+1)*(N+1) - (j+1)*j/2;
+        for (let i = 0; i < N - j; i++) {
+          const a = vbase+rs0+i, b = vbase+rs0+i+1, c = vbase+rs1+i;
+          idx.push(a, b, c);
+          if (i < N - j - 1) idx.push(b, vbase+rs1+i+1, c);
+        }
+      }
     }
-    for (const i of tris) idx.push(rb + i);
 
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
@@ -1937,6 +1959,7 @@ function createBirdControls(camera, domElement, collision) {
     getYaw()   { return headYaw; },
     getPitch() { return headPitch; },
     getRoll()  { return roll; },
+    getSpeed() { return _vel.length(); },
     setFisheye(on) { fisheyeMode = on; updateCamera(); },
     init(x, y, z) { birdPos.set(x, y, z); updateCamera(); },
     update() {
@@ -2137,6 +2160,7 @@ function initScene(collision) {
   const LABEL_DIST = 250;
   let fisheyeActive = true;   // speed-driven fisheye on by default; F3 toggles it off
   let lastTime = performance.now();
+  const speedEl = document.getElementById('speed');
 
   // ── Single-pass fisheye ────────────────────────────────────────────────────
   // The whole scene is rendered ONCE; the fisheye warp lives in every vertex
@@ -2177,6 +2201,10 @@ function initScene(collision) {
     const dt  = Math.min((now - lastTime) / 1000, 0.1);
     lastTime  = now;
     controls.update();
+    if (speedEl && dt > 0) {
+      const kmh = (controls.getSpeed() / dt * 3.6).toFixed(0);
+      speedEl.textContent = kmh + ' km/h';
+    }
     // Sync bird mesh: position + flight orientation (yaw, nose pitch, bank roll)
     birdMesh.position.copy(controls.birdPos);
     birdMesh.position.y += 0.1 * Math.sin(now * 0.002);   // gentle float bob
