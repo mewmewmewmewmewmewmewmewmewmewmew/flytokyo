@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.28';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.28';
+import { TrainSystem } from './train.js?v=11.29';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.29';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1872,9 +1872,11 @@ function createBirdControls(camera, domElement, collision) {
   // Wall-ramp state. A head-on building hit sends the bird climbing vertically up
   // the face (parallel to the wall); once it clears the roof it peels forward at a
   // shallow climb. We remember the approach direction + speed to resume with.
-  const _ramp = { active: false, dirX: 0, dirZ: 0, speed: 0 };
+  // predictive: nose-rotation has begun but velocity hasn't been snapped yet.
+  const _ramp = { active: false, predictive: false, dirX: 0, dirZ: 0, speed: 0, camPitch: 0 };
   const RAMP_CLIMB_PITCH = 1.45;            // ~83°: nose near-vertical up the wall
   const RAMP_EXIT_ANGLE  = Math.PI / 6;     // 30° forward climb once over the roof
+  const WALL_LOOK        = 3;               // frames ahead for predictive wall detection
 
   const keys   = new Set();
   const typing = e => e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
@@ -2045,21 +2047,34 @@ function createBirdControls(camera, domElement, collision) {
       }
 
       if (_vel.lengthSq() > 1e-8) {
-        // Building collision: try the full move; if it lands inside a building
-        // (below its roof), slide along whichever horizontal axis is clear when
-        // only grazing a wall. A head-on hit becomes a RAMP: the blocked
-        // horizontal momentum is redirected straight up so the bird shoots up
-        // the face and over the roof toward the sky. Vertical motion is always
-        // allowed so the bird can climb/dive over rooftops.
         const cf = collision && collision.fn;
         const nx = birdPos.x + _vel.x, nz = birdPos.z + _vel.z, ny = birdPos.y + _vel.y;
+
+        // ── Predictive wall detection ──────────────────────────────────────────
+        // Check WALL_LOOK frames ahead at current height. If a head-on wall is
+        // coming (both horizontal slides also blocked at that lookahead position),
+        // init the ramp state now so the nose starts rotating before impact.
+        // Velocity is NOT snapped yet — that happens on the actual collision frame.
+        // This gives the bird a smooth curved approach instead of an abrupt snap.
+        if (cf && !_ramp.active && !cf(birdPos.x, birdPos.z, birdPos.y, BIRD_RADIUS)) {
+          const px = birdPos.x + _vel.x * WALL_LOOK, pz = birdPos.z + _vel.z * WALL_LOOK;
+          if (cf(px, pz, birdPos.y, BIRD_RADIUS)
+              && cf(px, birdPos.z, birdPos.y, BIRD_RADIUS)
+              && cf(birdPos.x, pz, birdPos.y, BIRD_RADIUS)) {
+            const horizSpeed = Math.hypot(_vel.x, _vel.z);
+            _ramp.active     = true;
+            _ramp.predictive = true;
+            _ramp.dirX       = horizSpeed > 1e-4 ? _vel.x / horizSpeed : getHeading().x;
+            _ramp.dirZ       = horizSpeed > 1e-4 ? _vel.z / horizSpeed : getHeading().z;
+            _ramp.speed      = Math.max(_vel.length(), MOVE_SPEED);
+            _pitchTarget     = RAMP_CLIMB_PITCH;   // begin nose rotation early
+          }
+        }
+
+        // ── Collision + ramp ───────────────────────────────────────────────────
         if (cf && cf(nx, nz, ny, BIRD_RADIUS)) {
-          // Slide tests use the CURRENT y (birdPos.y), not ny. Building walls are
-          // vertical — whether a horizontal slide is clear is a horizontal question.
-          // Using ny when diving causes the test to falsely block at the lower
-          // position, pushing the bird into a wall or oscillating between slide
-          // and ramp. Also: once the ramp is active, skip slides entirely so the
-          // bird keeps climbing until it clears the roof.
+          // Slide tests use current y — building walls are vertical so clearance is
+          // a horizontal question. Skip slides entirely once ramp is active.
           let doRamp = _ramp.active;
           if (!doRamp) {
             if      (!cf(nx,        birdPos.z, birdPos.y, BIRD_RADIUS)) { birdPos.x = nx; _vel.z = 0; birdPos.y = ny; }
@@ -2068,39 +2083,41 @@ function createBirdControls(camera, domElement, collision) {
           }
           if (doRamp) {
             if (!_ramp.active) {
-              _ramp.active   = true;
-              _ramp.camPitch = camPitch;
+              // Fresh ramp — no predictive phase; capture everything now.
+              _ramp.active     = true;
+              _ramp.predictive = false;
+              _ramp.camPitch   = camPitch;
               const horizSpeed = Math.hypot(_vel.x, _vel.z);
-              if (horizSpeed > 1e-4) {
-                _ramp.dirX = _vel.x / horizSpeed;
-                _ramp.dirZ = _vel.z / horizSpeed;
-              } else {
-                const h = getHeading();
-                _ramp.dirX = h.x;
-                _ramp.dirZ = h.z;
-              }
-              // Capture climb speed once at impact and never update it — that's what
-              // killed the feedback loop in v11.28 (per-frame recalc × RAMP_GAIN
-              // kept growing the speed 1.3× per frame). No cap needed here because
-              // we never re-run this line while _ramp.active, so there's no way for
-              // the value to grow. Approach momentum is preserved: hit the wall at
-              // 300 km/h and you climb at 300 km/h.
+              _ramp.dirX  = horizSpeed > 1e-4 ? _vel.x / horizSpeed : getHeading().x;
+              _ramp.dirZ  = horizSpeed > 1e-4 ? _vel.z / horizSpeed : getHeading().z;
               _ramp.speed = Math.max(_vel.length(), MOVE_SPEED);
+            } else if (_ramp.predictive) {
+              // Predictive phase ends — wall actually reached; freeze camera now.
+              _ramp.predictive = false;
+              _ramp.camPitch   = camPitch;
             }
             _vel.set(0, _ramp.speed, 0);
             birdPos.y += _ramp.speed;
             _pitchTarget = RAMP_CLIMB_PITCH;
           }
         } else {
-          if (_ramp.active) {
-            // Cleared the roof: peel off into a 30° forward climb in the approach
-            // direction, splitting the climb speed between forward and up so the
-            // bird arcs over the edge instead of shooting straight past it.
+          if (_ramp.active && !_ramp.predictive) {
+            // Cleared the roof: peel off into a 30° forward climb.
             const v = _ramp.speed;
             const h = v * Math.cos(RAMP_EXIT_ANGLE);
             _vel.set(_ramp.dirX * h, v * Math.sin(RAMP_EXIT_ANGLE), _ramp.dirZ * h);
-            _pitchTarget = RAMP_EXIT_ANGLE;
-            _ramp.active = false;
+            _pitchTarget     = RAMP_EXIT_ANGLE;
+            _ramp.active     = false;
+            _ramp.predictive = false;
+          } else if (_ramp.active && _ramp.predictive) {
+            // Still in predictive approach — re-verify wall is still ahead.
+            // If the user has steered away, cancel the predictive state.
+            const cpx = birdPos.x + _vel.x * WALL_LOOK, cpz = birdPos.z + _vel.z * WALL_LOOK;
+            if (!cf || !cf(cpx, cpz, birdPos.y, BIRD_RADIUS)) {
+              _ramp.active     = false;
+              _ramp.predictive = false;
+              _pitchTarget     = null;
+            }
           }
           birdPos.add(_vel);
         }
@@ -2149,10 +2166,16 @@ function createBirdControls(camera, domElement, collision) {
       // the target. During a wall ramp the camera is disassociated — camPitch stays
       // at the pre-impact vantage (so the player sees the bird climbing) and only
       // resumes tracking once the ramp clears and the bird peels over the roof.
+      // Left-click (mouseThrust) always wins: it cancels the auto-pilot immediately
+      // so the peel-off 30° angle doesn't lock the user out of steering.
       if (_pitchTarget !== null) {
-        headPitch += (_pitchTarget - headPitch) * PITCH_EASE;
-        if (!_ramp.active) camPitch += (_pitchTarget - camPitch) * PITCH_EASE;
-        if (Math.abs(_pitchTarget - headPitch) < 0.01) _pitchTarget = null;
+        if (mouseThrust) {
+          _pitchTarget = null;
+        } else {
+          headPitch += (_pitchTarget - headPitch) * PITCH_EASE;
+          if (!_ramp.active || _ramp.predictive) camPitch += (_pitchTarget - camPitch) * PITCH_EASE;
+          if (Math.abs(_pitchTarget - headPitch) < 0.01) _pitchTarget = null;
+        }
       }
 
       // Bank into turns: roll proportional to how fast the bird's heading changes.
