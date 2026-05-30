@@ -116,17 +116,21 @@ export const FISH_FRAG_GLSL = /* glsl */`
 // rim term adds the bright edge sheen typical of anime character/prop rendering.
 // N, V, L are unit vectors in VIEW space (V = normalize(-vFishView) = toward eye).
 export const TOON_GLSL = /* glsl */`
+  // Snap each colour channel to a fixed number of levels — flattens smooth
+  // gradients into poster-like bands so flat fills match the cel surfaces.
+  vec3 posterize(vec3 c, float levels) {
+    return floor(c * levels + 0.5) / levels;
+  }
   vec3 celShade(vec3 base, vec3 N, vec3 V, vec3 L) {
-    // Half-Lambert wrap keeps shadow sides readable, then snap to 3 flat bands
-    // with anti-aliased steps so the cel boundaries don't shimmer at distance.
+    // Half-Lambert wrap keeps shadow sides readable, then snap to just TWO flat
+    // levels across one crisp terminator for bold, graphic manga contrast.
     float d    = dot(N, L) * 0.5 + 0.5;
-    float band = 0.55
-               + 0.22 * smoothstep(0.46, 0.50, d)
-               + 0.23 * smoothstep(0.72, 0.76, d);
+    float lit  = smoothstep(0.49, 0.53, d);     // single sharp (anti-aliased) edge
+    float band = mix(0.42, 1.0, lit);           // deep shadow vs full light
     vec3  col  = base * band;
-    // Rim light: bright cool edge where the surface turns away from the eye.
-    float rim  = pow(1.0 - max(dot(N, V), 0.0), 3.5);
-    col += vec3(0.34, 0.40, 0.52) * rim * 0.6;
+    // Warm sunset rim: a strong golden glow where the surface turns from the eye.
+    float rim  = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+    col += vec3(1.0, 0.74, 0.42) * rim * 0.9;
     return col;
   }
 `;
