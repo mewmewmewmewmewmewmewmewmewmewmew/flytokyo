@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.24';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.24';
+import { TrainSystem } from './train.js?v=11.25';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.25';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2057,17 +2057,29 @@ function createBirdControls(camera, domElement, collision) {
           if (!cf(nx, birdPos.z, ny, BIRD_RADIUS))      { birdPos.x = nx; _vel.z = 0; birdPos.y = ny; }
           else if (!cf(birdPos.x, nz, ny, BIRD_RADIUS)) { birdPos.z = nz; _vel.x = 0; birdPos.y = ny; }
           else {
-            // Head-on into a wall — RAMP. Fly straight up the face, parallel to
-            // the wall, keeping the approach direction so we can peel forward
-            // once we clear the roof. Capture that direction on the first frame
-            // of contact (before the horizontal speed is zeroed for the climb).
+            // Head-on into a wall — RAMP. Always deflect upward regardless of
+            // approach angle (including steep dives). Climb speed is the larger
+            // of the incoming total speed × gain or a minimum so the bird never
+            // stalls inside the wall.
             const horizSpeed = Math.hypot(_vel.x, _vel.z);
-            const climb = Math.max(_vel.y, horizSpeed * RAMP_GAIN);
-            if (!_ramp.active && horizSpeed > 1e-4) {
+            const totalSpeed = _vel.length();
+            const climb = Math.max(horizSpeed * RAMP_GAIN, totalSpeed * 0.6, MOVE_SPEED * 0.4);
+            if (!_ramp.active) {
               _ramp.active = true;
-              _ramp.dirX   = _vel.x / horizSpeed;
-              _ramp.dirZ   = _vel.z / horizSpeed;
               _ramp.speed  = climb;
+              if (horizSpeed > 1e-4) {
+                _ramp.dirX = _vel.x / horizSpeed;
+                _ramp.dirZ = _vel.z / horizSpeed;
+              } else {
+                // Purely vertical hit: use bird's heading as the forward peel direction.
+                const h = getHeading();
+                _ramp.dirX = h.x;
+                _ramp.dirZ = h.z;
+              }
+              // Freeze the camera at the pre-impact vantage so the player sees the
+              // bird climbing the wall. camPitch/camYaw are NOT updated by _pitchTarget
+              // while _ramp.active — only headPitch (the bird's own nose) is driven.
+              _ramp.camPitch = camPitch;
             }
             _vel.set(0, climb, 0);
             birdPos.y += climb;
@@ -2081,7 +2093,7 @@ function createBirdControls(camera, domElement, collision) {
             const v = Math.max(_vel.y, _ramp.speed);
             const h = v * Math.cos(RAMP_EXIT_ANGLE);
             _vel.set(_ramp.dirX * h, v * Math.sin(RAMP_EXIT_ANGLE), _ramp.dirZ * h);
-            _pitchTarget = RAMP_EXIT_ANGLE;    // nose to the 30° climb
+            _pitchTarget = RAMP_EXIT_ANGLE;    // nose to the 30° climb; camera follows now
             _ramp.active = false;
           }
           birdPos.add(_vel);
@@ -2127,12 +2139,13 @@ function createBirdControls(camera, domElement, collision) {
         }
       }
 
-      // Animate any auto-pilot redirect (bounce or wall-ramp): glide headPitch and
-      // camPitch toward the target with an ease-out approach, then release control
-      // back to thrust/look once we're there.
+      // Animate any auto-pilot redirect (bounce or wall-ramp): ease headPitch toward
+      // the target. During a wall ramp the camera is disassociated — camPitch stays
+      // at the pre-impact vantage (so the player sees the bird climbing) and only
+      // resumes tracking once the ramp clears and the bird peels over the roof.
       if (_pitchTarget !== null) {
         headPitch += (_pitchTarget - headPitch) * PITCH_EASE;
-        camPitch  += (_pitchTarget - camPitch)  * PITCH_EASE;
+        if (!_ramp.active) camPitch += (_pitchTarget - camPitch) * PITCH_EASE;
         if (Math.abs(_pitchTarget - headPitch) < 0.01) _pitchTarget = null;
       }
 
