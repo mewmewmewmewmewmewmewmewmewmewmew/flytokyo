@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.30';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.30';
+import { TrainSystem } from './train.js?v=11.31';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.31';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2017,7 +2017,7 @@ function createBirdControls(camera, domElement, collision) {
         if (mouseThrust) {
           tx.add(getLook());
           headYaw   += (camYaw   - headYaw)   * 0.12;
-          headPitch += (camPitch - headPitch) * 0.12;
+          if (!_ramp.active) headPitch += (camPitch - headPitch) * 0.12;
         }
         if (tx.lengthSq() > 1e-6) {
           tx.normalize();
@@ -2169,7 +2169,7 @@ function createBirdControls(camera, domElement, collision) {
       // Left-click (mouseThrust) always wins: it cancels the auto-pilot immediately
       // so the peel-off 30° angle doesn't lock the user out of steering.
       if (_pitchTarget !== null) {
-        if (mouseThrust) {
+        if (mouseThrust && !_ramp.active) {
           _pitchTarget = null;
         } else {
           headPitch += (_pitchTarget - headPitch) * PITCH_EASE;
