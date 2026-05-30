@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.31';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.31';
+import { TrainSystem } from './train.js?v=11.32';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.32';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2048,6 +2048,15 @@ function createBirdControls(camera, domElement, collision) {
 
       if (_vel.lengthSq() > 1e-8) {
         const cf = collision && collision.fn;
+        // During an active wall climb, force vertical movement before computing
+        // nx/nz/ny so the collision test checks straight above (has the wall
+        // cleared?) rather than in the heading direction. Without this, as
+        // headPitch rotates toward vertical the heading-based velocity has
+        // nx ≈ birdPos.x and ny well above the building, causing a premature
+        // peel-off that oscillates and feels like being stuck.
+        if (_ramp.active && !_ramp.predictive) {
+          _vel.set(0, _ramp.speed, 0);
+        }
         const nx = birdPos.x + _vel.x, nz = birdPos.z + _vel.z, ny = birdPos.y + _vel.y;
 
         // ── Predictive wall detection ──────────────────────────────────────────
@@ -2066,7 +2075,7 @@ function createBirdControls(camera, domElement, collision) {
             _ramp.predictive = true;
             _ramp.dirX       = horizSpeed > 1e-4 ? _vel.x / horizSpeed : getHeading().x;
             _ramp.dirZ       = horizSpeed > 1e-4 ? _vel.z / horizSpeed : getHeading().z;
-            _ramp.speed      = Math.max(_vel.length(), MOVE_SPEED);
+            _ramp.speed      = Math.max(horizSpeed, MOVE_SPEED);
             _pitchTarget     = RAMP_CLIMB_PITCH;   // begin nose rotation early
           }
         }
@@ -2090,7 +2099,7 @@ function createBirdControls(camera, domElement, collision) {
               const horizSpeed = Math.hypot(_vel.x, _vel.z);
               _ramp.dirX  = horizSpeed > 1e-4 ? _vel.x / horizSpeed : getHeading().x;
               _ramp.dirZ  = horizSpeed > 1e-4 ? _vel.z / horizSpeed : getHeading().z;
-              _ramp.speed = Math.max(_vel.length(), MOVE_SPEED);
+              _ramp.speed = Math.max(horizSpeed, MOVE_SPEED);
             } else if (_ramp.predictive) {
               // Predictive phase ends — wall actually reached; freeze camera now.
               _ramp.predictive = false;
