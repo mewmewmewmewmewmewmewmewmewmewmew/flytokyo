@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.18';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.18';
+import { TrainSystem } from './train.js?v=11.19';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.19';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1290,6 +1290,7 @@ function pointInPolygon(px, pz, ring) {
 // ─── Tile manager ────────────────────────────────────────────────────────────
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const nextFrame = () => new Promise(r => requestAnimationFrame(() => r()));
 
 class TileManager {
   constructor(scene, mats, statusEl) {
@@ -1840,6 +1841,7 @@ function createBirdControls(camera, domElement, collision) {
   const LIFT_SPEED  = 0.30;    // spacebar ascent per frame
   const MIN_CLEAR   = 0.3;     // can skim almost to the ground
   const BIRD_RADIUS = 2.0;     // collision radius against building walls
+  const RAMP_GAIN   = 1.3;     // head-on into a wall → climb at 1.3× the blocked speed
   const PITCH_LIMIT = 1.1;     // clamp so you can't loop over the top
   const TOUCH_SPEED = LOOK_SPEED * 2.5;
 
@@ -2030,16 +2032,25 @@ function createBirdControls(camera, domElement, collision) {
 
       if (_vel.lengthSq() > 1e-8) {
         // Building collision: try the full move; if it lands inside a building
-        // (below its roof), slide along whichever horizontal axis is clear and
-        // kill the blocked component. Vertical motion is always allowed so the
-        // bird can climb/dive over rooftops. Flying above roofs stays clear.
+        // (below its roof), slide along whichever horizontal axis is clear when
+        // only grazing a wall. A head-on hit becomes a RAMP: the blocked
+        // horizontal momentum is redirected straight up so the bird shoots up
+        // the face and over the roof toward the sky. Vertical motion is always
+        // allowed so the bird can climb/dive over rooftops.
         const cf = collision && collision.fn;
         const nx = birdPos.x + _vel.x, nz = birdPos.z + _vel.z, ny = birdPos.y + _vel.y;
         if (cf && cf(nx, nz, ny, BIRD_RADIUS)) {
-          if (!cf(nx, birdPos.z, ny, BIRD_RADIUS))      { birdPos.x = nx; _vel.z = 0; }
-          else if (!cf(birdPos.x, nz, ny, BIRD_RADIUS)) { birdPos.z = nz; _vel.x = 0; }
-          else { _vel.x = 0; _vel.z = 0; }
-          birdPos.y = ny;
+          if (!cf(nx, birdPos.z, ny, BIRD_RADIUS))      { birdPos.x = nx; _vel.z = 0; birdPos.y = ny; }
+          else if (!cf(birdPos.x, nz, ny, BIRD_RADIUS)) { birdPos.z = nz; _vel.x = 0; birdPos.y = ny; }
+          else {
+            // Head-on into a wall — ramp upward. Convert the horizontal speed
+            // into a steep climb (and keep at least the current ascent), then
+            // rise this frame so we scale the face instead of stalling.
+            const horizSpeed = Math.hypot(_vel.x, _vel.z);
+            _vel.x = 0; _vel.z = 0;
+            _vel.y = Math.max(_vel.y, horizSpeed * RAMP_GAIN);
+            birdPos.y += _vel.y;
+          }
         } else {
           birdPos.add(_vel);
         }
@@ -2243,7 +2254,7 @@ function initScene(collision) {
     renderer.render(scene, camera);
   })();
 
-  return { scene, camera, controls, trainRef, labelsRef, ground };
+  return { scene, camera, controls, trainRef, labelsRef, ground, renderer };
 }
 
 // ─── Geocoding (OpenStreetMap Nominatim — no API key) ─────────────────────────
@@ -2351,7 +2362,7 @@ async function main() {
 
   // Mutable ref so controls (created first) can call collision once tiles arrive
   const collision = { fn: null };
-  const { scene, camera, controls, trainRef, labelsRef, ground } = initScene(collision);
+  const { scene, camera, controls, trainRef, labelsRef, ground, renderer } = initScene(collision);
 
   // Ask where to start, geocode it, then center the world there.
   const place = await promptLocation();
@@ -2459,6 +2470,15 @@ async function main() {
 
   if (coreOsm) { setLoad('Building the city…', 0.9); await sleep(0); }
   manager._settleRegion(core.keys, coreOsm);
+
+  // Warm-up: the first frame that draws the freshly-built city pays a one-time
+  // cost (shader compile + geometry upload) that froze movement for ~1s right
+  // as the loading screen lifted. Force that cost to happen NOW, behind the
+  // overlay — compile all materials, then render a few real frames — so by the
+  // time we reveal, the bird is actually movable rather than just "Ready".
+  setLoad('Warming up…', 0.97);
+  renderer.compile(scene, camera);
+  for (let i = 0; i < 3; i++) await nextFrame();
 
   reveal();
   // Background: full radius (dedup skips core tiles already loaded), then POIs
