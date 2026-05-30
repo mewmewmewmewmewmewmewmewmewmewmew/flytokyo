@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.37';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.37';
+import { TrainSystem } from './train.js?v=11.38';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.38';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2176,15 +2176,14 @@ function createBirdControls(camera, domElement, collision) {
         moved = true;
       }
 
-      // Speed-driven fisheye. tt: 0 at rest, 1 at non-sprint max, up to 2 at
-      // sprint max. The warp is zero below FISH_ONSET (≈120 km/h), then rises
-      // smoothly from there to full fisheye at top speed, so cruising at low/
-      // medium speed stays in plain perspective with no noticeable lens shift.
-      const FISH_ONSET = 0.53;  // fraction of MOVE_MAX where warp begins (~120 km/h)
+      // Speed-driven fisheye with a very slow onset: ~5% warp at 140 km/h
+      // (tt≈0.62), rising to full fisheye at top speed (227 km/h). The high
+      // power keeps low/medium cruising in plain perspective and only swings
+      // the lens in near the top. The angle widens 120°→220° over the first
+      // band, then 220°→250° through the sprint band.
       const tt    = _vel.length() / MOVE_MAX;
       const e     = Math.min(tt, 1);
-      const t2    = Math.max(0, (e - FISH_ONSET) / (1 - FISH_ONSET));  // 0 below onset, 1 at max
-      const blend = t2 * t2 * (3 - 2 * t2);  // smoothstep: zero slope at both ends
+      const blend = Math.pow(e, 6.2);  // 5% at tt≈0.62 (140 km/h), 100% at top
       // FOV widens with speed: rest→max over band 0-1, max→sprint over 1-2, then
       // keeps opening sprint→dive over 2-4 as a dive pushes past top speed.
       let fovDeg;
