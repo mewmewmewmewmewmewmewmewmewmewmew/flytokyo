@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.13';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL } from './fisheye.js?v=11.13';
+import { TrainSystem } from './train.js?v=11.32';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.32';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -650,15 +650,17 @@ const SURF_FRAG = /* glsl */`
   uniform float uFar;
   uniform float uXray;
   ${FISH_FRAG_GLSL}
+  ${TOON_GLSL}
   void main() {
     fishClip();
-    vec3  L     = normalize(vec3(0.5, 1.0, 0.3));
-    float diff  = max(dot(normalize(vNorm), L), 0.0);
-    float light = 0.60 + 0.40 * diff;
-    float fade  = 1.0 - smoothstep(uNear, uFar, vDist);
-    float a     = mix(1.0, 0.80, uXray) * fade;
+    vec3  N      = normalize(vNorm);
+    vec3  V      = normalize(-vFishView);
+    vec3  L      = normalize(vec3(0.5, 1.0, 0.3));
+    vec3  shaded = celShade(vCol, N, V, L);
+    float fade   = 1.0 - smoothstep(uNear, uFar, vDist);
+    float a      = mix(1.0, 0.80, uXray) * fade;
     if (a < 0.01) discard;
-    gl_FragColor = vec4(vCol * light, a);
+    gl_FragColor = vec4(shaded, a);
   }
 `;
 
@@ -858,11 +860,33 @@ function buildSurfaceMesh(buildings, mat) {
 
     const { topY, vertexH } = bldgTerrainInfo(ring, height);
 
-    const rb = v;
-    for (const [x, z] of ring) {
-      pos.push(x, topY, z); norm.push(0, 1, 0); col.push(rc.r, rc.g, rc.b); v++;
+    // Tessellate each earcut roof triangle so fisheye has enough vertices to curve it
+    for (let t = 0; t < tris.length; t += 3) {
+      const i0 = tris[t], i1 = tris[t+1], i2 = tris[t+2];
+      const x0 = ring[i0][0], z0 = ring[i0][1];
+      const x1 = ring[i1][0], z1 = ring[i1][1];
+      const x2 = ring[i2][0], z2 = ring[i2][1];
+      const maxEdge = Math.max(Math.hypot(x1-x0,z1-z0), Math.hypot(x2-x1,z2-z1), Math.hypot(x0-x2,z0-z2));
+      const N = Math.min(4, Math.max(1, Math.ceil(maxEdge / WALL_SEG)));
+      const vbase = v;
+      for (let j = 0; j <= N; j++) {
+        const vv = j / N;
+        for (let i = 0; i <= N - j; i++) {
+          const u = i / N, w = 1 - u - vv;
+          pos.push(x0*w + x1*u + x2*vv, topY, z0*w + z1*u + z2*vv);
+          norm.push(0, 1, 0); col.push(rc.r, rc.g, rc.b); v++;
+        }
+      }
+      for (let j = 0; j < N; j++) {
+        const rs0 = j*(N+1) - j*(j-1)/2;
+        const rs1 = (j+1)*(N+1) - (j+1)*j/2;
+        for (let i = 0; i < N - j; i++) {
+          const a = vbase+rs0+i, b = vbase+rs0+i+1, c = vbase+rs1+i;
+          idx.push(a, b, c);
+          if (i < N - j - 1) idx.push(b, vbase+rs1+i+1, c);
+        }
+      }
     }
-    for (const i of tris) idx.push(rb + i);
 
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
@@ -1266,6 +1290,7 @@ function pointInPolygon(px, pz, ring) {
 // ─── Tile manager ────────────────────────────────────────────────────────────
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const nextFrame = () => new Promise(r => requestAnimationFrame(() => r()));
 
 class TileManager {
   constructor(scene, mats, statusEl) {
@@ -1811,10 +1836,12 @@ function createBirdControls(camera, domElement, collision) {
   const MOVE_MAX    = MOVE_SPEED * 3;  // top speed (non-sprint) — 1.5× the previous max
   const ACCEL_TIME  = 3.0;             // seconds from standstill to top speed
   const DECEL_TIME  = 1.5;             // seconds to coast back to a stop
+  const BRAKE_TIME  = 0.5;             // seconds to brake to a stop when S is held
   const TURN_SPEED  = 0.022;   // A/D yaw turn rate (radians per frame)
   const LIFT_SPEED  = 0.30;    // spacebar ascent per frame
   const MIN_CLEAR   = 0.3;     // can skim almost to the ground
   const BIRD_RADIUS = 2.0;     // collision radius against building walls
+  const RAMP_GAIN   = 1.3;     // head-on into a wall → climb at 1.3× the blocked speed
   const PITCH_LIMIT = 1.1;     // clamp so you can't loop over the top
   const TOUCH_SPEED = LOOK_SPEED * 2.5;
 
@@ -1834,6 +1861,22 @@ function createBirdControls(camera, domElement, collision) {
   const _heading = new THREE.Vector3();
   const _vel     = new THREE.Vector3();  // current velocity vector (m/frame); coasts naturally
   const _euler   = new THREE.Euler(0, 0, 0, 'YXZ');
+
+  // Auto-pilot pitch easing. When a bounce or wall-ramp redirects the bird, the
+  // velocity changes instantly (physics) but the bird's nose eases toward the new
+  // pitch over a few frames so the redirect reads as a smooth curve, not a snap.
+  // null = no redirect in progress; otherwise the target pitch in radians.
+  let _pitchTarget = null;
+  const PITCH_EASE = 0.14;    // per-frame approach toward the target pitch
+
+  // Wall-ramp state. A head-on building hit sends the bird climbing vertically up
+  // the face (parallel to the wall); once it clears the roof it peels forward at a
+  // shallow climb. We remember the approach direction + speed to resume with.
+  // predictive: nose-rotation has begun but velocity hasn't been snapped yet.
+  const _ramp = { active: false, predictive: false, dirX: 0, dirZ: 0, speed: 0, camPitch: 0 };
+  const RAMP_CLIMB_PITCH = 1.45;            // ~83°: nose near-vertical up the wall
+  const RAMP_EXIT_ANGLE  = Math.PI / 6;     // 30° forward climb once over the roof
+  const WALL_LOOK        = 3;               // frames ahead for predictive wall detection
 
   const keys   = new Set();
   const typing = e => e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
@@ -1937,6 +1980,7 @@ function createBirdControls(camera, domElement, collision) {
     getYaw()   { return headYaw; },
     getPitch() { return headPitch; },
     getRoll()  { return roll; },
+    getSpeed() { return _vel.length(); },
     setFisheye(on) { fisheyeMode = on; updateCamera(); },
     init(x, y, z) { birdPos.set(x, y, z); updateCamera(); },
     update() {
@@ -1954,19 +1998,26 @@ function createBirdControls(camera, domElement, collision) {
 
       // Velocity-based movement. _vel carries both direction and speed so coasting
       // is natural — just bleed the magnitude each frame when not thrusting.
-      const thrusting = keys.has('KeyW') || keys.has('KeyS') || mouseThrust;
+      // S is the brake (not reverse): it overrides the throttle and decelerates
+      // the current velocity quickly, regardless of which way the bird is facing.
+      const braking   = keys.has('KeyS');
+      const thrusting = !braking && (keys.has('KeyW') || mouseThrust);
       const topSpeed  = MOVE_MAX * sprint;
 
-      if (thrusting) {
+      if (braking) {
+        const curSpeed = _vel.length();
+        const brake    = MOVE_MAX / BRAKE_TIME * dt;
+        if (curSpeed <= brake) _vel.set(0, 0, 0);
+        else                   _vel.multiplyScalar((curSpeed - brake) / curSpeed);
+      } else if (thrusting) {
         // Build desired direction. W and left-click are NOT additive in speed —
         // directions are summed then normalised so holding both doesn't go faster.
         const tx = new THREE.Vector3();
         if (keys.has('KeyW'))  tx.add(getHeading());
-        if (keys.has('KeyS'))  tx.sub(getHeading());
         if (mouseThrust) {
           tx.add(getLook());
           headYaw   += (camYaw   - headYaw)   * 0.12;
-          headPitch += (camPitch - headPitch) * 0.12;
+          if (!_ramp.active) headPitch += (camPitch - headPitch) * 0.12;
         }
         if (tx.lengthSq() > 1e-6) {
           tx.normalize();
@@ -1977,9 +2028,11 @@ function createBirdControls(camera, domElement, collision) {
           const cap      = topSpeed + DIVE_BOOST * dive;       // dive can exceed top speed
           const accel    = (topSpeed / ACCEL_TIME) * (1 + 2 * dive);
           const curSpeed = _vel.length();
-          let   newSpeed;
-          if (curSpeed > cap) newSpeed = Math.max(cap, curSpeed - (MOVE_MAX / DECEL_TIME) * dt);
-          else                newSpeed = Math.min(curSpeed + accel * dt, cap);
+          // Never bleed speed while actively thrusting — only accelerate up to cap
+          // or hold steady if already at/above it. Speed only decays in the else branch.
+          const newSpeed = curSpeed >= cap
+            ? curSpeed
+            : Math.min(curSpeed + accel * dt, cap);
           _vel.copy(tx).multiplyScalar(newSpeed);
         }
       } else {
@@ -1994,18 +2047,87 @@ function createBirdControls(camera, domElement, collision) {
       }
 
       if (_vel.lengthSq() > 1e-8) {
-        // Building collision: try the full move; if it lands inside a building
-        // (below its roof), slide along whichever horizontal axis is clear and
-        // kill the blocked component. Vertical motion is always allowed so the
-        // bird can climb/dive over rooftops. Flying above roofs stays clear.
         const cf = collision && collision.fn;
+        // During an active wall climb, force vertical movement before computing
+        // nx/nz/ny so the collision test checks straight above (has the wall
+        // cleared?) rather than in the heading direction. Without this, as
+        // headPitch rotates toward vertical the heading-based velocity has
+        // nx ≈ birdPos.x and ny well above the building, causing a premature
+        // peel-off that oscillates and feels like being stuck.
+        if (_ramp.active && !_ramp.predictive) {
+          _vel.set(0, _ramp.speed, 0);
+        }
         const nx = birdPos.x + _vel.x, nz = birdPos.z + _vel.z, ny = birdPos.y + _vel.y;
+
+        // ── Predictive wall detection ──────────────────────────────────────────
+        // Check WALL_LOOK frames ahead at current height. If a head-on wall is
+        // coming (both horizontal slides also blocked at that lookahead position),
+        // init the ramp state now so the nose starts rotating before impact.
+        // Velocity is NOT snapped yet — that happens on the actual collision frame.
+        // This gives the bird a smooth curved approach instead of an abrupt snap.
+        if (cf && !_ramp.active && !cf(birdPos.x, birdPos.z, birdPos.y, BIRD_RADIUS)) {
+          const px = birdPos.x + _vel.x * WALL_LOOK, pz = birdPos.z + _vel.z * WALL_LOOK;
+          if (cf(px, pz, birdPos.y, BIRD_RADIUS)
+              && cf(px, birdPos.z, birdPos.y, BIRD_RADIUS)
+              && cf(birdPos.x, pz, birdPos.y, BIRD_RADIUS)) {
+            const horizSpeed = Math.hypot(_vel.x, _vel.z);
+            _ramp.active     = true;
+            _ramp.predictive = true;
+            _ramp.dirX       = horizSpeed > 1e-4 ? _vel.x / horizSpeed : getHeading().x;
+            _ramp.dirZ       = horizSpeed > 1e-4 ? _vel.z / horizSpeed : getHeading().z;
+            _ramp.speed      = Math.max(horizSpeed, MOVE_SPEED);
+            _pitchTarget     = RAMP_CLIMB_PITCH;   // begin nose rotation early
+          }
+        }
+
+        // ── Collision + ramp ───────────────────────────────────────────────────
         if (cf && cf(nx, nz, ny, BIRD_RADIUS)) {
-          if (!cf(nx, birdPos.z, ny, BIRD_RADIUS))      { birdPos.x = nx; _vel.z = 0; }
-          else if (!cf(birdPos.x, nz, ny, BIRD_RADIUS)) { birdPos.z = nz; _vel.x = 0; }
-          else { _vel.x = 0; _vel.z = 0; }
-          birdPos.y = ny;
+          // Slide tests use current y — building walls are vertical so clearance is
+          // a horizontal question. Skip slides entirely once ramp is active.
+          let doRamp = _ramp.active;
+          if (!doRamp) {
+            if      (!cf(nx,        birdPos.z, birdPos.y, BIRD_RADIUS)) { birdPos.x = nx; _vel.z = 0; birdPos.y = ny; }
+            else if (!cf(birdPos.x, nz,        birdPos.y, BIRD_RADIUS)) { birdPos.z = nz; _vel.x = 0; birdPos.y = ny; }
+            else    { doRamp = true; }
+          }
+          if (doRamp) {
+            if (!_ramp.active) {
+              // Fresh ramp — no predictive phase; capture everything now.
+              _ramp.active     = true;
+              _ramp.predictive = false;
+              _ramp.camPitch   = camPitch;
+              const horizSpeed = Math.hypot(_vel.x, _vel.z);
+              _ramp.dirX  = horizSpeed > 1e-4 ? _vel.x / horizSpeed : getHeading().x;
+              _ramp.dirZ  = horizSpeed > 1e-4 ? _vel.z / horizSpeed : getHeading().z;
+              _ramp.speed = Math.max(horizSpeed, MOVE_SPEED);
+            } else if (_ramp.predictive) {
+              // Predictive phase ends — wall actually reached; freeze camera now.
+              _ramp.predictive = false;
+              _ramp.camPitch   = camPitch;
+            }
+            _vel.set(0, _ramp.speed, 0);
+            birdPos.y += _ramp.speed;
+            _pitchTarget = RAMP_CLIMB_PITCH;
+          }
         } else {
+          if (_ramp.active && !_ramp.predictive) {
+            // Cleared the roof: peel off into a 30° forward climb.
+            const v = _ramp.speed;
+            const h = v * Math.cos(RAMP_EXIT_ANGLE);
+            _vel.set(_ramp.dirX * h, v * Math.sin(RAMP_EXIT_ANGLE), _ramp.dirZ * h);
+            _pitchTarget     = RAMP_EXIT_ANGLE;
+            _ramp.active     = false;
+            _ramp.predictive = false;
+          } else if (_ramp.active && _ramp.predictive) {
+            // Still in predictive approach — re-verify wall is still ahead.
+            // If the user has steered away, cancel the predictive state.
+            const cpx = birdPos.x + _vel.x * WALL_LOOK, cpz = birdPos.z + _vel.z * WALL_LOOK;
+            if (!cf || !cf(cpx, cpz, birdPos.y, BIRD_RADIUS)) {
+              _ramp.active     = false;
+              _ramp.predictive = false;
+              _pitchTarget     = null;
+            }
+          }
           birdPos.add(_vel);
         }
         moved = true;
@@ -2033,10 +2155,37 @@ function createBirdControls(camera, domElement, collision) {
 
       // Stay above the floor: terrain outside buildings, rooftop when over one
       // (so a dive lands the bird on the roof instead of sinking through it).
+      // A sharp downward hit bounces the bird back up: reflect the vertical
+      // velocity (with slight damping) so fast dives arc back toward the sky.
       const floorY = (collision && collision.floorFn)
         ? collision.floorFn(birdPos.x, birdPos.z)
         : (terrain ? terrain.sample(birdPos.x, birdPos.z) : 0);
-      if (birdPos.y < floorY + MIN_CLEAR) birdPos.y = floorY + MIN_CLEAR;
+      if (birdPos.y < floorY + MIN_CLEAR) {
+        birdPos.y = floorY + MIN_CLEAR;
+        if (_vel.y < -0.01) {
+          _vel.y = -_vel.y * 0.75;
+          // Aim the bird's nose at the reflected direction, but ease into it over
+          // the next frames (below) instead of snapping so the arc reads smoothly.
+          const horizSpeed = Math.hypot(_vel.x, _vel.z);
+          _pitchTarget = Math.atan2(_vel.y, Math.max(horizSpeed, 0.001));
+        }
+      }
+
+      // Animate any auto-pilot redirect (bounce or wall-ramp): ease headPitch toward
+      // the target. During a wall ramp the camera is disassociated — camPitch stays
+      // at the pre-impact vantage (so the player sees the bird climbing) and only
+      // resumes tracking once the ramp clears and the bird peels over the roof.
+      // Left-click (mouseThrust) always wins: it cancels the auto-pilot immediately
+      // so the peel-off 30° angle doesn't lock the user out of steering.
+      if (_pitchTarget !== null) {
+        if (mouseThrust && !_ramp.active) {
+          _pitchTarget = null;
+        } else {
+          headPitch += (_pitchTarget - headPitch) * PITCH_EASE;
+          if (!_ramp.active) camPitch += (_pitchTarget - camPitch) * PITCH_EASE;
+          if (Math.abs(_pitchTarget - headPitch) < 0.01) _pitchTarget = null;
+        }
+      }
 
       // Bank into turns: roll proportional to how fast the bird's heading changes.
       const dHead = headYaw - prevHeadYaw;
@@ -2137,6 +2286,7 @@ function initScene(collision) {
   const LABEL_DIST = 250;
   let fisheyeActive = true;   // speed-driven fisheye on by default; F3 toggles it off
   let lastTime = performance.now();
+  const speedEl = document.getElementById('speed');
 
   // ── Single-pass fisheye ────────────────────────────────────────────────────
   // The whole scene is rendered ONCE; the fisheye warp lives in every vertex
@@ -2177,6 +2327,10 @@ function initScene(collision) {
     const dt  = Math.min((now - lastTime) / 1000, 0.1);
     lastTime  = now;
     controls.update();
+    if (speedEl && dt > 0) {
+      const kmh = (controls.getSpeed() / dt * 3.6).toFixed(0);
+      speedEl.textContent = kmh + ' km/h';
+    }
     // Sync bird mesh: position + flight orientation (yaw, nose pitch, bank roll)
     birdMesh.position.copy(controls.birdPos);
     birdMesh.position.y += 0.1 * Math.sin(now * 0.002);   // gentle float bob
@@ -2193,16 +2347,17 @@ function initScene(collision) {
         for (const s of grp.children) s.visible = !warped && cp.distanceTo(s.position) < LABEL_DIST;
       }
     }
+    // Outline ribbons need the aspect every frame regardless of fisheye state.
+    FISH_U.uFishAspect.value = camera.aspect;
     if (fisheyeActive) {
       // Newly streamed-in tiles must also skip frustum culling (they'd otherwise
       // pop at the periphery). Cheap: a handful of merged meshes per tile.
       fishCullEnter();
-      FISH_U.uFishAspect.value = camera.aspect;
     }
     renderer.render(scene, camera);
   })();
 
-  return { scene, camera, controls, trainRef, labelsRef, ground };
+  return { scene, camera, controls, trainRef, labelsRef, ground, renderer };
 }
 
 // ─── Geocoding (OpenStreetMap Nominatim — no API key) ─────────────────────────
@@ -2310,7 +2465,7 @@ async function main() {
 
   // Mutable ref so controls (created first) can call collision once tiles arrive
   const collision = { fn: null };
-  const { scene, camera, controls, trainRef, labelsRef, ground } = initScene(collision);
+  const { scene, camera, controls, trainRef, labelsRef, ground, renderer } = initScene(collision);
 
   // Ask where to start, geocode it, then center the world there.
   const place = await promptLocation();
@@ -2397,10 +2552,15 @@ async function main() {
   const full = manager.regionTiles(0, 0, LOAD_RADIUS);
   manager.tilesTotal = core.keys.length;
 
+  // Fetch terrain, core OSM, and the full ring OSM all in parallel — the ring
+  // fetch usually completes around the same time as the others since it's
+  // network-bound. Building both regions behind the loading screen means the
+  // post-reveal freeze (ring geometry build on first use) never happens.
   setLoad('Loading terrain & map data…', 0.2);
-  const [terrainResult, coreOsm] = await Promise.all([
+  const [terrainResult, coreOsm, ringOsm] = await Promise.all([
     loadTerrain(),
     manager._fetchWithRetry(core.bbox, 'core', setLoad),
+    manager._fetchWithRetry(full.bbox, 'ring'),
   ]);
 
   terrain = terrainResult;
@@ -2416,15 +2576,25 @@ async function main() {
     controls.init(0, terrain.sample(0, 0) + BIRD_HEIGHT, 0);
   }
 
-  if (coreOsm) { setLoad('Building the city…', 0.9); await sleep(0); }
+  if (coreOsm) { setLoad('Building the city…', 0.80); await sleep(0); }
   manager._settleRegion(core.keys, coreOsm);
 
+  // Build the full ring synchronously while still behind the loading screen so
+  // no geometry build ever runs after reveal. seenIds dedup skips anything
+  // already ingested by the core pass.
+  if (ringOsm) { setLoad('Building surroundings…', 0.90); await sleep(0); }
+  manager._settleRegion(full.keys, ringOsm);
+  syncTrains();
+
+  // Warm-up: compile all shaders and force GPU buffer uploads before the
+  // overlay lifts so the bird is genuinely movable the instant it appears.
+  setLoad('Warming up…', 0.97);
+  renderer.compile(scene, camera);
+  for (let i = 0; i < 5; i++) await nextFrame();
+
   reveal();
-  // Background: full radius (dedup skips core tiles already loaded), then POIs
-  // last — they are off by default (F2) so there is no rush to fetch them.
-  manager.loadRegion(full.keys, full.bbox, 'ring')
-    .then(() => syncTrains())
-    .then(() => manager.loadPOIs(full.bbox));
+  // Background: only POIs remain (off by default; F2 to show).
+  manager.loadPOIs(full.bbox);
 }
 
 main();

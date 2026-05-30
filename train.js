@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL } from './fisheye.js?v=11.13';
+import { fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.32';
 
 // ─── Car dimensions (metres) ──────────────────────────────────────────────────
 const CAR_L    = 20;
@@ -37,16 +37,19 @@ const CAR_FRAG = /* glsl */`
   varying float vDist;
   varying vec3  vNorm;
   ${FISH_FRAG_GLSL}
+  ${TOON_GLSL}
   void main() {
     fishClip();
     float fade = 1.0 - smoothstep(uNear, uFar, vDist);
     if (fade < 0.01) discard;
     if (uEndFade < 0.01) discard;
-    vec3  L    = normalize(vec3(0.5, 1.0, 0.3));
-    float diff = max(dot(normalize(vNorm), L), 0.0);
+    vec3  N = normalize(vNorm);
+    vec3  V = normalize(-vFishView);
+    vec3  L = normalize(vec3(0.5, 1.0, 0.3));
+    vec3  shaded = celShade(uColor, N, V, L);
     // Solid (uXray=0): full opacity. X-ray (uXray=1): the dim per-car opacity.
     float baseOp = mix(1.0, uOpacity, uXray);
-    gl_FragColor = vec4(uColor * (0.55 + 0.45 * diff), baseOp * uEndFade * fade);
+    gl_FragColor = vec4(shaded, baseOp * uEndFade * fade);
   }
 `;
 

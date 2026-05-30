@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v11.13 -->
+  <meta charset="UTF-8"><!-- v11.32 -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -158,6 +158,19 @@
       pointer-events: none;
       user-select: none;
     }
+
+    #speed {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.04em;
+      opacity: 0.7;
+      pointer-events: none;
+      user-select: none;
+    }
   </style>
 </head>
 <body>
@@ -172,7 +185,7 @@
     <div id="search-msg"></div>
     <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
     <div id="load-msg"></div>
-    <div id="load-version">v11.13</div>
+    <div id="load-version">v11.32</div>
   </div>
 
   <div id="overlay">
@@ -180,10 +193,11 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v11.13</div>
+  <div id="version">v11.32</div>
+  <div id="speed"></div>
 
   <div id="hint">
-    Mouse · Look &nbsp;|&nbsp; Hold Left-click · Fly forward &nbsp;|&nbsp; Space · Ascend<br>
+    Mouse · Look &nbsp;|&nbsp; W / Left-click · Fly forward &nbsp;|&nbsp; S · Brake &nbsp;|&nbsp; Space · Ascend<br>
     A/D · Turn &nbsp;|&nbsp; Shift · Sprint &nbsp;|&nbsp; Right-click · X-ray<br>
     F1 · Names &nbsp;|&nbsp; F2 · POIs &nbsp;|&nbsp; F3 · Fisheye &nbsp;|&nbsp; Esc · Release
   </div>
@@ -197,6 +211,6 @@
     }
   }
   </script>
-  <script type="module" src="main.js?v=11.13"></script>
+  <script type="module" src="main.js?v=11.30"></script>
 </body>
 </html>
