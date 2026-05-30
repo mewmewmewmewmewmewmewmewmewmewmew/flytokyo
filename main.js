@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.38';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.38';
+import { TrainSystem } from './train.js?v=11.39';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.39';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1903,6 +1903,7 @@ function createBirdControls(camera, domElement, collision) {
   // null = no redirect in progress; otherwise the target pitch in radians.
   let _pitchTarget = null;
   const PITCH_EASE = 0.14;    // per-frame approach toward the target pitch
+  let _fishBlend = 0;         // smoothed fisheye blend (eased toward the speed-driven target)
 
   // Wall-ramp state. A head-on building hit sends the bird climbing vertically up
   // the face (parallel to the wall); once it clears the roof it peels forward at a
@@ -2176,14 +2177,17 @@ function createBirdControls(camera, domElement, collision) {
         moved = true;
       }
 
-      // Speed-driven fisheye with a very slow onset: ~5% warp at 140 km/h
-      // (tt≈0.62), rising to full fisheye at top speed (227 km/h). The high
-      // power keeps low/medium cruising in plain perspective and only swings
-      // the lens in near the top. The angle widens 120°→220° over the first
-      // band, then 220°→250° through the sprint band.
-      const tt    = _vel.length() / MOVE_MAX;
-      const e     = Math.min(tt, 1);
-      const blend = Math.pow(e, 6.2);  // 5% at tt≈0.62 (140 km/h), 100% at top
+      // Speed-driven fisheye, keyed to ACTUAL km/h (NOT the frame-dependent
+      // fraction of MOVE_MAX) so the warp matches the on-screen speed readout
+      // on any device/framerate. Zero below 120 km/h, ~5% at 140, easing up to
+      // full fisheye by 240 km/h — a slow, gradual rise. The result is smoothed
+      // frame-to-frame so dt jitter never makes the warp flicker or jump.
+      const kmh   = dt > 0 ? _vel.length() / dt * 3.6 : 0;
+      const kp    = Math.max(0, Math.min(1, (kmh - 120) / (240 - 120)));
+      const target = Math.pow(kp, 1.67);  // 0 below 120 km/h, 5% at 140, 100% at 240
+      _fishBlend  += (target - _fishBlend) * 0.06;  // ease toward target (gradual, jitter-free)
+      const blend  = _fishBlend;
+      const tt     = _vel.length() / MOVE_MAX;  // still drives the FOV-angle growth below
       // FOV widens with speed: rest→max over band 0-1, max→sprint over 1-2, then
       // keeps opening sprint→dive over 2-4 as a dive pushes past top speed.
       let fovDeg;
