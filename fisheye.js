@@ -79,7 +79,7 @@ export const FISH_PROJ_GLSL = /* glsl */`
     // the blended result can land far off-screen and drag its triangle into a
     // stretched corner smear. Cap the radius in the fisheye's elliptical metric
     // (x, y/a) at just past the disc edge, keeping direction; fragment fishClip()
-    // still trims to the exact FOV. This is the real fix for the corner stretch.
+    // still trims to the exact FOV.
     float er  = length(vec2(ndc.x, ndc.y / a));
     float lim = s * 1.12;
     if (er > lim) ndc.xy *= lim / er;
