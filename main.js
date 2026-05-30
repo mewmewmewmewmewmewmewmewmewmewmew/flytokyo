@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.17';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.17';
+import { TrainSystem } from './train.js?v=11.18';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.18';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1835,6 +1835,7 @@ function createBirdControls(camera, domElement, collision) {
   const MOVE_MAX    = MOVE_SPEED * 3;  // top speed (non-sprint) — 1.5× the previous max
   const ACCEL_TIME  = 3.0;             // seconds from standstill to top speed
   const DECEL_TIME  = 1.5;             // seconds to coast back to a stop
+  const BRAKE_TIME  = 0.5;             // seconds to brake to a stop when S is held
   const TURN_SPEED  = 0.022;   // A/D yaw turn rate (radians per frame)
   const LIFT_SPEED  = 0.30;    // spacebar ascent per frame
   const MIN_CLEAR   = 0.3;     // can skim almost to the ground
@@ -1979,15 +1980,22 @@ function createBirdControls(camera, domElement, collision) {
 
       // Velocity-based movement. _vel carries both direction and speed so coasting
       // is natural — just bleed the magnitude each frame when not thrusting.
-      const thrusting = keys.has('KeyW') || keys.has('KeyS') || mouseThrust;
+      // S is the brake (not reverse): it overrides the throttle and decelerates
+      // the current velocity quickly, regardless of which way the bird is facing.
+      const braking   = keys.has('KeyS');
+      const thrusting = !braking && (keys.has('KeyW') || mouseThrust);
       const topSpeed  = MOVE_MAX * sprint;
 
-      if (thrusting) {
+      if (braking) {
+        const curSpeed = _vel.length();
+        const brake    = MOVE_MAX / BRAKE_TIME * dt;
+        if (curSpeed <= brake) _vel.set(0, 0, 0);
+        else                   _vel.multiplyScalar((curSpeed - brake) / curSpeed);
+      } else if (thrusting) {
         // Build desired direction. W and left-click are NOT additive in speed —
         // directions are summed then normalised so holding both doesn't go faster.
         const tx = new THREE.Vector3();
         if (keys.has('KeyW'))  tx.add(getHeading());
-        if (keys.has('KeyS'))  tx.sub(getHeading());
         if (mouseThrust) {
           tx.add(getLook());
           headYaw   += (camYaw   - headYaw)   * 0.12;
