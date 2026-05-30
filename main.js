@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.20';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.20';
+import { TrainSystem } from './train.js?v=11.21';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.21';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2079,10 +2079,17 @@ function createBirdControls(camera, domElement, collision) {
 
       // Stay above the floor: terrain outside buildings, rooftop when over one
       // (so a dive lands the bird on the roof instead of sinking through it).
+      // A sharp downward hit bounces the bird back up: reflect the vertical
+      // velocity (with slight damping) so fast dives arc back toward the sky.
       const floorY = (collision && collision.floorFn)
         ? collision.floorFn(birdPos.x, birdPos.z)
         : (terrain ? terrain.sample(birdPos.x, birdPos.z) : 0);
-      if (birdPos.y < floorY + MIN_CLEAR) birdPos.y = floorY + MIN_CLEAR;
+      if (birdPos.y < floorY + MIN_CLEAR) {
+        birdPos.y = floorY + MIN_CLEAR;
+        if (_vel.y < -0.01) {
+          _vel.y = -_vel.y * 0.75;   // reflect + light damping; x/z carry on unchanged
+        }
+      }
 
       // Bank into turns: roll proportional to how fast the bird's heading changes.
       const dHead = headYaw - prevHeadYaw;
