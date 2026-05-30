@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.27';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.27';
+import { TrainSystem } from './train.js?v=11.28';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.28';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2079,16 +2079,13 @@ function createBirdControls(camera, domElement, collision) {
                 _ramp.dirX = h.x;
                 _ramp.dirZ = h.z;
               }
-              // Capture climb speed once — capped at MOVE_MAX so a dive impact can't
-              // produce a runaway exit speed. Per-frame recalculation of climb from
-              // horizSpeed * RAMP_GAIN caused a positive-feedback loop (speed growing
-              // 1.3× per frame while pitch was still near-horizontal), launching the
-              // bird at thousands of km/h on peel-off.
-              const totalSpeed = _vel.length();
-              _ramp.speed = Math.min(
-                Math.max(Math.hypot(_vel.x, _vel.z) * RAMP_GAIN, totalSpeed * 0.6, MOVE_SPEED),
-                MOVE_MAX
-              );
+              // Capture climb speed once at impact and never update it — that's what
+              // killed the feedback loop in v11.28 (per-frame recalc × RAMP_GAIN
+              // kept growing the speed 1.3× per frame). No cap needed here because
+              // we never re-run this line while _ramp.active, so there's no way for
+              // the value to grow. Approach momentum is preserved: hit the wall at
+              // 300 km/h and you climb at 300 km/h.
+              _ramp.speed = Math.max(_vel.length(), MOVE_SPEED);
             }
             _vel.set(0, _ramp.speed, 0);
             birdPos.y += _ramp.speed;
