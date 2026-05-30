@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.19';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.19';
+import { TrainSystem } from './train.js?v=11.20';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.20';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2449,10 +2449,15 @@ async function main() {
   const full = manager.regionTiles(0, 0, LOAD_RADIUS);
   manager.tilesTotal = core.keys.length;
 
+  // Fetch terrain, core OSM, and the full ring OSM all in parallel — the ring
+  // fetch usually completes around the same time as the others since it's
+  // network-bound. Building both regions behind the loading screen means the
+  // post-reveal freeze (ring geometry build on first use) never happens.
   setLoad('Loading terrain & map data…', 0.2);
-  const [terrainResult, coreOsm] = await Promise.all([
+  const [terrainResult, coreOsm, ringOsm] = await Promise.all([
     loadTerrain(),
     manager._fetchWithRetry(core.bbox, 'core', setLoad),
+    manager._fetchWithRetry(full.bbox, 'ring'),
   ]);
 
   terrain = terrainResult;
@@ -2468,24 +2473,25 @@ async function main() {
     controls.init(0, terrain.sample(0, 0) + BIRD_HEIGHT, 0);
   }
 
-  if (coreOsm) { setLoad('Building the city…', 0.9); await sleep(0); }
+  if (coreOsm) { setLoad('Building the city…', 0.80); await sleep(0); }
   manager._settleRegion(core.keys, coreOsm);
 
-  // Warm-up: the first frame that draws the freshly-built city pays a one-time
-  // cost (shader compile + geometry upload) that froze movement for ~1s right
-  // as the loading screen lifted. Force that cost to happen NOW, behind the
-  // overlay — compile all materials, then render a few real frames — so by the
-  // time we reveal, the bird is actually movable rather than just "Ready".
+  // Build the full ring synchronously while still behind the loading screen so
+  // no geometry build ever runs after reveal. seenIds dedup skips anything
+  // already ingested by the core pass.
+  if (ringOsm) { setLoad('Building surroundings…', 0.90); await sleep(0); }
+  manager._settleRegion(full.keys, ringOsm);
+  syncTrains();
+
+  // Warm-up: compile all shaders and force GPU buffer uploads before the
+  // overlay lifts so the bird is genuinely movable the instant it appears.
   setLoad('Warming up…', 0.97);
   renderer.compile(scene, camera);
-  for (let i = 0; i < 3; i++) await nextFrame();
+  for (let i = 0; i < 5; i++) await nextFrame();
 
   reveal();
-  // Background: full radius (dedup skips core tiles already loaded), then POIs
-  // last — they are off by default (F2) so there is no rush to fetch them.
-  manager.loadRegion(full.keys, full.bbox, 'ring')
-    .then(() => syncTrains())
-    .then(() => manager.loadPOIs(full.bbox));
+  // Background: only POIs remain (off by default; F2 to show).
+  manager.loadPOIs(full.bbox);
 }
 
 main();
