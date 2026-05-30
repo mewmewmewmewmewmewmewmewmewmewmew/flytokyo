@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.29';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.29';
+import { TrainSystem } from './train.js?v=11.30';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.30';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2173,7 +2173,7 @@ function createBirdControls(camera, domElement, collision) {
           _pitchTarget = null;
         } else {
           headPitch += (_pitchTarget - headPitch) * PITCH_EASE;
-          if (!_ramp.active || _ramp.predictive) camPitch += (_pitchTarget - camPitch) * PITCH_EASE;
+          if (!_ramp.active) camPitch += (_pitchTarget - camPitch) * PITCH_EASE;
           if (Math.abs(_pitchTarget - headPitch) < 0.01) _pitchTarget = null;
         }
       }
