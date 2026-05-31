@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.61';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.61';
+import { TrainSystem } from './train.js?v=11.62';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.62';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2025,6 +2025,11 @@ function createBirdControls(camera, domElement, collision) {
       camPitch  = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, camPitch - dy * TOUCH_SPEED));
       updateCamera();
       dispatcher.dispatchEvent({ type: 'change' });
+      // Drag = fly toward where camera is aiming (same as left-click + drag).
+      // Cancel the hold-to-walk timer so thrust kicks in immediately on drag.
+      if (touchHoldTimer) { clearTimeout(touchHoldTimer); touchHoldTimer = null; }
+      keys.delete('KeyW');
+      mouseThrust = true;
     }
     e.preventDefault();
   }, { passive: false });
@@ -2034,6 +2039,7 @@ function createBirdControls(camera, domElement, collision) {
     clearTimeout(touchHoldTimer);
     touchHoldTimer = null;
     keys.delete('KeyW');
+    mouseThrust = false;
   });
 
   let prevHeadYaw = 0;
