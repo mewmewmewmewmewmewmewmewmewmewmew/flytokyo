@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.47';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.47';
+import { TrainSystem } from './train.js?v=11.48';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.48';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2397,7 +2397,7 @@ function initScene(collision) {
       const kmh = (controls.getSpeed() / dt * 3.6).toFixed(0);
       speedEl.textContent = kmh + ' km/h';
     }
-    scheduleReverseGeocode(controls.birdPos.x, controls.birdPos.z, now);
+    updateAreaName(controls.birdPos.x, controls.birdPos.z, now);
     // Sync bird mesh: position + flight orientation (yaw, nose pitch, bank roll)
     birdMesh.position.copy(controls.birdPos);
     birdMesh.position.y += 0.1 * Math.sin(now * 0.002);   // gentle float bob
@@ -2522,32 +2522,61 @@ function setPlaceLabel(name) {
   if (h1) h1.textContent = name;
 }
 
-// Reverse-geocode the current world position and update the area label.
-// Fires at most once per 25 s and only when the bird has moved ≥ 300 m,
-// so it stays responsive without hammering Nominatim.
-let _rgLastX = 0, _rgLastZ = 0, _rgLastTime = -Infinity, _rgPending = false;
-function scheduleReverseGeocode(worldX, worldZ, now) {
-  if (_rgPending) return;
-  if (now - _rgLastTime < 25_000) return;
-  const dx = worldX - _rgLastX, dz = worldZ - _rgLastZ;
-  if (dx * dx + dz * dz < 300 * 300) return;
-  _rgLastX = worldX; _rgLastZ = worldZ; _rgLastTime = now;
-  _rgPending = true;
-  const lat = (CENTER_LAT - worldZ / M_PER_DEG_LAT).toFixed(5);
-  const lon = (CENTER_LON + worldX / M_PER_DEG_LON).toFixed(5);
-  fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`,
+// Per-tile area names. Each tile (the same ~550 m grid the city geometry
+// streams in) gets reverse-geocoded once; the result is cached by tile key so
+// re-entering a known tile switches the label INSTANTLY with no network call.
+// The label updates the moment you cross a tile boundary, not on a timer.
+const _tileNames = new Map();   // tileKey → name string ('' = looked up, none found)
+let   _rgTileKey = null;        // tile the label currently reflects
+let   _rgLastFetch = -Infinity; // throttle floor for Nominatim (politeness only)
+
+// The world is centred on the start location, so its tile is (0,0) in world
+// space → tile of CENTER_LAT/LON. Cache the user's chosen name there so the
+// label doesn't get reverse-geocoded away the moment the flight begins.
+function seedStartTile(name) {
+  const { tx, ty } = latLonToTile(CENTER_LAT, CENTER_LON);
+  const key = `${tx},${ty}`;
+  _tileNames.set(key, name);
+  _rgTileKey = key;
+}
+
+function updateAreaName(worldX, worldZ, now) {
+  const { lat, lon } = worldToGeo(worldX, worldZ);
+  const { tx, ty } = latLonToTile(lat, lon);
+  const key = `${tx},${ty}`;
+  if (key === _rgTileKey) return;            // same tile → nothing to do
+
+  // Known tile: switch instantly from cache.
+  if (_tileNames.has(key)) {
+    _rgTileKey = key;
+    const name = _tileNames.get(key);
+    if (name) setPlaceLabel(name);
+    return;
+  }
+
+  // Unknown tile: reverse-geocode its CENTRE once. Throttle to ≥ 1.2 s between
+  // network calls (Nominatim asks for ≤ 1 req/s) but don't block tile switching
+  // for tiles we already know. _rgTileKey only advances on success, so a failed
+  // or rate-limited lookup is retried when you next move.
+  if (now - _rgLastFetch < 1200) return;
+  _rgLastFetch = now;
+  const bbox = tileToBBox(tx, ty);
+  const clat = ((bbox.south + bbox.north) / 2).toFixed(5);
+  const clon = ((bbox.west  + bbox.east)  / 2).toFixed(5);
+  fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${clat}&lon=${clon}`,
     { headers: { 'Accept': 'application/json' } })
     .then(r => r.json())
     .then(d => {
       const a = d.address || {};
       const big   = a.city || a.town || a.village || a.county || '';
-      const small  = a.suburb || a.neighbourhood || a.quarter || a.city_district || '';
-      const label  = big && small ? `${big} · ${small}` : big || small
-                   || (d.display_name || '').split(',')[0] || '';
-      if (label) setPlaceLabel(label);
+      const small = a.suburb || a.neighbourhood || a.quarter || a.city_district || '';
+      const name  = big && small ? `${big} · ${small}` : big || small
+                  || (d.display_name || '').split(',')[0] || '';
+      _tileNames.set(key, name);
+      _rgTileKey = key;
+      if (name) setPlaceLabel(name);
     })
-    .catch(() => {})
-    .finally(() => { _rgPending = false; });
+    .catch(() => { /* leave uncached so it retries on the next move */ });
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -2566,6 +2595,7 @@ async function main() {
   const place = await promptLocation();
   setCenter(place.lat, place.lon);
   setPlaceLabel(place.shortLabel);
+  seedStartTile(place.shortLabel);   // pin the chosen name to the start tile
 
   // Switch the loading screen from search mode to progress mode.
   document.getElementById('load-search').style.display = 'none';
