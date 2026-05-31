@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.56';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.56';
+import { TrainSystem } from './train.js?v=11.57';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.57';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -87,7 +87,13 @@ function terrainTY(lat, z) {
 class TerrainSampler {
   constructor(tiles, baseElev) {
     this.tiles = tiles;
-    this.baseElev = baseElev;
+    this.baseElev = baseElev;   // elevation (m) at the world origin; spawn = 0
+  }
+
+  // Absolute elevation in metres above sea level (sea = 0), for water detection.
+  sampleAbs(wx, wz) {
+    const { lat, lon } = worldToGeo(wx, wz);
+    return this.sampleLatLon(lat, lon);
   }
 
   sampleLatLon(lat, lon) {
@@ -2282,22 +2288,34 @@ function initScene(collision) {
   const camera = new THREE.PerspectiveCamera(90, innerWidth / innerHeight, 0.15, 2000);
   camera.position.set(0, 1.6, 0);
 
+  const groundGeo = new THREE.PlaneGeometry(8000, 8000, 256, 256);
+  // Per-vertex absolute elevation (metres, sea level = 0), filled once terrain
+  // loads. The shader paints anything at/below sea level as ocean — this is what
+  // makes the sea/bay appear (OSM maps the coast as a line, not a fillable area,
+  // so the ocean can't come from polygon data the way rivers/lakes do).
+  groundGeo.setAttribute('aElev',
+    new THREE.Float32BufferAttribute(new Float32Array(groundGeo.attributes.position.count), 1));
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(8000, 8000, 256, 256),
+    groundGeo,
     new THREE.ShaderMaterial({
       uniforms: {
         uGround: { value: new THREE.Color(0xd8dce8) },
+        uWater:  { value: new THREE.Color(0x4488bb) },   // matches river/lake fill
         uFar:    { value: FADE_FAR },
+        uSeaOn:  { value: 0.0 },   // 0 until terrain loads (no false sea at y=0)
         ...fishUniforms(),
       },
       transparent: true,
       depthWrite: true,   // solid default: ground occludes underground tunnels/trains
       vertexShader: /* glsl */`
-        varying vec2 vXZ;
+        attribute float aElev;
+        varying vec2  vXZ;
+        varying float vElev;
         ${FISH_PROJ_GLSL}
         void main() {
           vec4 world = modelMatrix * vec4(position, 1.0);
           vXZ = world.xz;
+          vElev = aElev;
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
           vFishView = mv.xyz;
           gl_Position = projectVertex(mv);
@@ -2305,8 +2323,11 @@ function initScene(collision) {
       `,
       fragmentShader: /* glsl */`
         uniform vec3  uGround;
+        uniform vec3  uWater;
         uniform float uFar;
+        uniform float uSeaOn;
         varying vec2  vXZ;
+        varying float vElev;
         ${FISH_FRAG_GLSL}
         void main() {
           // Ground-specific fisheye clip. The ground is one flat colour, so its
@@ -2325,7 +2346,14 @@ function initScene(collision) {
           float d     = length(vXZ - cameraPosition.xz);
           float alpha = 1.0 - smoothstep(uFar * 0.5, uFar, d);
           if (alpha < 0.01) discard;
-          gl_FragColor = vec4(uGround, alpha);
+          // Sea: blend to water colour at/below sea level, with a soft shoreline
+          // band (0 → 0.5 m) so the coast isn't a hard jaggy line.
+          vec3 col = uGround;
+          if (uSeaOn > 0.5) {
+            float sea = 1.0 - smoothstep(-0.5, 0.5, vElev);
+            col = mix(uGround, uWater, sea);
+          }
+          gl_FragColor = vec4(col, alpha);
         }
       `,
     }),
@@ -2739,12 +2767,17 @@ async function main() {
   if (terrain) {
     // Displace ground plane vertices. PlaneGeometry is in XY before rotation.x = -π/2,
     // which maps local (x, y, z) → world (x, z, -y). To set world Y, set local Z.
-    const pos = ground.geometry.attributes.position;
+    const pos  = ground.geometry.attributes.position;
+    const elev = ground.geometry.attributes.aElev;
     for (let i = 0; i < pos.count; i++) {
-      pos.setZ(i, terrain.sample(pos.getX(i), -pos.getY(i)) - GROUND_SINK);
+      const wx = pos.getX(i), wz = -pos.getY(i);
+      pos.setZ(i, terrain.sample(wx, wz) - GROUND_SINK);
+      elev.setX(i, terrain.sampleAbs(wx, wz));   // absolute m above sea level
     }
-    pos.needsUpdate = true;
+    pos.needsUpdate  = true;
+    elev.needsUpdate = true;
     ground.geometry.computeVertexNormals();
+    ground.material.uniforms.uSeaOn.value = 1.0;   // terrain is in → enable the sea
     controls.init(0, terrain.sample(0, 0) + BIRD_HEIGHT, 0);
   }
 
