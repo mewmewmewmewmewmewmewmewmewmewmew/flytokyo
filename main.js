@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.66';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.66';
+import { TrainSystem } from './train.js?v=11.67';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.67';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2556,17 +2556,18 @@ function initScene(collision) {
   let flapFreq   = 2;     // current (eased) angular speed
   let flapBurst  = 0;     // seconds left in the current flapping burst
   let glideTimer = 1.0;   // seconds until the next burst is allowed to start
-  let wingTuck   = 0;     // 0 = spread, 1 = swept-back dive tuck (eased)
+  let wingTuck   = 0;     // 0 = spread, 1 = full dive tuck (eased toward dive steepness)
   // Per-beat randomisation so consecutive wingbeats differ in strength and tempo.
   let beatCount    = 0;   // increments every full 2π cycle
   let beatAmpScale = 1.0; // amplitude multiplier re-randomised each beat
   let beatFreqMul  = 1.0; // frequency multiplier re-randomised each beat
   const WING_LAG   = 1.0; // phase lag from shoulder to tip → travelling-wave flex
   const WING_TWIST = 0.22;// chordwise feathering amplitude
+  const DIVE_DIHEDRAL = Math.PI / 4;  // max upward wing slant in a full dive (45°)
 
-  // Deform one wing from its rest geometry: tuck (dive sweep) → twist (feather)
-  // → flap (span- and phase-dependent bend about the body axis). Recomputed
-  // from rest each frame so nothing accumulates/drifts.
+  // Deform one wing from its rest geometry: tuck (dive sweep + raised dihedral)
+  // → twist (feather) → flap (span- and phase-dependent bend about the body
+  // axis). Recomputed from rest each frame so nothing accumulates/drifts.
   function deformWing(mesh, amp, phase, tuck) {
     const ud = mesh.userData, sx = ud.sx, rest = ud.rest, tt = ud.tt;
     const arr = mesh.geometry.attributes.position.array;
@@ -2574,19 +2575,22 @@ function initScene(collision) {
       const t    = tt[k];
       const span = Math.pow(t, 1.25);               // tip flexes far more than root
       let x = rest[k*3], y = rest[k*3+1], z = rest[k*3+2];
-      // Dive tuck: fold span in, sweep tips back a little, drop slightly.
+      // Dive tuck: fold the span in and sweep the tips back a little.
       // (tips already sit at z+0.90 in rest pose; keep tuck sweep modest)
       if (tuck > 0.001) {
         z += tuck * span * 0.35;
         x -= sx   * tuck * span * 0.55;
-        y -= tuck * span * 0.07;
       }
       const ph = phase - WING_LAG * t;              // tip lags the shoulder
       // Twist about the spanwise (x) axis — feathers the chord with flap speed.
       const tw = sx * WING_TWIST * span * Math.cos(ph) * amp * (1 - tuck);
       if (tw) { const c = Math.cos(tw), s = Math.sin(tw); const ny = y*c - z*s, nz = y*s + z*c; y = ny; z = nz; }
-      // Flap about the body (z) axis: resting dihedral + phase-lagged bend.
-      const a = sx * (0.05 * span + amp * span * Math.sin(ph)) * (1 - 0.6 * tuck);
+      // Rotate about the body (z) axis: resting dihedral + a steady upward dive
+      // slant (constant across span → a straight raised V, up to 45°) + the
+      // phase-lagged flap bend (faded out as the wings tuck for the dive).
+      const a = sx * (0.05 * span
+                    + DIVE_DIHEDRAL * tuck
+                    + amp * span * Math.sin(ph) * (1 - 0.6 * tuck));
       const c = Math.cos(a), s = Math.sin(a);
       arr[k*3]   = x*c - y*s;
       arr[k*3+1] = x*s + y*c;
@@ -2616,10 +2620,13 @@ function initScene(collision) {
 
     // ── Wing flap ──────────────────────────────────────────────────────────
     // Occasional flapping bursts when cruising; while diving the wings stop
-    // flapping and tuck back into a swept glide.
+    // flapping and raise into a swept-back V, slanted up to 45° in proportion
+    // to how steep the dive is (nose-down pitch from ~11° toward vertical).
     if (wingR && wingL) {
-      const diving = controls.getPitch() < -0.35;       // nose pitched steeply down
-      wingTuck += ((diving ? 1 : 0) - wingTuck) * Math.min(dt * 4, 1);
+      const pitch    = controls.getPitch();             // <0 = nose-down (diving)
+      const diveFrac = Math.max(0, Math.min(1, (-pitch - 0.2) / (Math.PI / 2 - 0.2)));
+      const diving   = diveFrac > 0.05;
+      wingTuck += (diveFrac - wingTuck) * Math.min(dt * 4, 1);
 
       glideTimer -= dt;
       if (diving) flapBurst = 0;                          // never flap mid-dive
