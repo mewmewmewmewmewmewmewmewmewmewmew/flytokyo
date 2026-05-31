@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.57';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.57';
+import { TrainSystem } from './train.js?v=11.58';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.58';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2393,7 +2393,78 @@ function initScene(collision) {
   const LABEL_DIST = 250;
   let fisheyeActive = true;   // speed-driven fisheye on by default; F3 toggles it off
   let lastTime = performance.now();
-  const speedEl = document.getElementById('speed');
+  const speedEl    = document.getElementById('speed');
+  const compassEl  = document.getElementById('compass');
+  const compassCtx = compassEl ? compassEl.getContext('2d') : null;
+
+  // Heading tape: a 360px-wide horizontal strip.  The tape pixel-scrolls so each
+  // degree = 1 px; cardinals are labelled every 45° and tick marks every 10°.
+  function drawCompass(bearing) {
+    if (!compassCtx) return;
+    const W = compassEl.width, H = compassEl.height;
+    const cx = W / 2;
+    compassCtx.clearRect(0, 0, W, H);
+
+    // Semi-transparent pill background.
+    const bgR = compassCtx.createLinearGradient(0, 0, 0, H);
+    bgR.addColorStop(0,   'rgba(10,12,24,0.55)');
+    bgR.addColorStop(1,   'rgba(10,12,24,0.30)');
+    compassCtx.fillStyle = bgR;
+    const PX = 18, PY = 6;
+    compassCtx.beginPath();
+    compassCtx.roundRect(PX, PY, W - PX * 2, H - PY * 2, 6);
+    compassCtx.fill();
+
+    // Cardinal labels and tick marks.
+    const CARDS = { 0:'N', 45:'NE', 90:'E', 135:'SE', 180:'S', 225:'SW', 270:'W', 315:'NW' };
+    compassCtx.save();
+    compassCtx.beginPath();
+    compassCtx.rect(PX, 0, W - PX * 2, H);
+    compassCtx.clip();
+
+    for (let d = -180; d <= 180; d++) {
+      const deg = ((bearing + d) % 360 + 360) % 360;
+      const x   = cx + d;
+      const label = CARDS[deg];
+      const isMaj = deg % 45 === 0;
+      const isMed = !isMaj && deg % 10 === 0;
+      if (!isMaj && !isMed) continue;
+
+      const tickH = isMaj ? 10 : 6;
+      compassCtx.strokeStyle = isMaj ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.40)';
+      compassCtx.lineWidth   = isMaj ? 1.5 : 1;
+      compassCtx.beginPath();
+      compassCtx.moveTo(x, H - PY - tickH);
+      compassCtx.lineTo(x, H - PY);
+      compassCtx.stroke();
+
+      if (label) {
+        const isCard = deg % 90 === 0;
+        compassCtx.fillStyle = isCard ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.60)';
+        compassCtx.font = `${isCard ? 600 : 400} ${isCard ? 11 : 10}px system-ui,sans-serif`;
+        compassCtx.textAlign = 'center';
+        compassCtx.textBaseline = 'bottom';
+        compassCtx.fillText(label, x, H - PY - tickH - 3);
+      }
+    }
+    compassCtx.restore();
+
+    // Centre marker triangle pointing down at the current heading.
+    compassCtx.fillStyle = 'rgba(255,220,60,0.95)';
+    compassCtx.beginPath();
+    compassCtx.moveTo(cx,     PY + 2);
+    compassCtx.lineTo(cx - 5, PY + 10);
+    compassCtx.lineTo(cx + 5, PY + 10);
+    compassCtx.closePath();
+    compassCtx.fill();
+
+    // Current bearing readout below the triangle.
+    compassCtx.fillStyle = 'rgba(255,255,255,0.90)';
+    compassCtx.font = '600 10px system-ui,sans-serif';
+    compassCtx.textAlign = 'center';
+    compassCtx.textBaseline = 'top';
+    compassCtx.fillText(Math.round(bearing) + '°', cx, PY + 12);
+  }
 
   // ── Single-pass fisheye ────────────────────────────────────────────────────
   // The whole scene is rendered ONCE; the fisheye warp lives in every vertex
@@ -2438,6 +2509,7 @@ function initScene(collision) {
       const kmh = (controls.getSpeed() / dt * 3.6).toFixed(0);
       speedEl.textContent = kmh + ' km/h';
     }
+    drawCompass(((controls.getYaw() * 180 / Math.PI) % 360 + 360) % 360);
     updateAreaName(controls.birdPos.x, controls.birdPos.z);
     // Sync bird mesh: position + flight orientation (yaw, nose pitch, bank roll)
     birdMesh.position.copy(controls.birdPos);
