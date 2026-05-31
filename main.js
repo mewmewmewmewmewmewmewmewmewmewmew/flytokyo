@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.59';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.59';
+import { TrainSystem } from './train.js?v=11.60';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.60';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2415,21 +2415,24 @@ function initScene(collision) {
     compassCtx.roundRect(PX, PY, W - PX * 2, H - PY * 2, 6);
     compassCtx.fill();
 
-    // Cardinal labels and tick marks.
+    // Cardinal labels and tick marks. Iterate over the MARK degrees themselves
+    // (every 10°) and place each at its signed offset from the current heading,
+    // so the tape scrolls smoothly — testing pixel offsets for divisibility fails
+    // because `bearing` is fractional and never lands exactly on a multiple.
     const CARDS = { 0:'N', 45:'NE', 90:'E', 135:'SE', 180:'S', 225:'SW', 270:'W', 315:'NW' };
     compassCtx.save();
     compassCtx.beginPath();
     compassCtx.rect(PX, 0, W - PX * 2, H);
     compassCtx.clip();
 
-    for (let d = -180; d <= 180; d++) {
-      const deg = ((bearing + d) % 360 + 360) % 360;
-      const x   = cx + d;
-      const label = CARDS[deg];
-      const isMaj = deg % 45 === 0;
-      const isMed = !isMaj && deg % 10 === 0;
-      if (!isMaj && !isMed) continue;
+    for (let deg = 0; deg < 360; deg += 10) {
+      // Signed shortest angular difference from the heading → pixel offset (1°/px).
+      let diff = deg - bearing;
+      diff = ((diff + 180) % 360 + 360) % 360 - 180;
+      const x = cx + diff;
+      if (x < PX || x > W - PX) continue;
 
+      const isMaj = deg % 45 === 0;
       const tickH = isMaj ? 10 : 6;
       compassCtx.strokeStyle = isMaj ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.40)';
       compassCtx.lineWidth   = isMaj ? 1.5 : 1;
@@ -2438,6 +2441,7 @@ function initScene(collision) {
       compassCtx.lineTo(x, H - PY);
       compassCtx.stroke();
 
+      const label = CARDS[deg];
       if (label) {
         const isCard = deg % 90 === 0;
         compassCtx.fillStyle = isCard ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.60)';
@@ -2645,6 +2649,7 @@ let   _rgTileKey = null;        // tile the label currently reflects
 const _rgQueue   = [];          // pending tile lookups: { tx, ty, key, isCurrent }
 const _rgQueued  = new Set();   // keys already cached or queued (avoid duplicates)
 let   _rgBusy    = false;       // a lookup is in flight / the drain loop is running
+let   _rgStarted = false;       // true once a start location is chosen (gates lookups)
 
 // The world is centred on the start location, so its tile is the tile of
 // CENTER_LAT/LON. Cache the user's chosen name there so the label doesn't get
@@ -2655,6 +2660,7 @@ function seedStartTile(name) {
   _tileNames.set(key, name);
   _rgQueued.add(key);
   _rgTileKey = key;
+  _rgStarted = true;            // the animate loop may now update the area label
 }
 
 // Parse a Nominatim /reverse response into a 'City · Suburb' style label.
@@ -2705,6 +2711,7 @@ function _rgEnqueue(tx, ty, isCurrent) {
 }
 
 function updateAreaName(worldX, worldZ) {
+  if (!_rgStarted) return;   // don't geocode (or clobber "Where to?") before a start is chosen
   const { lat, lon } = worldToGeo(worldX, worldZ);
   const { tx, ty } = latLonToTile(lat, lon);
   const key = `${tx},${ty}`;
