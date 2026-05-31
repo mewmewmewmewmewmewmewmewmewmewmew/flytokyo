@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.46';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.46';
+import { TrainSystem } from './train.js?v=11.47';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.47';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2397,6 +2397,7 @@ function initScene(collision) {
       const kmh = (controls.getSpeed() / dt * 3.6).toFixed(0);
       speedEl.textContent = kmh + ' km/h';
     }
+    scheduleReverseGeocode(controls.birdPos.x, controls.birdPos.z, now);
     // Sync bird mesh: position + flight orientation (yaw, nose pitch, bank roll)
     birdMesh.position.copy(controls.birdPos);
     birdMesh.position.y += 0.1 * Math.sin(now * 0.002);   // gentle float bob
@@ -2519,6 +2520,34 @@ function setPlaceLabel(name) {
   const h1 = document.querySelector('#overlay h1');
   if (lt) lt.textContent = name;
   if (h1) h1.textContent = name;
+}
+
+// Reverse-geocode the current world position and update the area label.
+// Fires at most once per 25 s and only when the bird has moved ≥ 300 m,
+// so it stays responsive without hammering Nominatim.
+let _rgLastX = 0, _rgLastZ = 0, _rgLastTime = -Infinity, _rgPending = false;
+function scheduleReverseGeocode(worldX, worldZ, now) {
+  if (_rgPending) return;
+  if (now - _rgLastTime < 25_000) return;
+  const dx = worldX - _rgLastX, dz = worldZ - _rgLastZ;
+  if (dx * dx + dz * dz < 300 * 300) return;
+  _rgLastX = worldX; _rgLastZ = worldZ; _rgLastTime = now;
+  _rgPending = true;
+  const lat = (CENTER_LAT - worldZ / M_PER_DEG_LAT).toFixed(5);
+  const lon = (CENTER_LON + worldX / M_PER_DEG_LON).toFixed(5);
+  fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`,
+    { headers: { 'Accept': 'application/json' } })
+    .then(r => r.json())
+    .then(d => {
+      const a = d.address || {};
+      const big   = a.city || a.town || a.village || a.county || '';
+      const small  = a.suburb || a.neighbourhood || a.quarter || a.city_district || '';
+      const label  = big && small ? `${big} · ${small}` : big || small
+                   || (d.display_name || '').split(',')[0] || '';
+      if (label) setPlaceLabel(label);
+    })
+    .catch(() => {})
+    .finally(() => { _rgPending = false; });
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
