@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.43';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.43';
+import { TrainSystem } from './train.js?v=11.44';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.44';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1882,10 +1882,10 @@ function createBirdControls(camera, domElement, collision) {
 
   // Speed-driven fisheye: the warp eases in from a normal view (rest) to a full
   // fisheye at top speed, and the angle grows wider the faster you go.
-  const FOV_REST_DEG   = 110;  // angle the warp eases up from (barely visible at low speed)
-  const FOV_MAX_DEG    = 160;  // at top non-sprint speed
-  const FOV_SPRINT_DEG = 168;  // at top sprint speed
-  const FOV_DIVE_DEG   = 170;  // keeps widening past sprint speed while diving — capped < 180° so no behind-camera smear
+  const FOV_REST_DEG   = 120;  // angle the warp eases up from (barely visible at low speed)
+  const FOV_MAX_DEG    = 220;  // at top non-sprint speed
+  const FOV_SPRINT_DEG = 250;  // at top sprint speed
+  const FOV_DIVE_DEG   = 290;  // keeps widening past sprint speed while diving
   const DIVE_BOOST     = MOVE_MAX * 2;  // extra top speed gained in a full vertical dive
 
   let lastTime    = performance.now();
@@ -2183,8 +2183,12 @@ function createBirdControls(camera, domElement, collision) {
       // full fisheye by 240 km/h — a slow, gradual rise. The result is smoothed
       // frame-to-frame so dt jitter never makes the warp flicker or jump.
       const kmh   = dt > 0 ? _vel.length() / dt * 3.6 : 0;
-      const kp    = Math.max(0, Math.min(1, (kmh - 120) / (240 - 120)));
-      const target = Math.pow(kp, 1.67);  // 0 below 120 km/h, 5% at 140, 100% at 240
+      // v11.38-style gentle curve, ported to actual km/h (device-independent).
+      // The ^6.2 power keeps the warp almost off until very fast: ~0% below
+      // 200 km/h, ~10% at 250, only reaching full fisheye near 360 km/h (a hard
+      // dive). This is why 11.38 had no corner smear at cruising speed — the
+      // warp was barely applied there, even though the FOV was already wide.
+      const target = Math.pow(Math.min(1, kmh / 360), 6.2);
       _fishBlend  += (target - _fishBlend) * 0.06;  // ease toward target (gradual, jitter-free)
       const blend  = _fishBlend;
       const tt     = _vel.length() / MOVE_MAX;  // still drives the FOV-angle growth below
