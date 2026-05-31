@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.48';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.48';
+import { TrainSystem } from './train.js?v=11.49';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.49';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -35,6 +35,7 @@ const GROUND_SINK   = 0.6;
 const BIRD_HEIGHT   = 3.96;   // 13 ft above terrain
 const BIRD_CAM_BACK = 8;      // metres behind bird
 const BIRD_CAM_UP   = 2;      // metres above bird
+const CAM_BANK      = 0.5;    // how much the camera rolls with the bird's bank (0=none, 1=full)
 // Fisheye (F3) constants — single-pass vertex-warp fisheye (1 render, not 6).
 // FISH_FOV_DEG + the projection live in fisheye.js (shared with train.js).
 const FISH_CAM_BACK = 4.0;    // follow distance in fisheye mode
@@ -1896,6 +1897,8 @@ function createBirdControls(camera, domElement, collision) {
   const _heading = new THREE.Vector3();
   const _vel     = new THREE.Vector3();  // current velocity vector (m/frame); coasts naturally
   const _euler   = new THREE.Euler(0, 0, 0, 'YXZ');
+  const _camUp   = new THREE.Vector3();  // scratch: rolled camera up-vector for banking
+  const _viewDir = new THREE.Vector3();  // scratch: camera→bird direction (roll axis)
 
   // Auto-pilot pitch easing. When a bounce or wall-ramp redirects the bird, the
   // velocity changes instantly (physics) but the bird's nose eases toward the new
@@ -1961,6 +1964,12 @@ function createBirdControls(camera, domElement, collision) {
       const camFloor = collision.floorFn(camera.position.x, camera.position.z) + CAM_FLOOR_CLEAR;
       if (camera.position.y < camFloor) camera.position.y = camFloor;
     }
+    // Bank the camera with the bird: roll the up-vector around the view axis by a
+    // fraction of the bird's bank angle so a turn tilts the horizon, but less than
+    // the bird itself (CAM_BANK < 1) so the motion reads without being disorienting.
+    _viewDir.set(birdPos.x, birdPos.y, birdPos.z).sub(camera.position).normalize();
+    _camUp.set(0, 1, 0).applyAxisAngle(_viewDir, roll * CAM_BANK);
+    camera.up.copy(_camUp);
     camera.lookAt(birdPos.x, birdPos.y, birdPos.z);
   }
 
@@ -2397,7 +2406,7 @@ function initScene(collision) {
       const kmh = (controls.getSpeed() / dt * 3.6).toFixed(0);
       speedEl.textContent = kmh + ' km/h';
     }
-    updateAreaName(controls.birdPos.x, controls.birdPos.z, now);
+    updateAreaName(controls.birdPos.x, controls.birdPos.z);
     // Sync bird mesh: position + flight orientation (yaw, nose pitch, bank roll)
     birdMesh.position.copy(controls.birdPos);
     birdMesh.position.y += 0.1 * Math.sin(now * 0.002);   // gentle float bob
@@ -2526,57 +2535,91 @@ function setPlaceLabel(name) {
 // streams in) gets reverse-geocoded once; the result is cached by tile key so
 // re-entering a known tile switches the label INSTANTLY with no network call.
 // The label updates the moment you cross a tile boundary, not on a timer.
+const NAME_PREFETCH = 1;        // also fetch names for tiles within this ring radius
 const _tileNames = new Map();   // tileKey → name string ('' = looked up, none found)
 let   _rgTileKey = null;        // tile the label currently reflects
-let   _rgLastFetch = -Infinity; // throttle floor for Nominatim (politeness only)
+const _rgQueue   = [];          // pending tile lookups: { tx, ty, key, isCurrent }
+const _rgQueued  = new Set();   // keys already cached or queued (avoid duplicates)
+let   _rgBusy    = false;       // a lookup is in flight / the drain loop is running
 
-// The world is centred on the start location, so its tile is (0,0) in world
-// space → tile of CENTER_LAT/LON. Cache the user's chosen name there so the
-// label doesn't get reverse-geocoded away the moment the flight begins.
+// The world is centred on the start location, so its tile is the tile of
+// CENTER_LAT/LON. Cache the user's chosen name there so the label doesn't get
+// reverse-geocoded away the moment the flight begins.
 function seedStartTile(name) {
   const { tx, ty } = latLonToTile(CENTER_LAT, CENTER_LON);
   const key = `${tx},${ty}`;
   _tileNames.set(key, name);
+  _rgQueued.add(key);
   _rgTileKey = key;
 }
 
-function updateAreaName(worldX, worldZ, now) {
+// Parse a Nominatim /reverse response into a 'City · Suburb' style label.
+function _formatArea(d) {
+  const a = d.address || {};
+  const big   = a.city || a.town || a.village || a.county || '';
+  const small = a.suburb || a.neighbourhood || a.quarter || a.city_district || '';
+  return big && small ? `${big} · ${small}` : big || small
+       || (d.display_name || '').split(',')[0] || '';
+}
+
+// Drain the lookup queue one request at a time, ≥ 1.2 s apart (Nominatim asks
+// for ≤ 1 req/s). Current-tile lookups are unshifted to the front so the label
+// updates promptly while neighbour prefetches fill in behind it.
+async function _rgDrain() {
+  if (_rgBusy) return;
+  _rgBusy = true;
+  while (_rgQueue.length) {
+    const job = _rgQueue.shift();
+    const bbox = tileToBBox(job.tx, job.ty);
+    const clat = ((bbox.south + bbox.north) / 2).toFixed(5);
+    const clon = ((bbox.west  + bbox.east)  / 2).toFixed(5);
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${clat}&lon=${clon}`,
+        { headers: { 'Accept': 'application/json' } });
+      const name = _formatArea(await res.json());
+      _tileNames.set(job.key, name);
+      // Only update the visible label if this tile is still the one we're over.
+      if (job.key === _rgTileKey && name) setPlaceLabel(name);
+    } catch (_) {
+      // Network/parse failure: let it be retried by re-opening the key.
+      _rgQueued.delete(job.key);
+    }
+    if (_rgQueue.length) await sleep(1200);
+  }
+  _rgBusy = false;
+}
+
+function _rgEnqueue(tx, ty, isCurrent) {
+  const key = `${tx},${ty}`;
+  if (_rgQueued.has(key)) return;
+  _rgQueued.add(key);
+  const job = { tx, ty, key, isCurrent };
+  if (isCurrent) _rgQueue.unshift(job);   // jump the queue so the label updates first
+  else           _rgQueue.push(job);
+  _rgDrain();
+}
+
+function updateAreaName(worldX, worldZ) {
   const { lat, lon } = worldToGeo(worldX, worldZ);
   const { tx, ty } = latLonToTile(lat, lon);
   const key = `${tx},${ty}`;
   if (key === _rgTileKey) return;            // same tile → nothing to do
+  _rgTileKey = key;
 
-  // Known tile: switch instantly from cache.
+  // Known tile: switch the label instantly from cache, no network.
   if (_tileNames.has(key)) {
-    _rgTileKey = key;
     const name = _tileNames.get(key);
     if (name) setPlaceLabel(name);
-    return;
+  } else {
+    _rgEnqueue(tx, ty, true);                // priority lookup for the tile we're over
   }
 
-  // Unknown tile: reverse-geocode its CENTRE once. Throttle to ≥ 1.2 s between
-  // network calls (Nominatim asks for ≤ 1 req/s) but don't block tile switching
-  // for tiles we already know. _rgTileKey only advances on success, so a failed
-  // or rate-limited lookup is retried when you next move.
-  if (now - _rgLastFetch < 1200) return;
-  _rgLastFetch = now;
-  const bbox = tileToBBox(tx, ty);
-  const clat = ((bbox.south + bbox.north) / 2).toFixed(5);
-  const clon = ((bbox.west  + bbox.east)  / 2).toFixed(5);
-  fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${clat}&lon=${clon}`,
-    { headers: { 'Accept': 'application/json' } })
-    .then(r => r.json())
-    .then(d => {
-      const a = d.address || {};
-      const big   = a.city || a.town || a.village || a.county || '';
-      const small = a.suburb || a.neighbourhood || a.quarter || a.city_district || '';
-      const name  = big && small ? `${big} · ${small}` : big || small
-                  || (d.display_name || '').split(',')[0] || '';
-      _tileNames.set(key, name);
-      _rgTileKey = key;
-      if (name) setPlaceLabel(name);
-    })
-    .catch(() => { /* leave uncached so it retries on the next move */ });
+  // Prefetch names for the ring of tiles around us so the NEXT boundary cross
+  // is instant. These go to the back of the queue behind the current tile.
+  for (let dy = -NAME_PREFETCH; dy <= NAME_PREFETCH; dy++)
+    for (let dx = -NAME_PREFETCH; dx <= NAME_PREFETCH; dx++)
+      if (dx || dy) _rgEnqueue(tx + dx, ty + dy, false);
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
