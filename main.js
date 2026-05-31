@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.50';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.50';
+import { TrainSystem } from './train.js?v=11.51';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.51';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -35,7 +35,7 @@ const GROUND_SINK   = 0.6;
 const BIRD_HEIGHT   = 3.96;   // 13 ft above terrain
 const BIRD_CAM_BACK = 8;      // metres behind bird
 const BIRD_CAM_UP   = 2;      // metres above bird
-const CAM_BANK      = 1.0;    // how much the camera rolls with the bird's bank (0=none, 1=full)
+const CAM_BANK      = 0.3;    // how much the camera rolls with the bird's bank (0=none, 1=full)
 // Fisheye (F3) constants — single-pass vertex-warp fisheye (1 render, not 6).
 // FISH_FOV_DEG + the projection live in fisheye.js (shared with train.js).
 const FISH_CAM_BACK = 4.0;    // follow distance in fisheye mode
