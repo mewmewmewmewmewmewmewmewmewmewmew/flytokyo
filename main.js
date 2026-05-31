@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.68';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.68';
+import { TrainSystem } from './train.js?v=11.69';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.69';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1792,24 +1792,42 @@ function buildBirdMesh() {
   beak.position.set(0, 0.04, -0.92);
   group.add(beak);
 
-  // Build a triangulated "fan" sheet from a leading-edge curve (base[]) to a
-  // trailing-edge curve (tip[]). The wireframe of the quads reads as rows of
-  // feathers radiating outward — the look of the reference wing/tail.
-  function makeFan(base, tip, mat) {
-    const n = base.length;
-    const pos = [];
-    for (const p of base) pos.push(p.x, p.y, p.z);
-    for (const p of tip)  pos.push(p.x, p.y, p.z);
+  // Build a THIN SOLID sheet (top + bottom skins) from per-station chord lines.
+  // stations[i] = { x, y, zF, zB } gives the spanwise position, vertical
+  // baseline, and front/back z of the chord at that station. The thickness
+  // bulges to `th` at mid-chord and tapers to 0 at the leading/trailing edges
+  // so the outline stays crisp while the surface has real volume. Returns a
+  // mesh whose userData carries { tt, count }: tt is each vertex's spanwise
+  // fraction (0..1), used by the flap deformer.
+  function makeSolidSheet(stations, th, mat, tipTaper) {
+    const n = stations.length, m = 5, NM = n * m;
+    const pos = new Array(2 * NM * 3);
+    const tt  = new Float32Array(2 * NM);
+    for (let i = 0; i < n; i++) {
+      const s = stations[i], f = i / (n - 1);
+      const taper = 1 - (tipTaper || 0) * f;           // thinner toward the tip
+      for (let j = 0; j < m; j++) {
+        const c = j / (m - 1);
+        const z = s.zF + (s.zB - s.zF) * c;
+        const bulge = th * Math.sin(Math.PI * c) * taper;
+        const kt = i * m + j, kb = NM + i * m + j;
+        pos[kt*3] = s.x; pos[kt*3+1] = s.y + bulge; pos[kt*3+2] = z;
+        pos[kb*3] = s.x; pos[kb*3+1] = s.y - bulge; pos[kb*3+2] = z;
+        tt[kt] = f; tt[kb] = f;
+      }
+    }
     const idx = [];
-    for (let i = 0; i < n - 1; i++) {
-      const b0 = i, b1 = i + 1, t0 = n + i, t1 = n + i + 1;
-      idx.push(b0, b1, t1,  b0, t1, t0);
+    const quad = (a, b, c, d) => idx.push(a, b, d, a, d, c);
+    for (let i = 0; i < n - 1; i++) for (let j = 0; j < m - 1; j++) {
+      const p = i*m + j;        quad(p, p+1, p+m, p+m+1);        // top skin
+      const q = NM + i*m + j;   quad(q, q+m, q+1, q+m+1);        // bottom skin (flipped)
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     geo.setIndex(idx);
-    geo.computeVertexNormals();
-    return new THREE.Mesh(geo, mat);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.userData = { tt, count: 2 * NM };
+    return mesh;
   }
 
   // ── Wings: swallow silhouette — broad inner arm + sharply-swept outer primaries ──
@@ -1821,33 +1839,25 @@ function buildBirdMesh() {
   //
   // Leading  edge Z: −0.30 (root) → +0.90 (tip), via 0.55·t + 0.65·t²
   // Trailing edge Z: +0.25 (root) → +0.90 (tip), meeting the leading edge at the tip
+  // Span reduced to ~2/3 of the old reach. The leading-edge near-root slope
+  // (0.55 / 1.46 ≈ 0.38 in z per x) sets the bird's chevron angle, reused by
+  // the tail's back edge below.
   function buildWing(sx) {
-    const n = 18;
-    const base = [], tip = [];
+    const n = 16;
+    const stations = [];
     for (let i = 0; i < n; i++) {
       const t = i / (n - 1);
       const e = t * t * (3 - 2 * t);
-
-      const x  = sx * (0.15 + 2.18 * t);   // span, shoulder → wingtip
-      const y  = 0.06 - 0.13 * e;           // slight dihedral droop
-
-      // Leading edge: sweeps straight back from the root at a steady angle,
-      // accelerating into the outer primaries — monotonic so both wings form
-      // a continuous parallel chevron at the body.
-      const zL = -0.30 + 0.55 * t + 0.65 * t * t;
-
-      // Trailing edge: starts just behind body midline, sweeps gently back
-      // and meets the leading edge exactly at the tip.
-      const zT =  0.25 + 0.61 * t + 0.04 * t * t;
-
-      base.push(new THREE.Vector3(x, y, zL));   // leading edge (front)
-      tip.push (new THREE.Vector3(x, y, zT));   // trailing edge (back)
+      stations.push({
+        x:  sx * (0.15 + 1.46 * t),          // span (≈2/3 of the previous 2.18)
+        y:  0.06 - 0.13 * e,                 // slight dihedral droop
+        zF: -0.30 + 0.55 * t + 0.65 * t * t, // leading edge (monotonic chevron)
+        zB:  0.25 + 0.61 * t + 0.04 * t * t, // trailing edge → meets leading at tip
+      });
     }
-    const mesh = makeFan(base, tip, matWing);
-    const arr = mesh.geometry.attributes.position.array;
-    const tt  = new Float32Array(2 * n);
-    for (let i = 0; i < n; i++) { tt[i] = i / (n - 1); tt[n + i] = i / (n - 1); }
-    mesh.userData = { rest: Float32Array.from(arr), tt, count: 2 * n, sx };
+    const mesh = makeSolidSheet(stations, 0.06, matWing, 0.6);
+    mesh.userData.sx   = sx;
+    mesh.userData.rest = Float32Array.from(mesh.geometry.attributes.position.array);
     return mesh;
   }
   const wingR = buildWing( 1);
@@ -1858,36 +1868,27 @@ function buildBirdMesh() {
   group.userData.wingR = wingR;
   group.userData.wingL = wingL;
 
-  // ── Tail: deeply forked, two long pointed streamers in a wide V ──
-  const rootZ = 0.62;
-  function buildStreamer(sx) {
-    const n = 12;
-    const base = [], tip = [];
+  // ── Tail: forked, with a CHEVRON trailing edge matching the wing sweep ──
+  // The front edge attaches straight behind the body; the back edge notches
+  // forward at the centre and sweeps back toward the outer corners at the same
+  // 0.38 z-per-x slope as the wing leading edge, so the tail fork echoes the
+  // bird's chevron. Built as a thin solid sheet for thickness.
+  function buildTail() {
+    const n = 17;
+    const halfW = 0.60, frontZ = 0.55, notchZ = 0.80, slope = 0.38;
+    const stations = [];
     for (let i = 0; i < n; i++) {
-      const t = i / (n - 1);
-      const z = rootZ + 1.25 * t;              // long trailing streamer
-      const y = -0.02 - 0.04 * t;
-      base.push(new THREE.Vector3(sx * (0.02 + 0.64 * t), y, z));  // inner edge
-      tip.push (new THREE.Vector3(sx * (0.15 + 0.51 * t), y, z));  // outer edge → meets at point
+      const a = (i / (n - 1) - 0.5) * 2;        // −1 … 1 across the span
+      const x = a * halfW;
+      stations.push({
+        x, y: -0.02,
+        zF: frontZ,
+        zB: notchZ + slope * Math.abs(x),       // chevron back edge (same angle as wing)
+      });
     }
-    return makeFan(base, tip, matBody);
+    return makeSolidSheet(stations, 0.04, matBody, 0);
   }
-  group.add(buildStreamer( 1));
-  group.add(buildStreamer(-1));
-
-  // Small central web closing the notch between the two streamers' roots.
-  function buildTailWeb() {
-    const n = 7;
-    const base = [], tip = [];
-    for (let i = 0; i < n; i++) {
-      const t = i / (n - 1);
-      const a = (t - 0.5) * 2;                 // −1 … 1 across the web
-      base.push(new THREE.Vector3(a * 0.08, 0.0, rootZ - 0.04));
-      tip.push (new THREE.Vector3(a * 0.18, -0.02, rootZ + 0.30 - Math.abs(a) * 0.18));
-    }
-    return makeFan(base, tip, matBody);
-  }
-  group.add(buildTailWeb());
+  group.add(buildTail());
 
   group.scale.setScalar(0.5);   // half size
 
