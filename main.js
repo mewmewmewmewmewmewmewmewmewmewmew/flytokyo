@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.44';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.44';
+import { TrainSystem } from './train.js?v=11.38';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.38';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -41,7 +41,7 @@ const FISH_CAM_BACK = 4.0;    // follow distance in fisheye mode
 const FISH_CAM_UP   = 0.45;   // hug close to the bird's level
 // Max edge length (metres) for geometry tessellation, so long straight lines
 // curve smoothly once the fisheye warp bends them.
-const WALL_SEG      = 5;      // building wall grid cell
+const WALL_SEG      = 9;      // building wall grid cell
 const EDGE_SEG      = 7;      // wireframe outline segment
 const DECAL_SEG     = 8;      // water/road area max triangle edge (fisheye subdivision)
 
@@ -868,7 +868,7 @@ function buildSurfaceMesh(buildings, mat) {
       const x1 = ring[i1][0], z1 = ring[i1][1];
       const x2 = ring[i2][0], z2 = ring[i2][1];
       const maxEdge = Math.max(Math.hypot(x1-x0,z1-z0), Math.hypot(x2-x1,z2-z1), Math.hypot(x0-x2,z0-z2));
-      const N = Math.min(10, Math.max(1, Math.ceil(maxEdge / WALL_SEG)));
+      const N = Math.min(4, Math.max(1, Math.ceil(maxEdge / WALL_SEG)));
       const vbase = v;
       for (let j = 0; j <= N; j++) {
         const vv = j / N;
@@ -898,9 +898,9 @@ function buildSurfaceMesh(buildings, mat) {
       const nxx = dz / len, nzz = -dx / len;
       // Tessellate each wall into a grid so its silhouette curves under the
       // fisheye warp instead of staying a straight chord. Small walls stay 1×1.
-      const cols = Math.min(14, Math.max(1, Math.ceil(len / WALL_SEG)));
+      const cols = Math.min(6, Math.max(1, Math.ceil(len / WALL_SEG)));
       const tall = topY - Math.min(h0, h1);
-      const rows = Math.min(14, Math.max(1, Math.ceil(tall / WALL_SEG)));
+      const rows = Math.min(8, Math.max(1, Math.ceil(tall / WALL_SEG)));
       const b = v;
       for (let cu = 0; cu <= cols; cu++) {
         const u = cu / cols;
@@ -1903,7 +1903,6 @@ function createBirdControls(camera, domElement, collision) {
   // null = no redirect in progress; otherwise the target pitch in radians.
   let _pitchTarget = null;
   const PITCH_EASE = 0.14;    // per-frame approach toward the target pitch
-  let _fishBlend = 0;         // smoothed fisheye blend (eased toward the speed-driven target)
 
   // Wall-ramp state. A head-on building hit sends the bird climbing vertically up
   // the face (parallel to the wall); once it clears the roof it peels forward at a
@@ -2177,21 +2176,14 @@ function createBirdControls(camera, domElement, collision) {
         moved = true;
       }
 
-      // Speed-driven fisheye, keyed to ACTUAL km/h (NOT the frame-dependent
-      // fraction of MOVE_MAX) so the warp matches the on-screen speed readout
-      // on any device/framerate. Zero below 120 km/h, ~5% at 140, easing up to
-      // full fisheye by 240 km/h — a slow, gradual rise. The result is smoothed
-      // frame-to-frame so dt jitter never makes the warp flicker or jump.
-      const kmh   = dt > 0 ? _vel.length() / dt * 3.6 : 0;
-      // v11.38-style gentle curve, ported to actual km/h (device-independent).
-      // The ^6.2 power keeps the warp almost off until very fast: ~0% below
-      // 200 km/h, ~10% at 250, only reaching full fisheye near 360 km/h (a hard
-      // dive). This is why 11.38 had no corner smear at cruising speed — the
-      // warp was barely applied there, even though the FOV was already wide.
-      const target = Math.pow(Math.min(1, kmh / 360), 6.2);
-      _fishBlend  += (target - _fishBlend) * 0.06;  // ease toward target (gradual, jitter-free)
-      const blend  = _fishBlend;
-      const tt     = _vel.length() / MOVE_MAX;  // still drives the FOV-angle growth below
+      // Speed-driven fisheye with a very slow onset: ~5% warp at 140 km/h
+      // (tt≈0.62), rising to full fisheye at top speed (227 km/h). The high
+      // power keeps low/medium cruising in plain perspective and only swings
+      // the lens in near the top. The angle widens 120°→220° over the first
+      // band, then 220°→250° through the sprint band.
+      const tt    = _vel.length() / MOVE_MAX;
+      const e     = Math.min(tt, 1);
+      const blend = Math.pow(e, 6.2);  // 5% at tt≈0.62 (140 km/h), 100% at top
       // FOV widens with speed: rest→max over band 0-1, max→sprint over 1-2, then
       // keeps opening sprint→dive over 2-4 as a dive pushes past top speed.
       let fovDeg;

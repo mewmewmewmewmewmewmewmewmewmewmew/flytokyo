@@ -49,7 +49,7 @@ export const FISH_PROJ_GLSL = /* glsl */`
     float len   = length(d);
     float theta = acos(clamp(-d.z / max(len, 1e-4), -1.0, 1.0));   // angle off forward
     float phi   = atan(d.y, d.x);
-    float r     = min(theta / uFishHalfFov, 1.12);                 // cap so behind-camera/wide-angle vertices don't fly far off-screen
+    float r     = theta / uFishHalfFov;                            // 0 centre … 1 at FOV edge
     float a     = uFishAspect;
     float s     = sqrt(1.0 + 1.0 / (a * a));                       // scale so corners are covered
     vec2  xy    = s * r * vec2(cos(phi), a * sin(phi));            // circular in pixels, fills frame
@@ -75,14 +75,6 @@ export const FISH_PROJ_GLSL = /* glsl */`
     // In front of the camera: blend the two projections in normalised device coords.
     vec3 pndc = persp.xyz / persp.w;
     vec3 ndc  = mix(pndc, fish.xyz, uFishBlend);
-    // pndc DIVERGES toward infinity for vertices near the (90°) frustum edge, so
-    // the blended result can land far off-screen and drag its triangle into a
-    // stretched corner smear. Cap the radius in the fisheye's elliptical metric
-    // (x, y/a) at just past the disc edge, keeping direction; fragment fishClip()
-    // still trims to the exact FOV.
-    float er  = length(vec2(ndc.x, ndc.y / a));
-    float lim = s * 1.12;
-    if (er > lim) ndc.xy *= lim / er;
     return vec4(ndc, 1.0);
   }
 `;
