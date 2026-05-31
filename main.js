@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.63';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.63';
+import { TrainSystem } from './train.js?v=11.64';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.64';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1831,8 +1831,13 @@ function buildBirdMesh() {
     }
     return makeFan(base, tip, matWing);
   }
-  group.add(buildWing( 1));
-  group.add(buildWing(-1));
+  const wingR = buildWing( 1);
+  const wingL = buildWing(-1);
+  group.add(wingR);
+  group.add(wingL);
+  // Exposed so the animate loop can flap them about the body axis (rotation.z).
+  group.userData.wingR = wingR;
+  group.userData.wingL = wingL;
 
   // ── Tail: deeply forked, two long pointed streamers in a wide V ──
   const rootZ = 0.62;
@@ -2520,6 +2525,18 @@ function initScene(collision) {
     }
   });
 
+  // Wing-flap state. The bird flaps in short bursts then glides, the way a
+  // swallow actually flies: a burst rotates the wings up/down about the body
+  // axis at a few Hz, between bursts the wings ease out to a relaxed glide with
+  // a faint idle bob. Amplitude + frequency are eased so bursts blend smoothly.
+  const wingR = birdMesh.userData.wingR;
+  const wingL = birdMesh.userData.wingL;
+  let flapPhase  = 0;     // running flap angle phase
+  let flapAmp    = 0.06;  // current (eased) amplitude in radians
+  let flapFreq   = 2;     // current (eased) angular speed
+  let flapBurst  = 0;     // seconds left in the current flapping burst
+  let glideTimer = 1.0;   // seconds until the next burst is allowed to start
+
   (function animate() {
     requestAnimationFrame(animate);
     const now = performance.now();
@@ -2538,6 +2555,31 @@ function initScene(collision) {
     birdMesh.position.copy(controls.birdPos);
     birdMesh.position.y += 0.1 * Math.sin(now * 0.002);   // gentle float bob
     birdMesh.rotation.set(controls.getPitch(), controls.getYaw(), controls.getRoll(), 'YXZ');
+
+    // ── Wing flap ──────────────────────────────────────────────────────────
+    // Schedule occasional flapping bursts; thrusting (climbing/accelerating)
+    // makes them come more often, gliding lets them lapse so the bird coasts.
+    if (wingR && wingL) {
+      glideTimer -= dt;
+      if (flapBurst <= 0 && glideTimer <= 0) {
+        flapBurst  = 0.5 + Math.random() * 0.9;          // flap for a moment…
+        glideTimer = 1.2 + Math.random() * 2.8;          // …then glide a while
+      }
+      let ampTarget, freqTarget;
+      if (flapBurst > 0) {
+        flapBurst -= dt;
+        ampTarget = 0.85; freqTarget = 16;               // strong, fast beats
+      } else {
+        ampTarget = 0.06; freqTarget = 2.2;              // relaxed glide + idle bob
+      }
+      flapAmp  += (ampTarget  - flapAmp)  * Math.min(dt * 6, 1);
+      flapFreq += (freqTarget - flapFreq) * Math.min(dt * 6, 1);
+      flapPhase += dt * flapFreq;
+      // Bias upstroke a touch higher than downstroke for a livelier beat.
+      const flap = Math.sin(flapPhase) * flapAmp + flapAmp * 0.15;
+      wingR.rotation.z =  flap;
+      wingL.rotation.z = -flap;
+    }
     if (trainRef.system) trainRef.system.update(dt);
     // Declutter: only keep labels near the camera visible.
     const cp = camera.position;
