@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.51';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.51';
+import { TrainSystem } from './train.js?v=11.52';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.52';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -630,13 +630,16 @@ function makePoiLabel(px, pz, text, footprints) {
 
 const SURF_VERT = /* glsl */`
   attribute vec3 color;
+  attribute vec2 winUV;
   varying vec3  vCol;
   varying float vDist;
   varying vec3  vNorm;
+  varying vec2  vWin;
   ${FISH_PROJ_GLSL}
   void main() {
     vCol  = color;
     vNorm = normalMatrix * normal;
+    vWin  = winUV;
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     vDist = length(mv.xyz);
     vFishView = mv.xyz;
@@ -644,21 +647,53 @@ const SURF_VERT = /* glsl */`
   }
 `;
 
+// Procedural window facade: a grid of lit/dark window cells drawn from vWin
+// (metres-along-wall, height). No image textures — it warps correctly under the
+// fisheye and never fails to load. Cell ~3.2 m wide × 3.5 m tall (one storey);
+// a per-cell hash decides lit vs dark so the pattern looks varied, not regular.
+// Fades out with distance so far buildings keep the clean flat-colour look.
 const SURF_FRAG = /* glsl */`
   varying vec3  vCol;
   varying float vDist;
   varying vec3  vNorm;
+  varying vec2  vWin;
   uniform float uNear;
   uniform float uFar;
   uniform float uXray;
   ${FISH_FRAG_GLSL}
   ${TOON_GLSL}
+  float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+  }
   void main() {
     fishClip();
     vec3  N      = normalize(vNorm);
     vec3  V      = normalize(-vFishView);
     vec3  L      = normalize(vec3(0.5, 1.0, 0.3));
     vec3  shaded = celShade(vCol, N, V, L);
+
+    // Window grid (walls only: vWin.x >= 0). Skip the ground-floor band so the
+    // base reads as a solid plinth, and fade the whole effect in/out with range.
+    if (vWin.x >= 0.0) {
+      float winFade = (1.0 - smoothstep(120.0, 420.0, vDist)) * (1.0 - uXray);
+      if (winFade > 0.01 && vWin.y > 3.0) {
+        vec2  cell = vec2(vWin.x / 3.2, vWin.y / 3.5);
+        vec2  id   = floor(cell);
+        vec2  f    = fract(cell);
+        // Window pane = inner rectangle of each cell (leaves a mullion border).
+        float pane = step(0.16, f.x) * step(f.x, 0.84)
+                   * step(0.22, f.y) * step(f.y, 0.86);
+        float lit  = hash21(id);
+        // Lit windows glow warm; unlit are a darker tint of the wall colour.
+        vec3  on   = mix(vec3(1.0, 0.93, 0.72), vec3(0.55,0.78,1.0), step(0.5, hash21(id + 7.0)));
+        vec3  off  = shaded * 0.55;
+        vec3  wcol = lit > 0.62 ? on : off;
+        shaded = mix(shaded, mix(shaded, wcol, pane), winFade);
+      }
+    }
+
     float fade   = 1.0 - smoothstep(uNear, uFar, vDist);
     float a      = mix(1.0, 0.80, uXray) * fade;
     if (a < 0.01) discard;
@@ -849,7 +884,7 @@ function buildSingleBuildingGeo(ring, topY, vertexH) {
 }
 
 function buildSurfaceMesh(buildings, mat) {
-  const pos = [], norm = [], col = [], idx = [];
+  const pos = [], norm = [], col = [], idx = [], win = [];
   let v = 0;
 
   for (const { ring, height } of buildings) {
@@ -861,6 +896,12 @@ function buildSurfaceMesh(buildings, mat) {
     if (!tris.length) continue;
 
     const { topY, vertexH } = bldgTerrainInfo(ring, height);
+    // Per-building phase so window grids don't line up across neighbours, and a
+    // per-building "has windows" flag — tiny structures (huts, kiosks) read better
+    // plain, so only give the facade treatment to buildings tall enough to have
+    // real storeys. winUV.x < 0 is the sentinel for "no windows" (roofs + huts).
+    const wphase   = Math.abs(Math.sin((ring[0][0] + ring[0][1]) * 0.137)) * 40;
+    const hasWin   = height >= 8;
 
     // Tessellate each earcut roof triangle so fisheye has enough vertices to curve it
     for (let t = 0; t < tris.length; t += 3) {
@@ -876,7 +917,9 @@ function buildSurfaceMesh(buildings, mat) {
         for (let i = 0; i <= N - j; i++) {
           const u = i / N, w = 1 - u - vv;
           pos.push(x0*w + x1*u + x2*vv, topY, z0*w + z1*u + z2*vv);
-          norm.push(0, 1, 0); col.push(rc.r, rc.g, rc.b); v++;
+          norm.push(0, 1, 0); col.push(rc.r, rc.g, rc.b);
+          win.push(-1, 0);   // roof: no windows
+          v++;
         }
       }
       for (let j = 0; j < N; j++) {
@@ -908,7 +951,11 @@ function buildSurfaceMesh(buildings, mat) {
         const wx = x0 + dx * u, wz = z0 + dz * u, base = h0 + (h1 - h0) * u;
         for (let rv = 0; rv <= rows; rv++) {
           const y = base + (topY - base) * (rv / rows);
-          pos.push(wx, y, wz); norm.push(nxx, 0, nzz); col.push(wc.r, wc.g, wc.b); v++;
+          pos.push(wx, y, wz); norm.push(nxx, 0, nzz); col.push(wc.r, wc.g, wc.b);
+          // winUV = (metres along this wall + building phase, height above ground).
+          // The fragment shader draws a window grid from this; -1 disables it.
+          win.push(hasWin ? wphase + u * len : -1, y);
+          v++;
         }
       }
       const stride = rows + 1;
@@ -926,6 +973,7 @@ function buildSurfaceMesh(buildings, mat) {
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos,  3));
   geo.setAttribute('normal',   new THREE.Float32BufferAttribute(norm, 3));
   geo.setAttribute('color',    new THREE.Float32BufferAttribute(col,  3));
+  geo.setAttribute('winUV',    new THREE.Float32BufferAttribute(win,  2));
   geo.setIndex(idx);
   const mesh = new THREE.Mesh(geo, mat);
   mesh.renderOrder = 1;
