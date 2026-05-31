@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.55';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.55';
+import { TrainSystem } from './train.js?v=11.56';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.56';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1946,11 +1946,15 @@ function createBirdControls(camera, domElement, collision) {
     // The bird's own heading (headYaw) is independent — mouse-look never rotates
     // the bird mesh, only the camera's vantage point around it.
     const look    = getLook();
-    // Follow distance eases from the normal framing (at rest / fisheye off) to the
-    // closer fisheye framing as the speed-driven warp blends in.
-    const b       = fisheyeMode ? FISH_U.uFishBlend.value : 0;
-    const camBack = BIRD_CAM_BACK + (FISH_CAM_BACK - BIRD_CAM_BACK) * b;
-    const camUp   = BIRD_CAM_UP   + (FISH_CAM_UP   - BIRD_CAM_UP)   * b;
+    // Follow distance eases from the normal framing (at rest) to the closer
+    // fisheye framing as speed rises. Driven by a smoothstep on actual speed —
+    // NOT the fisheye warp blend (uFishBlend = pow(speed,6.2)), which stays flat
+    // then snaps near the top and made the zoom-in feel abrupt. smoothstep eases
+    // in gradually and flattens as you approach max speed for a smooth arrival.
+    const sFrac   = Math.min(_vel.length() / MOVE_MAX, 1);
+    const cz      = fisheyeMode ? sFrac * sFrac * (3 - 2 * sFrac) : 0;
+    const camBack = BIRD_CAM_BACK + (FISH_CAM_BACK - BIRD_CAM_BACK) * cz;
+    const camUp   = BIRD_CAM_UP   + (FISH_CAM_UP   - BIRD_CAM_UP)   * cz;
     camera.position.set(
       birdPos.x - look.x * camBack,
       birdPos.y - look.y * camBack + camUp,
