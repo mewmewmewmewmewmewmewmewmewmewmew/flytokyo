@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.65';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.65';
+import { TrainSystem } from './train.js?v=11.66';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.66';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1812,28 +1812,37 @@ function buildBirdMesh() {
     return new THREE.Mesh(geo, mat);
   }
 
-  // ── Wings: long swept-back scythe, tapering to a sharp wingtip ──
-  // The leading and trailing edges converge at the tip (chord → 0) so the wing
-  // ends in a point, and the whole panel sweeps backward with t² for the
-  // curved, swept silhouette of a swallow in flight.
+  // ── Wings: swallow silhouette — broad inner arm + sharply-swept outer primaries ──
+  // Leading and trailing edges are defined independently (not center ± half-chord)
+  // so the chord widens through the inner arm (reaching max at ~40% span) before
+  // narrowing to a pointed tip. Inner section sweeps very little (nearly ⊥ to body);
+  // outer section sweeps hard back. Both edges converge exactly at the wingtip.
+  //
+  // Quadratic fits through three control points each (shoulder, elbow @t=0.40, tip):
+  //   Leading  edge Z: −0.45 (shoulder, near neck)  → −0.40 (elbow)  → +0.90 (tip)
+  //   Trailing edge Z: +0.25 (shoulder, mid-body)   → +0.50 (elbow)  → +0.90 (tip)
   function buildWing(sx) {
     const n = 18;
     const base = [], tip = [];
     for (let i = 0; i < n; i++) {
       const t = i / (n - 1);
-      const e = t * t * (3 - 2 * t);          // smoothstep for vertical droop
-      const cx = sx * (0.18 + 1.95 * t);       // span: shoulder → wingtip
-      const cz = -0.10 + 1.05 * t * t;         // sweep backward, accelerating
-      const cy = 0.07 - 0.15 * e;              // droop toward the tips
-      const chord = 0.44 * (1 - t);            // wing half-depth: widest at base → 0 at tip
-      base.push(new THREE.Vector3(cx, cy, cz - chord));   // leading edge (front)
-      tip.push (new THREE.Vector3(cx, cy, cz + chord));   // trailing edge (back)
+      const e = t * t * (3 - 2 * t);
+
+      const x  = sx * (0.17 + 2.15 * t);   // span, shoulder → wingtip
+      const y  = 0.06 - 0.13 * e;           // slight dihedral droop
+
+      // Leading edge: forward at shoulder, inner arm barely sweeps back,
+      // then outer primaries sweep hard to the tip.
+      const zL = -0.45 - 0.69 * t + 2.04 * t * t;
+
+      // Trailing edge: starts just behind body midline, sweeps gently back
+      // and meets the leading edge exactly at the tip.
+      const zT =  0.25 + 0.61 * t + 0.04 * t * t;
+
+      base.push(new THREE.Vector3(x, y, zL));   // leading edge (front)
+      tip.push (new THREE.Vector3(x, y, zT));   // trailing edge (back)
     }
     const mesh = makeFan(base, tip, matWing);
-    // Stash the rest geometry + each vertex's spanwise fraction so the animate
-    // loop can deform the wing as a flexible membrane (bend + twist + tuck)
-    // instead of rotating it rigidly. Layout: vertices 0..n-1 are the leading
-    // edge, n..2n-1 the trailing edge; both share t = (k mod n)/(n-1).
     const arr = mesh.geometry.attributes.position.array;
     const tt  = new Float32Array(2 * n);
     for (let i = 0; i < n; i++) { tt[i] = i / (n - 1); tt[n + i] = i / (n - 1); }
@@ -2548,6 +2557,10 @@ function initScene(collision) {
   let flapBurst  = 0;     // seconds left in the current flapping burst
   let glideTimer = 1.0;   // seconds until the next burst is allowed to start
   let wingTuck   = 0;     // 0 = spread, 1 = swept-back dive tuck (eased)
+  // Per-beat randomisation so consecutive wingbeats differ in strength and tempo.
+  let beatCount    = 0;   // increments every full 2π cycle
+  let beatAmpScale = 1.0; // amplitude multiplier re-randomised each beat
+  let beatFreqMul  = 1.0; // frequency multiplier re-randomised each beat
   const WING_LAG   = 1.0; // phase lag from shoulder to tip → travelling-wave flex
   const WING_TWIST = 0.22;// chordwise feathering amplitude
 
@@ -2561,11 +2574,12 @@ function initScene(collision) {
       const t    = tt[k];
       const span = Math.pow(t, 1.25);               // tip flexes far more than root
       let x = rest[k*3], y = rest[k*3+1], z = rest[k*3+2];
-      // Dive tuck: sweep the tips back, fold the span in, drop slightly.
+      // Dive tuck: fold span in, sweep tips back a little, drop slightly.
+      // (tips already sit at z+0.90 in rest pose; keep tuck sweep modest)
       if (tuck > 0.001) {
-        z += tuck * span * 0.85;
-        x -= sx   * tuck * span * 0.30;
-        y -= tuck * span * 0.08;
+        z += tuck * span * 0.35;
+        x -= sx   * tuck * span * 0.55;
+        y -= tuck * span * 0.07;
       }
       const ph = phase - WING_LAG * t;              // tip lags the shoulder
       // Twist about the spanwise (x) axis — feathers the chord with flap speed.
@@ -2610,21 +2624,33 @@ function initScene(collision) {
       glideTimer -= dt;
       if (diving) flapBurst = 0;                          // never flap mid-dive
       else if (flapBurst <= 0 && glideTimer <= 0) {
-        flapBurst  = 0.5 + Math.random() * 0.9;          // flap for a moment…
-        glideTimer = 1.2 + Math.random() * 2.8;          // …then glide a while
+        // Vary how long the bird flaps AND how long it glides afterward so
+        // consecutive bursts feel unpredictable, not metronomic.
+        flapBurst  = 0.35 + Math.random() * 1.2;
+        glideTimer = 0.8  + Math.random() * 3.5;
       }
       let ampTarget, freqTarget;
       if (flapBurst > 0 && !diving) {
         flapBurst -= dt;
-        ampTarget = 0.85; freqTarget = 16;               // strong, fast beats
+        ampTarget = 0.85; freqTarget = 15;
       } else {
         ampTarget = 0.05; freqTarget = 2.2;              // relaxed glide + idle bob
       }
       flapAmp  += (ampTarget  - flapAmp)  * Math.min(dt * 6, 1);
       flapFreq += (freqTarget - flapFreq) * Math.min(dt * 6, 1);
-      flapPhase += dt * flapFreq;
-      deformWing(wingR, flapAmp, flapPhase, wingTuck);
-      deformWing(wingL, flapAmp, flapPhase, wingTuck);
+
+      // Re-randomise amplitude and tempo at the start of each new beat cycle so
+      // no two wingbeats are identical — breaks the robotic regularity.
+      const newBeat = Math.floor(flapPhase / (2 * Math.PI));
+      if (newBeat > beatCount) {
+        beatCount    = newBeat;
+        beatAmpScale = 0.72 + Math.random() * 0.56;   // 0.72 – 1.28 × amplitude
+        beatFreqMul  = 0.82 + Math.random() * 0.36;   // 0.82 – 1.18 × tempo
+      }
+      flapPhase += dt * flapFreq * (flapBurst > 0 ? beatFreqMul : 1);
+      const beatAmp = flapAmp * (flapBurst > 0 ? beatAmpScale : 1);
+      deformWing(wingR, beatAmp, flapPhase, wingTuck);
+      deformWing(wingL, beatAmp, flapPhase, wingTuck);
     }
     if (trainRef.system) trainRef.system.update(dt);
     // Declutter: only keep labels near the camera visible.
