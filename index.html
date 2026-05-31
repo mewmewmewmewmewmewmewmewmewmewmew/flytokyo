@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v11.57 -->
+  <meta charset="UTF-8"><!-- v11.58 -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -171,6 +171,15 @@
       pointer-events: none;
       user-select: none;
     }
+
+    #compass {
+      position: fixed;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      pointer-events: none;
+      user-select: none;
+    }
   </style>
 </head>
 <body>
@@ -185,7 +194,7 @@
     <div id="search-msg"></div>
     <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
     <div id="load-msg"></div>
-    <div id="load-version">v11.57</div>
+    <div id="load-version">v11.58</div>
   </div>
 
   <div id="overlay">
@@ -193,8 +202,9 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v11.57</div>
+  <div id="version">v11.58</div>
   <div id="speed"></div>
+  <canvas id="compass" width="360" height="48"></canvas>
 
   <div id="hint">
     Mouse · Look &nbsp;|&nbsp; W / Left-click · Fly forward &nbsp;|&nbsp; S · Brake &nbsp;|&nbsp; Space · Ascend<br>
@@ -211,6 +221,6 @@
     }
   }
   </script>
-  <script type="module" src="main.js?v=11.57"></script>
+  <script type="module" src="main.js?v=11.58"></script>
 </body>
 </html>
