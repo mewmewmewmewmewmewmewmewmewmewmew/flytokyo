@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.38';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.38';
+import { TrainSystem } from './train.js?v=11.46';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.46';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1902,6 +1902,7 @@ function createBirdControls(camera, domElement, collision) {
   // pitch over a few frames so the redirect reads as a smooth curve, not a snap.
   // null = no redirect in progress; otherwise the target pitch in radians.
   let _pitchTarget = null;
+  let _bounceLock  = 0;       // frames a fresh ground bounce overrides left-click steering
   const PITCH_EASE = 0.14;    // per-frame approach toward the target pitch
 
   // Wall-ramp state. A head-on building hit sends the bird climbing vertically up
@@ -2211,6 +2212,9 @@ function createBirdControls(camera, domElement, collision) {
           // the next frames (below) instead of snapping so the arc reads smoothly.
           const horizSpeed = Math.hypot(_vel.x, _vel.z);
           _pitchTarget = Math.atan2(_vel.y, Math.max(horizSpeed, 0.001));
+          // Hold the redirect for a few frames so it can't be cancelled by a
+          // held left-click before the bird actually lifts off the ground.
+          _bounceLock = 12;
         }
       }
 
@@ -2218,10 +2222,17 @@ function createBirdControls(camera, domElement, collision) {
       // the target. During a wall ramp the camera is disassociated — camPitch stays
       // at the pre-impact vantage (so the player sees the bird climbing) and only
       // resumes tracking once the ramp clears and the bird peels over the roof.
-      // Left-click (mouseThrust) always wins: it cancels the auto-pilot immediately
-      // so the peel-off 30° angle doesn't lock the user out of steering.
+      // Left-click (mouseThrust) normally wins: it cancels the auto-pilot immediately
+      // so the peel-off 30° angle doesn't lock the user out of steering. EXCEPTION:
+      // a fresh ground bounce holds for _bounceLock frames so a held left-click
+      // can't cancel it before the bird lifts off. Because left-click drives
+      // velocity from getLook() (camPitch), we ease camPitch up too during the
+      // lock — otherwise the thrust direction keeps pointing back into the ground
+      // and the bird never leaves it. This is why the bounce "stopped working":
+      // diving with left-click held cancelled the redirect the same frame.
+      if (_bounceLock > 0) _bounceLock--;
       if (_pitchTarget !== null) {
-        if (mouseThrust && !_ramp.active) {
+        if (mouseThrust && !_ramp.active && _bounceLock === 0) {
           _pitchTarget = null;
         } else {
           headPitch += (_pitchTarget - headPitch) * PITCH_EASE;
