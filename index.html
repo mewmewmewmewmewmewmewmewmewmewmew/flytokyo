@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v11.58 -->
+  <meta charset="UTF-8"><!-- v11.59 -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -176,7 +176,12 @@
       position: fixed;
       top: 0;
       left: 50%;
+      right: auto;          /* override the global `canvas { inset:0 }` rule … */
+      bottom: auto;         /* … which would otherwise stretch the strip full-screen */
+      width: 360px;
+      height: 48px;
       transform: translateX(-50%);
+      z-index: 5;           /* sit above the WebGL canvas (appended later in the DOM) */
       pointer-events: none;
       user-select: none;
     }
@@ -194,7 +199,7 @@
     <div id="search-msg"></div>
     <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
     <div id="load-msg"></div>
-    <div id="load-version">v11.58</div>
+    <div id="load-version">v11.59</div>
   </div>
 
   <div id="overlay">
@@ -202,7 +207,7 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v11.58</div>
+  <div id="version">v11.59</div>
   <div id="speed"></div>
   <canvas id="compass" width="360" height="48"></canvas>
 
@@ -221,6 +226,6 @@
     }
   }
   </script>
-  <script type="module" src="main.js?v=11.58"></script>
+  <script type="module" src="main.js?v=11.59"></script>
 </body>
 </html>
