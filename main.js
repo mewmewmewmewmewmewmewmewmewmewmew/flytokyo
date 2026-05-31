@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.60';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.60';
+import { TrainSystem } from './train.js?v=11.61';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.61';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2513,7 +2513,9 @@ function initScene(collision) {
       const kmh = (controls.getSpeed() / dt * 3.6).toFixed(0);
       speedEl.textContent = kmh + ' km/h';
     }
-    drawCompass(((controls.getYaw() * 180 / Math.PI) % 360 + 360) % 360);
+    // Bird heading vector is (-sinθ,0,-cosθ) for yaw θ; with +X=East and -Z=North
+    // the true clockwise-from-North bearing is -θ, so negate getYaw() here.
+    drawCompass(((-controls.getYaw() * 180 / Math.PI) % 360 + 360) % 360);
     updateAreaName(controls.birdPos.x, controls.birdPos.z);
     // Sync bird mesh: position + flight orientation (yaw, nose pitch, bank roll)
     birdMesh.position.copy(controls.birdPos);
