@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.54';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.54';
+import { TrainSystem } from './train.js?v=11.55';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.55';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -117,68 +117,6 @@ class TerrainSampler {
     const { lat, lon } = worldToGeo(wx, wz);
     return this.sampleLatLon(lat, lon) - this.baseElev;
   }
-}
-
-// ─── Satellite imagery (Esri World Imagery, no API key) ───────────────────────
-// Stitches XYZ web-mercator tiles covering the loaded area into one canvas
-// texture, returning it plus the exact mercator-Y / lon bounds it spans so the
-// ground shader can map world XZ → tile UV. Same {z}/{y}/{x} scheme + CORS-safe
-// <img> path as the terrain loader above.
-const SAT_ZOOM = 16;   // ~2.4 m/px at Tokyo — sharp enough for low flight
-
-// Web-mercator Y in [0,1] (north=0) for a latitude; inverse of the tile maths.
-function mercY(lat) {
-  const r = lat * Math.PI / 180;
-  return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2;
-}
-
-async function loadSatellite() {
-  const extra = LOAD_RADIUS + 1;
-  const bounds = {
-    s: CENTER_LAT - extra * TILE_LAT, n: CENTER_LAT + extra * TILE_LAT,
-    w: CENTER_LON - extra * TILE_LON, e: CENTER_LON + extra * TILE_LON,
-  };
-  const txMin = terrainTX(bounds.w, SAT_ZOOM), txMax = terrainTX(bounds.e, SAT_ZOOM);
-  const tyMin = terrainTY(bounds.n, SAT_ZOOM), tyMax = terrainTY(bounds.s, SAT_ZOOM);
-  const cols = txMax - txMin + 1, rows = tyMax - tyMin + 1;
-  if (cols * rows > 256) return null;   // safety cap on tile count
-
-  const TS = 256;   // Esri tiles are 256px
-  const canvas = document.createElement('canvas');
-  canvas.width = cols * TS; canvas.height = rows * TS;
-  const ctx2 = canvas.getContext('2d');
-
-  const fetches = [];
-  for (let ty = tyMin; ty <= tyMax; ty++) {
-    for (let tx = txMin; tx <= txMax; tx++) {
-      fetches.push(new Promise(resolve => {
-        const img = new Image();
-        img.crossOrigin = 'anonymous';
-        img.onload  = () => { ctx2.drawImage(img, (tx - txMin) * TS, (ty - tyMin) * TS); resolve(true); };
-        img.onerror = () => resolve(false);
-        img.src = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${SAT_ZOOM}/${ty}/${tx}`;
-      }));
-    }
-  }
-  const ok = await Promise.all(fetches);
-  if (!ok.some(Boolean)) return null;   // every tile failed → no imagery
-
-  const n = 1 << SAT_ZOOM;
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.minFilter  = THREE.LinearMipmapLinearFilter;
-  tex.magFilter  = THREE.LinearFilter;
-  tex.anisotropy = 8;
-  tex.generateMipmaps = true;
-  // Geographic span of the stitched canvas, in the units the shader needs:
-  // lon edges (linear) and mercator-Y edges (linear in the projection).
-  return {
-    tex,
-    lonW: txMin / n * 360 - 180,
-    lonE: (txMax + 1) / n * 360 - 180,
-    merN: tyMin / n,            // mercator-Y at the top (north) edge
-    merS: (tyMax + 1) / n,      // mercator-Y at the bottom (south) edge
-  };
 }
 
 async function loadTerrain() {
@@ -2346,12 +2284,6 @@ function initScene(collision) {
       uniforms: {
         uGround: { value: new THREE.Color(0xd8dce8) },
         uFar:    { value: FADE_FAR },
-        uSat:    { value: null },   // satellite CanvasTexture (set after load)
-        uSatOn:  { value: 0.0 },    // 0 = flat colour, 1 = imagery
-        uCenter: { value: new THREE.Vector2(CENTER_LON, CENTER_LAT) },
-        uMPerDeg:{ value: new THREE.Vector2(M_PER_DEG_LON, M_PER_DEG_LAT) },
-        uSatLon: { value: new THREE.Vector2(0, 1) },   // (lonW, lonE)
-        uSatMer: { value: new THREE.Vector2(0, 1) },   // (merN, merS)
         ...fishUniforms(),
       },
       transparent: true,
@@ -2368,17 +2300,10 @@ function initScene(collision) {
         }
       `,
       fragmentShader: /* glsl */`
-        uniform vec3      uGround;
-        uniform float     uFar;
-        uniform sampler2D uSat;
-        uniform float     uSatOn;
-        uniform vec2      uCenter;    // (lon, lat) of world origin
-        uniform vec2      uMPerDeg;   // (m per °lon, m per °lat)
-        uniform vec2      uSatLon;    // (lonW, lonE) of the imagery canvas
-        uniform vec2      uSatMer;    // (merN, merS) mercator-Y of the canvas
-        varying vec2      vXZ;
+        uniform vec3  uGround;
+        uniform float uFar;
+        varying vec2  vXZ;
         ${FISH_FRAG_GLSL}
-        #define PI 3.14159265359
         void main() {
           // Ground-specific fisheye clip. The ground is one flat colour, so its
           // in-front peripheral fragments can fill the frame edge with no visible
@@ -2396,21 +2321,7 @@ function initScene(collision) {
           float d     = length(vXZ - cameraPosition.xz);
           float alpha = 1.0 - smoothstep(uFar * 0.5, uFar, d);
           if (alpha < 0.01) discard;
-
-          vec3 col = uGround;
-          if (uSatOn > 0.5) {
-            // World XZ → geographic lon/lat (inverse of worldToGeo).
-            float lon = uCenter.x + vXZ.x / uMPerDeg.x;
-            float lat = uCenter.y - vXZ.y / uMPerDeg.y;
-            // lon/lat → web-mercator → canvas UV via the stored bounds.
-            float mer = (1.0 - log(tan(lat*PI/180.0) + 1.0/cos(lat*PI/180.0)) / PI) / 2.0;
-            float u = (lon - uSatLon.x) / (uSatLon.y - uSatLon.x);
-            float v = (mer - uSatMer.x) / (uSatMer.y - uSatMer.x);
-            if (u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0) {
-              col = texture2D(uSat, vec2(u, v)).rgb;
-            }
-          }
-          gl_FragColor = vec4(col, alpha);
+          gl_FragColor = vec4(uGround, alpha);
         }
       `,
     }),
@@ -2814,22 +2725,11 @@ async function main() {
   // network-bound. Building both regions behind the loading screen means the
   // post-reveal freeze (ring geometry build on first use) never happens.
   setLoad('Loading terrain & map data…', 0.2);
-  const [terrainResult, satResult, coreOsm, ringOsm] = await Promise.all([
+  const [terrainResult, coreOsm, ringOsm] = await Promise.all([
     loadTerrain(),
-    loadSatellite(),
     manager._fetchWithRetry(core.bbox, 'core', setLoad),
     manager._fetchWithRetry(full.bbox, 'ring'),
   ]);
-
-  if (satResult) {
-    const u = ground.material.uniforms;
-    u.uSat.value    = satResult.tex;
-    u.uSatLon.value.set(satResult.lonW, satResult.lonE);
-    u.uSatMer.value.set(satResult.merN, satResult.merS);
-    u.uMPerDeg.value.set(M_PER_DEG_LON, M_PER_DEG_LAT);
-    u.uCenter.value.set(CENTER_LON, CENTER_LAT);
-    u.uSatOn.value  = 1.0;
-  }
 
   terrain = terrainResult;
   if (terrain) {
