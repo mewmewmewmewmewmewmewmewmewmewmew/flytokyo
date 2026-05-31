@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.64';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.64';
+import { TrainSystem } from './train.js?v=11.65';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.65';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1829,13 +1829,22 @@ function buildBirdMesh() {
       base.push(new THREE.Vector3(cx, cy, cz - chord));   // leading edge (front)
       tip.push (new THREE.Vector3(cx, cy, cz + chord));   // trailing edge (back)
     }
-    return makeFan(base, tip, matWing);
+    const mesh = makeFan(base, tip, matWing);
+    // Stash the rest geometry + each vertex's spanwise fraction so the animate
+    // loop can deform the wing as a flexible membrane (bend + twist + tuck)
+    // instead of rotating it rigidly. Layout: vertices 0..n-1 are the leading
+    // edge, n..2n-1 the trailing edge; both share t = (k mod n)/(n-1).
+    const arr = mesh.geometry.attributes.position.array;
+    const tt  = new Float32Array(2 * n);
+    for (let i = 0; i < n; i++) { tt[i] = i / (n - 1); tt[n + i] = i / (n - 1); }
+    mesh.userData = { rest: Float32Array.from(arr), tt, count: 2 * n, sx };
+    return mesh;
   }
   const wingR = buildWing( 1);
   const wingL = buildWing(-1);
   group.add(wingR);
   group.add(wingL);
-  // Exposed so the animate loop can flap them about the body axis (rotation.z).
+  // Exposed so the animate loop can flap/flex/tuck them per-vertex.
   group.userData.wingR = wingR;
   group.userData.wingL = wingL;
 
@@ -2526,16 +2535,51 @@ function initScene(collision) {
   });
 
   // Wing-flap state. The bird flaps in short bursts then glides, the way a
-  // swallow actually flies: a burst rotates the wings up/down about the body
-  // axis at a few Hz, between bursts the wings ease out to a relaxed glide with
-  // a faint idle bob. Amplitude + frequency are eased so bursts blend smoothly.
+  // swallow actually flies. Each wing is deformed as a flexible membrane: the
+  // flap angle grows along the span and lags in phase toward the tip (so the
+  // motion ripples outward, not like a rigid board), with a chordwise twist
+  // that feathers the wing through the stroke. When the bird dives the wings
+  // stop flapping and tuck back into a swept glide.
   const wingR = birdMesh.userData.wingR;
   const wingL = birdMesh.userData.wingL;
-  let flapPhase  = 0;     // running flap angle phase
+  let flapPhase  = 0;     // running flap phase (shoulder); tips lag behind
   let flapAmp    = 0.06;  // current (eased) amplitude in radians
   let flapFreq   = 2;     // current (eased) angular speed
   let flapBurst  = 0;     // seconds left in the current flapping burst
   let glideTimer = 1.0;   // seconds until the next burst is allowed to start
+  let wingTuck   = 0;     // 0 = spread, 1 = swept-back dive tuck (eased)
+  const WING_LAG   = 1.0; // phase lag from shoulder to tip → travelling-wave flex
+  const WING_TWIST = 0.22;// chordwise feathering amplitude
+
+  // Deform one wing from its rest geometry: tuck (dive sweep) → twist (feather)
+  // → flap (span- and phase-dependent bend about the body axis). Recomputed
+  // from rest each frame so nothing accumulates/drifts.
+  function deformWing(mesh, amp, phase, tuck) {
+    const ud = mesh.userData, sx = ud.sx, rest = ud.rest, tt = ud.tt;
+    const arr = mesh.geometry.attributes.position.array;
+    for (let k = 0; k < ud.count; k++) {
+      const t    = tt[k];
+      const span = Math.pow(t, 1.25);               // tip flexes far more than root
+      let x = rest[k*3], y = rest[k*3+1], z = rest[k*3+2];
+      // Dive tuck: sweep the tips back, fold the span in, drop slightly.
+      if (tuck > 0.001) {
+        z += tuck * span * 0.85;
+        x -= sx   * tuck * span * 0.30;
+        y -= tuck * span * 0.08;
+      }
+      const ph = phase - WING_LAG * t;              // tip lags the shoulder
+      // Twist about the spanwise (x) axis — feathers the chord with flap speed.
+      const tw = sx * WING_TWIST * span * Math.cos(ph) * amp * (1 - tuck);
+      if (tw) { const c = Math.cos(tw), s = Math.sin(tw); const ny = y*c - z*s, nz = y*s + z*c; y = ny; z = nz; }
+      // Flap about the body (z) axis: resting dihedral + phase-lagged bend.
+      const a = sx * (0.05 * span + amp * span * Math.sin(ph)) * (1 - 0.6 * tuck);
+      const c = Math.cos(a), s = Math.sin(a);
+      arr[k*3]   = x*c - y*s;
+      arr[k*3+1] = x*s + y*c;
+      arr[k*3+2] = z;
+    }
+    mesh.geometry.attributes.position.needsUpdate = true;
+  }
 
   (function animate() {
     requestAnimationFrame(animate);
@@ -2557,28 +2601,30 @@ function initScene(collision) {
     birdMesh.rotation.set(controls.getPitch(), controls.getYaw(), controls.getRoll(), 'YXZ');
 
     // ── Wing flap ──────────────────────────────────────────────────────────
-    // Schedule occasional flapping bursts; thrusting (climbing/accelerating)
-    // makes them come more often, gliding lets them lapse so the bird coasts.
+    // Occasional flapping bursts when cruising; while diving the wings stop
+    // flapping and tuck back into a swept glide.
     if (wingR && wingL) {
+      const diving = controls.getPitch() < -0.35;       // nose pitched steeply down
+      wingTuck += ((diving ? 1 : 0) - wingTuck) * Math.min(dt * 4, 1);
+
       glideTimer -= dt;
-      if (flapBurst <= 0 && glideTimer <= 0) {
+      if (diving) flapBurst = 0;                          // never flap mid-dive
+      else if (flapBurst <= 0 && glideTimer <= 0) {
         flapBurst  = 0.5 + Math.random() * 0.9;          // flap for a moment…
         glideTimer = 1.2 + Math.random() * 2.8;          // …then glide a while
       }
       let ampTarget, freqTarget;
-      if (flapBurst > 0) {
+      if (flapBurst > 0 && !diving) {
         flapBurst -= dt;
         ampTarget = 0.85; freqTarget = 16;               // strong, fast beats
       } else {
-        ampTarget = 0.06; freqTarget = 2.2;              // relaxed glide + idle bob
+        ampTarget = 0.05; freqTarget = 2.2;              // relaxed glide + idle bob
       }
       flapAmp  += (ampTarget  - flapAmp)  * Math.min(dt * 6, 1);
       flapFreq += (freqTarget - flapFreq) * Math.min(dt * 6, 1);
       flapPhase += dt * flapFreq;
-      // Bias upstroke a touch higher than downstroke for a livelier beat.
-      const flap = Math.sin(flapPhase) * flapAmp + flapAmp * 0.15;
-      wingR.rotation.z =  flap;
-      wingL.rotation.z = -flap;
+      deformWing(wingR, flapAmp, flapPhase, wingTuck);
+      deformWing(wingL, flapAmp, flapPhase, wingTuck);
     }
     if (trainRef.system) trainRef.system.update(dt);
     // Declutter: only keep labels near the camera visible.
