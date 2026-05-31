@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.67';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.67';
+import { TrainSystem } from './train.js?v=11.68';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.68';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1814,13 +1814,13 @@ function buildBirdMesh() {
 
   // ── Wings: swallow silhouette — broad inner arm + sharply-swept outer primaries ──
   // Leading and trailing edges are defined independently (not center ± half-chord)
-  // so the chord widens through the inner arm (reaching max at ~40% span) before
-  // narrowing to a pointed tip. Inner section sweeps very little (nearly ⊥ to body);
-  // outer section sweeps hard back. Both edges converge exactly at the wingtip.
+  // so the chord widens through the inner arm before narrowing to a pointed tip.
+  // The leading edge sweeps backward MONOTONICALLY from the root (no forward
+  // bulge), so the two wings' front edges meet at the body at one shared sweep
+  // angle — a single continuous chevron when seen from the top.
   //
-  // Quadratic fits through three control points each (shoulder, elbow @t=0.40, tip):
-  //   Leading  edge Z: −0.45 (shoulder, near neck)  → −0.40 (elbow)  → +0.90 (tip)
-  //   Trailing edge Z: +0.25 (shoulder, mid-body)   → +0.50 (elbow)  → +0.90 (tip)
+  // Leading  edge Z: −0.30 (root) → +0.90 (tip), via 0.55·t + 0.65·t²
+  // Trailing edge Z: +0.25 (root) → +0.90 (tip), meeting the leading edge at the tip
   function buildWing(sx) {
     const n = 18;
     const base = [], tip = [];
@@ -1828,12 +1828,13 @@ function buildBirdMesh() {
       const t = i / (n - 1);
       const e = t * t * (3 - 2 * t);
 
-      const x  = sx * (0.17 + 2.15 * t);   // span, shoulder → wingtip
+      const x  = sx * (0.15 + 2.18 * t);   // span, shoulder → wingtip
       const y  = 0.06 - 0.13 * e;           // slight dihedral droop
 
-      // Leading edge: forward at shoulder, inner arm barely sweeps back,
-      // then outer primaries sweep hard to the tip.
-      const zL = -0.45 - 0.69 * t + 2.04 * t * t;
+      // Leading edge: sweeps straight back from the root at a steady angle,
+      // accelerating into the outer primaries — monotonic so both wings form
+      // a continuous parallel chevron at the body.
+      const zL = -0.30 + 0.55 * t + 0.65 * t * t;
 
       // Trailing edge: starts just behind body midline, sweeps gently back
       // and meets the leading edge exactly at the tip.
@@ -2582,6 +2583,10 @@ function initScene(collision) {
         x -= sx   * tuck * span * 0.55;
       }
       const ph = phase - WING_LAG * t;              // tip lags the shoulder
+      // Asymmetric stroke: the wing sweeps DOWN its full distance (power stroke)
+      // but rises only ~half as far on the UPstroke (recovery), like a real bird.
+      let sUp = Math.sin(ph);
+      sUp = sUp > 0 ? sUp * 0.5 : sUp;              // positive = up → halve it
       // Twist about the spanwise (x) axis — feathers the chord with flap speed.
       const tw = sx * WING_TWIST * span * Math.cos(ph) * amp * (1 - tuck);
       if (tw) { const c = Math.cos(tw), s = Math.sin(tw); const ny = y*c - z*s, nz = y*s + z*c; y = ny; z = nz; }
@@ -2590,7 +2595,7 @@ function initScene(collision) {
       // phase-lagged flap bend (faded out as the wings tuck for the dive).
       const a = sx * (0.05 * span
                     + DIVE_DIHEDRAL * tuck
-                    + amp * span * Math.sin(ph) * (1 - 0.6 * tuck));
+                    + amp * span * sUp * (1 - 0.6 * tuck));
       const c = Math.cos(a), s = Math.sin(a);
       arr[k*3]   = x*c - y*s;
       arr[k*3+1] = x*s + y*c;
