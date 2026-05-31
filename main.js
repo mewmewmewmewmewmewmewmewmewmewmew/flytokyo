@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.62';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.62';
+import { TrainSystem } from './train.js?v=11.63';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.63';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1775,19 +1775,19 @@ function buildBirdMesh() {
   // Bird faces −Z (Three.js default forward). Dorsal (top-down) layout:
   //  −Z = head/beak, +Z = tail, ±X = wingtips, +Y = up (back).
 
-  // ── Body: elongated ellipsoid, gives the lat/long grid of the reference ──
+  // ── Body: slim, streamlined ellipsoid (swallow torso) ──
   const body = new THREE.Mesh(new THREE.SphereGeometry(0.5, 16, 11), matBody);
-  body.scale.set(0.42, 0.40, 1.30);     // narrow, slightly flat, long
+  body.scale.set(0.34, 0.34, 1.45);     // narrow, streamlined, long
   group.add(body);
 
   // ── Head: smaller ellipsoid blended into the front ──
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.5, 12, 9), matBody);
-  head.scale.set(0.27, 0.27, 0.34);
-  head.position.set(0, 0.05, -0.66);
+  head.scale.set(0.25, 0.25, 0.32);
+  head.position.set(0, 0.05, -0.68);
   group.add(head);
 
   // ── Beak: slim cone pointing −Z ──
-  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.36, 4, 1), matBeak);
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.30, 4, 1), matBeak);
   beak.rotation.x = -Math.PI / 2;       // +Y axis → −Z
   beak.position.set(0, 0.04, -0.92);
   group.add(beak);
@@ -1812,49 +1812,60 @@ function buildBirdMesh() {
     return new THREE.Mesh(geo, mat);
   }
 
-  // ── Wings: a swept fan of feathers from shoulder to wingtip ──
+  // ── Wings: long swept-back scythe, tapering to a sharp wingtip ──
+  // The leading and trailing edges converge at the tip (chord → 0) so the wing
+  // ends in a point, and the whole panel sweeps backward with t² for the
+  // curved, swept silhouette of a swallow in flight.
   function buildWing(sx) {
-    const n = 16;
+    const n = 18;
     const base = [], tip = [];
     for (let i = 0; i < n; i++) {
       const t = i / (n - 1);
-      const e = t * t * (3 - 2 * t);          // smoothstep for a curved edge
-      // Leading edge: shoulder → wrist, sweeping slightly back & dropping.
-      base.push(new THREE.Vector3(
-        sx * (0.17 + 1.55 * t),
-        0.07 - 0.10 * e,
-        -0.20 + 0.40 * e,
-      ));
-      // Trailing edge: wider and swept further back, drooping at the tips.
-      tip.push(new THREE.Vector3(
-        sx * (0.30 + 1.95 * t),
-        0.03 - 0.22 * e,
-        0.22 + 0.78 * e,
-      ));
+      const e = t * t * (3 - 2 * t);          // smoothstep for vertical droop
+      const cx = sx * (0.18 + 1.95 * t);       // span: shoulder → wingtip
+      const cz = -0.10 + 1.05 * t * t;         // sweep backward, accelerating
+      const cy = 0.07 - 0.15 * e;              // droop toward the tips
+      const chord = 0.44 * (1 - t);            // wing half-depth: widest at base → 0 at tip
+      base.push(new THREE.Vector3(cx, cy, cz - chord));   // leading edge (front)
+      tip.push (new THREE.Vector3(cx, cy, cz + chord));   // trailing edge (back)
     }
     return makeFan(base, tip, matWing);
   }
   group.add(buildWing( 1));
   group.add(buildWing(-1));
 
-  // ── Tail: a fan of feathers spreading behind the body ──
-  function buildTail() {
-    const n = 11;
+  // ── Tail: deeply forked, two long pointed streamers in a wide V ──
+  const rootZ = 0.62;
+  function buildStreamer(sx) {
+    const n = 12;
     const base = [], tip = [];
-    const rootZ = 0.55;
     for (let i = 0; i < n; i++) {
       const t = i / (n - 1);
-      const a = (t - 0.5) * 2;                 // −1 … 1 across the fan
-      base.push(new THREE.Vector3(a * 0.10, 0.01, rootZ));
-      tip.push(new THREE.Vector3(
-        a * 0.42,
-        -0.05,
-        rootZ + 0.62 - Math.abs(a) * 0.14,     // outer feathers a touch shorter
-      ));
+      const z = rootZ + 1.25 * t;              // long trailing streamer
+      const y = -0.02 - 0.04 * t;
+      base.push(new THREE.Vector3(sx * (0.02 + 0.64 * t), y, z));  // inner edge
+      tip.push (new THREE.Vector3(sx * (0.15 + 0.51 * t), y, z));  // outer edge → meets at point
     }
     return makeFan(base, tip, matBody);
   }
-  group.add(buildTail());
+  group.add(buildStreamer( 1));
+  group.add(buildStreamer(-1));
+
+  // Small central web closing the notch between the two streamers' roots.
+  function buildTailWeb() {
+    const n = 7;
+    const base = [], tip = [];
+    for (let i = 0; i < n; i++) {
+      const t = i / (n - 1);
+      const a = (t - 0.5) * 2;                 // −1 … 1 across the web
+      base.push(new THREE.Vector3(a * 0.08, 0.0, rootZ - 0.04));
+      tip.push (new THREE.Vector3(a * 0.18, -0.02, rootZ + 0.30 - Math.abs(a) * 0.18));
+    }
+    return makeFan(base, tip, matBody);
+  }
+  group.add(buildTailWeb());
+
+  group.scale.setScalar(0.5);   // half size
 
   return group;
 }
