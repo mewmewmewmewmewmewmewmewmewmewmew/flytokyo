@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v11.78 -->
+  <meta charset="UTF-8"><!-- v11.79 -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -22,6 +22,7 @@
       position: fixed;
       top: 20px;
       left: 20px;
+      z-index: 6;           /* keep HUD text above the WebGL canvas */
       pointer-events: none;
       user-select: none;
     }
@@ -46,9 +47,17 @@
       opacity: 0.35;
       text-align: right;
       line-height: 1.7;
+      z-index: 6;           /* sit above the WebGL canvas (appended later in the DOM) */
       pointer-events: none;
       user-select: none;
     }
+
+    /* Toggled by hotkey 1 — hides all the HUD chrome (text + compass). */
+    body.ui-hidden #overlay,
+    body.ui-hidden #version,
+    body.ui-hidden #speed,
+    body.ui-hidden #hint,
+    body.ui-hidden #compass { display: none; }
 
     #loading {
       position: fixed;
@@ -155,6 +164,7 @@
       left: 20px;
       font-size: 11px;
       opacity: 0.28;
+      z-index: 6;           /* keep HUD text above the WebGL canvas */
       pointer-events: none;
       user-select: none;
     }
@@ -168,6 +178,7 @@
       font-variant-numeric: tabular-nums;
       letter-spacing: 0.04em;
       opacity: 0.7;
+      z-index: 6;           /* keep HUD text above the WebGL canvas */
       pointer-events: none;
       user-select: none;
     }
@@ -254,7 +265,7 @@
     <div id="search-msg"></div>
     <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
     <div id="load-msg"></div>
-    <div id="load-version">v11.78</div>
+    <div id="load-version">v11.79</div>
   </div>
 
   <div id="overlay">
@@ -262,7 +273,7 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v11.78</div>
+  <div id="version">v11.79</div>
   <div id="speed"></div>
   <canvas id="compass" width="360" height="48"></canvas>
 
@@ -278,8 +289,9 @@
         <div><dt>Left-click</dt><dd>Fly forward</dd></div>
         <div><dt>Space</dt><dd>Brake</dd></div>
         <div><dt>Right-click</dt><dd>X-ray view</dd></div>
-        <div><dt>1</dt><dd>Building names</dd></div>
-        <div><dt>2</dt><dd>POI labels</dd></div>
+        <div><dt>1</dt><dd>Hide UI &amp; compass</dd></div>
+        <div><dt>2</dt><dd>Building names</dd></div>
+        <div><dt>3</dt><dd>POI labels</dd></div>
         <div><dt>` (backtick)</dt><dd>Fisheye warp</dd></div>
         <div><dt>F</dt><dd>Fullscreen</dd></div>
         <div><dt>F1</dt><dd>This menu (pause)</dd></div>
@@ -298,6 +310,6 @@
     }
   }
   </script>
-  <script type="module" src="main.js?v=11.78"></script>
+  <script type="module" src="main.js?v=11.79"></script>
 </body>
 </html>

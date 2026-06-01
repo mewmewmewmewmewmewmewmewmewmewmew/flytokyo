@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.78';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.78';
+import { TrainSystem } from './train.js?v=11.79';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.79';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2713,15 +2713,13 @@ function initScene(collision) {
     }
     flutterTail(now);
     if (trainRef.system) trainRef.system.update(dt);
-    // Declutter: only keep labels near the camera visible.
+    // Declutter: only keep labels near the camera visible. Labels stay on even
+    // under the speed warp (the user toggles them on deliberately) — they're
+    // camera-facing billboards, so they ride along near their world anchor.
     const cp = camera.position;
-    // Labels are camera-facing billboards/sprites that use normal projection, so
-    // they'd float detached from the warped world — hide them once the speed warp
-    // engages (blend > 0). At rest the view is plain perspective, so they show.
-    const warped = FISH_U.uFishBlend.value > 0.02;
     for (const grp of [labelsRef.bldgGroup, labelsRef.poiGroup]) {
       if (grp && grp.visible) {
-        for (const s of grp.children) s.visible = !warped && cp.distanceTo(s.position) < LABEL_DIST;
+        for (const s of grp.children) s.visible = cp.distanceTo(s.position) < LABEL_DIST;
       }
     }
     // Outline ribbons need the aspect every frame regardless of fisheye state.
@@ -2964,16 +2962,20 @@ async function main() {
   collision.fn      = (x, z, y, R) => manager.isInBuilding(x, z, y, R);
   collision.floorFn = (x, z)    => manager.getFloorHeight(x, z);
 
-  // 1 = building names, 2 = POI labels (both off by default).
+  // 1 = hide all HUD chrome, 2 = building names, 3 = POI labels.
   labelsRef.bldgGroup = manager.buildingLabelGroup;
   labelsRef.poiGroup  = manager.poiLabelGroup;
   window.addEventListener('keydown', e => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
     if (e.code === 'Digit1') {
       e.preventDefault();
-      manager.buildingLabelGroup.visible = !manager.buildingLabelGroup.visible;
+      document.body.classList.toggle('ui-hidden');
     }
     if (e.code === 'Digit2') {
+      e.preventDefault();
+      manager.buildingLabelGroup.visible = !manager.buildingLabelGroup.visible;
+    }
+    if (e.code === 'Digit3') {
       e.preventDefault();
       manager.poiLabelGroup.visible = !manager.poiLabelGroup.visible;
     }
