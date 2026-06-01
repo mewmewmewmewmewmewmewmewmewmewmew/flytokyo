@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.79';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.79';
+import { TrainSystem } from './train.js?v=11.80';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.80';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -543,7 +543,7 @@ function renderLabelCanvas(text, { bg, stroke, fg = '#fff', fontSize = 48 }) {
 function wallPlaneMesh(tex, w, h, x, z, nx, nz, y) {
   const mesh = new THREE.Mesh(
     new THREE.PlaneGeometry(w, h),
-    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide }),
+    applyFisheye(new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide })),
   );
   const off = 0.4;
   mesh.position.set(x + nx * off, y, z + nz * off);
@@ -624,7 +624,7 @@ function makePoiLabel(px, pz, text, footprints) {
     const y = (terrain ? terrain.sample(wall.qx, wall.qz) : 0) + 3.5;
     return wallPlaneMesh(tex, w, h, wall.qx, wall.qz, nx, nz, y);
   }
-  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
+  const spr = new THREE.Sprite(applyFisheyeSprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false })));
   spr.scale.set(2 * aspect, 2, 1);
   spr.renderOrder = 5;
   const y = (terrain ? terrain.sample(px, pz) : 0) + 4;
@@ -1761,6 +1761,20 @@ function applyFisheye(mat) {
     shader.vertexShader = FISH_PROJ_GLSL + '\n' + shader.vertexShader.replace(
       '#include <project_vertex>',
       'vec4 mvPosition = modelViewMatrix * vec4(transformed, 1.0); vFishView = mvPosition.xyz; gl_Position = projectVertex(mvPosition);',
+    );
+  };
+  return mat;
+}
+
+// Sprite variant: Three.js sprite shaders compute mvPosition themselves (billboard
+// math), so we must NOT overwrite it — just reroute the final gl_Position through
+// the fisheye projection and record the view-space position in vFishView.
+function applyFisheyeSprite(mat) {
+  mat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, fishUniforms());
+    shader.vertexShader = FISH_PROJ_GLSL + '\n' + shader.vertexShader.replace(
+      '#include <project_vertex>',
+      'vFishView = mvPosition.xyz; gl_Position = projectVertex(mvPosition);',
     );
   };
   return mat;
