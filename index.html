@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v11.87 -->
+  <meta charset="UTF-8"><!-- v11.88 -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -58,6 +58,13 @@
     body.ui-hidden #speed,
     body.ui-hidden #hint,
     body.ui-hidden #compass { display: none; }
+
+    /* Mobile: the compass is a 32px full-width bar flush to the top, so push the
+       title/stats and speed readout below it instead of overlapping. */
+    @media (max-width: 768px), (pointer: coarse) {
+      #overlay { top: 40px; }
+      #speed   { top: 40px; }
+    }
 
     #loading {
       position: fixed;
@@ -265,7 +272,7 @@
     <div id="search-msg"></div>
     <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
     <div id="load-msg"></div>
-    <div id="load-version">v11.87</div>
+    <div id="load-version">v11.88</div>
   </div>
 
   <div id="overlay">
@@ -273,7 +280,7 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v11.87</div>
+  <div id="version">v11.88</div>
   <div id="speed"></div>
   <canvas id="compass" width="360" height="48"></canvas>
 
@@ -310,6 +317,6 @@
     }
   }
   </script>
-  <script type="module" src="main.js?v=11.87"></script>
+  <script type="module" src="main.js?v=11.88"></script>
 </body>
 </html>
