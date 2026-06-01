@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.86';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.86';
+import { TrainSystem } from './train.js?v=11.87';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.87';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2591,20 +2591,24 @@ function initScene(collision) {
   // Compass sizing: set inline styles + bitmap directly from JS so we're not
   // fighting the global `canvas { inset:0 }` cascade. Mobile = full-width 32 px
   // strip flush to top; desktop = 360 × 48 centred pill.
+  const _isTouch = (window.matchMedia && matchMedia('(pointer: coarse)').matches)
+                || ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
   let _cW = 360, _cH = 48;   // logical (CSS-pixel) compass dimensions
   function syncCompassSize() {
     if (!compassEl) return;
-    const mobile = window.innerWidth <= 768;
-    _cW = mobile ? window.innerWidth : 360;
+    const vw = document.documentElement.clientWidth || window.innerWidth;
+    const mobile = _isTouch || vw <= 768;
+    _cW = mobile ? vw : 360;
     _cH = mobile ? 32 : 48;
     // Inline styles override everything including the global canvas rule.
-    compassEl.style.width     = _cW + 'px';
-    compassEl.style.height    = _cH + 'px';
-    compassEl.style.left      = mobile ? '0' : '50%';
-    compassEl.style.transform = mobile ? 'none' : 'translateX(-50%)';
-    compassEl.style.top       = '0';
-    compassEl.style.right     = 'auto';
-    compassEl.style.bottom    = 'auto';
+    compassEl.style.setProperty('position', 'fixed', 'important');
+    compassEl.style.setProperty('width',  _cW + 'px', 'important');
+    compassEl.style.setProperty('height', _cH + 'px', 'important');
+    compassEl.style.setProperty('left',   mobile ? '0px' : '50%', 'important');
+    compassEl.style.setProperty('top',    '0px', 'important');
+    compassEl.style.setProperty('right',  'auto', 'important');
+    compassEl.style.setProperty('bottom', 'auto', 'important');
+    compassEl.style.setProperty('transform', mobile ? 'none' : 'translateX(-50%)', 'important');
     // Bitmap: one real pixel per CSS pixel (skip DPR scaling — the tape is
     // text + lines, not photography; 1× is perfectly crisp on all screens).
     compassEl.width  = _cW;
@@ -2612,6 +2616,9 @@ function initScene(collision) {
   }
   syncCompassSize();
   window.addEventListener('resize', syncCompassSize);
+  window.addEventListener('orientationchange', syncCompassSize);
+  window.addEventListener('load', syncCompassSize);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', syncCompassSize);
 
   // Heading tape: a 360px-wide horizontal strip.  The tape pixel-scrolls so each
   // degree = 1 px; cardinals are labelled every 45° and tick marks every 10°.
