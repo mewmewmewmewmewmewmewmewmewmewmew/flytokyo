@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.91';
+import { fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.95';
 
 // ─── Car dimensions (metres) ──────────────────────────────────────────────────
 const CAR_L    = 20;
@@ -100,12 +100,19 @@ function buildCar(isUnderground) {
     group.add(mesh);
   };
 
-  add(new THREE.BoxGeometry(CAR_W, CAR_H, CAR_L),             mats[0]);
-  add(new THREE.BoxGeometry(CAR_W - 0.2, 0.15, CAR_L - 0.4), mats[1], 0, CAR_H / 2 + 0.08, 0);
-  add(new THREE.BoxGeometry(CAR_W, CAR_H, 0.3),               mats[2], 0, 0,  CAR_L / 2 - 0.15);
-  add(new THREE.BoxGeometry(CAR_W, CAR_H, 0.3),               mats[3], 0, 0, -CAR_L / 2 + 0.15);
-  add(new THREE.BoxGeometry(0.1, CAR_H * 0.35, CAR_L * 0.88), mats[4],  CAR_W / 2 + 0.02, CAR_H * 0.12, 0);
-  add(new THREE.BoxGeometry(0.1, CAR_H * 0.35, CAR_L * 0.88), mats[5], -CAR_W / 2 - 0.02, CAR_H * 0.12, 0);
+  // Tessellate every box: under the fisheye warp a long edge must be split into
+  // short segments so it curves smoothly instead of projecting as one straight
+  // chord. Without this, a 20 m car edge that wraps near/behind the camera smears
+  // into a tall spike that swings around with the view. ~1 segment per 2 m.
+  const seg = d => Math.max(1, Math.round(d / 2));
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d, seg(w), seg(h), seg(d));
+
+  add(box(CAR_W, CAR_H, CAR_L),             mats[0]);
+  add(box(CAR_W - 0.2, 0.15, CAR_L - 0.4),  mats[1], 0, CAR_H / 2 + 0.08, 0);
+  add(box(CAR_W, CAR_H, 0.3),               mats[2], 0, 0,  CAR_L / 2 - 0.15);
+  add(box(CAR_W, CAR_H, 0.3),               mats[3], 0, 0, -CAR_L / 2 + 0.15);
+  add(box(0.1, CAR_H * 0.35, CAR_L * 0.88), mats[4],  CAR_W / 2 + 0.02, CAR_H * 0.12, 0);
+  add(box(0.1, CAR_H * 0.35, CAR_L * 0.88), mats[5], -CAR_W / 2 - 0.02, CAR_H * 0.12, 0);
 
   return { group, mats };
 }
