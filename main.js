@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.95';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.95';
+import { TrainSystem } from './train.js?v=11.97';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.97';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -3320,21 +3320,18 @@ async function main() {
     syncTrains();
   }
 
-  // Terrain tiles and core OSM data are independent network requests — fetch them
-  // in parallel so the slower one doesn't make us wait for the faster one.
-  const core = manager.regionTiles(0, 0, 1);
-  const full = manager.regionTiles(0, 0, LOAD_RADIUS);
-  manager.tilesTotal = core.keys.length;
+  // One Overpass request covers the whole load region. (Previously a second
+  // inner "core" query ran alongside this one; its bbox sits entirely inside the
+  // region, so it re-downloaded the centre and competed with this query for
+  // Overpass's per-IP concurrency slots. Fetching once is faster and lighter —
+  // and terrain still loads in parallel so neither waits on the other.)
+  const region = manager.regionTiles(0, 0, LOAD_RADIUS);
+  manager.tilesTotal = region.keys.length;
 
-  // Fetch terrain, core OSM, and the full ring OSM all in parallel — the ring
-  // fetch usually completes around the same time as the others since it's
-  // network-bound. Building both regions behind the loading screen means the
-  // post-reveal freeze (ring geometry build on first use) never happens.
   setLoad('Loading terrain & map data…', 0.2);
-  const [terrainResult, coreOsm, ringOsm] = await Promise.all([
+  const [terrainResult, regionOsm] = await Promise.all([
     loadTerrain(),
-    manager._fetchWithRetry(core.bbox, 'core', setLoad),
-    manager._fetchWithRetry(full.bbox, 'ring'),
+    manager._fetchWithRetry(region.bbox, 'region', setLoad),
   ]);
 
   terrain = terrainResult;
@@ -3355,14 +3352,10 @@ async function main() {
     controls.init(0, terrain.sample(0, 0) + BIRD_HEIGHT, 0);
   }
 
-  if (coreOsm) { setLoad('Building the city…', 0.80); await sleep(0); }
-  manager._settleRegion(core.keys, coreOsm);
-
-  // Build the full ring synchronously while still behind the loading screen so
-  // no geometry build ever runs after reveal. seenIds dedup skips anything
-  // already ingested by the core pass.
-  if (ringOsm) { setLoad('Building surroundings…', 0.90); await sleep(0); }
-  manager._settleRegion(full.keys, ringOsm);
+  // Build the whole region synchronously while still behind the loading screen
+  // so no geometry build ever runs after reveal (no post-reveal hitch).
+  if (regionOsm) { setLoad('Building the city…', 0.88); await sleep(0); }
+  manager._settleRegion(region.keys, regionOsm);
   syncTrains();
 
   // Warm-up: compile all shaders and force GPU buffer uploads before the
@@ -3373,7 +3366,7 @@ async function main() {
 
   reveal();
   // Background: only POIs remain (off by default; F2 to show).
-  manager.loadPOIs(full.bbox);
+  manager.loadPOIs(region.bbox);
 }
 
 main();

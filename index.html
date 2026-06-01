@@ -1,12 +1,22 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v11.95 -->
+  <meta charset="UTF-8"><!-- v11.97 -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Tokyo 3D</title>
+
+  <!-- Warm up the third-party origins and preload the Three.js module so the
+       TLS handshakes + the biggest dependency's fetch start during HTML parse,
+       instead of waiting until the importmap/module script evaluates. Shaves
+       cold-start latency off first load. -->
+  <link rel="preconnect" href="https://esm.sh" crossorigin>
+  <link rel="preconnect" href="https://s3.amazonaws.com" crossorigin>
+  <link rel="preconnect" href="https://overpass-api.de">
+  <link rel="preconnect" href="https://overpass.kumi.systems">
+  <link rel="modulepreload" href="https://esm.sh/three@0.165.0" crossorigin>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html { height: 100%; overflow: hidden; }
@@ -292,7 +302,7 @@
     <div id="search-msg"></div>
     <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
     <div id="load-msg"></div>
-    <div id="load-version">v11.95</div>
+    <div id="load-version">v11.97</div>
   </div>
 
   <div id="overlay">
@@ -300,7 +310,7 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v11.95</div>
+  <div id="version">v11.97</div>
   <div id="speed"></div>
   <canvas id="compass" width="360" height="48"></canvas>
 
@@ -336,6 +346,6 @@
     }
   }
   </script>
-  <script type="module" src="main.js?v=11.95"></script>
+  <script type="module" src="main.js?v=11.97"></script>
 </body>
 </html>
