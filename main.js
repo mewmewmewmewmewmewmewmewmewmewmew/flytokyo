@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.01';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.01';
+import { TrainSystem } from './train.js?v=12.02';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.02';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -3052,7 +3052,7 @@ const MAJOR_CITIES = [
   ['Addis Ababa', 9.0250, 38.7469, 'Ethiopia'], ['Detroit', 42.3314, -83.0458, 'USA'],
   ['Seattle', 47.6062, -122.3321, 'USA'], ['Kabul', 34.5553, 69.2075, 'Afghanistan'],
   ['Pyongyang', 39.0392, 125.7625, 'North Korea'], ['Accra', 5.6037, -0.1870, 'Ghana'],
-  ['Kano', 12.0122, 8.5920, 'Nigeria'], ['Taipei', 25.0330, 121.5654, 'Taiwan'],
+  ['Kano', 12.0222, 8.5920, 'Nigeria'], ['Taipei', 25.0330, 121.5654, 'Taiwan'],
   ['Kyiv', 50.4501, 30.5234, 'Ukraine'], ['Guayaquil', -2.1709, -79.9224, 'Ecuador'],
   ['Hanoi', 21.0285, 105.8542, 'Vietnam'], ['Medellín', 6.2476, -75.5658, 'Colombia'],
   ['Minneapolis', 44.9778, -93.2650, 'USA'], ['San Diego', 32.7157, -117.1611, 'USA'],
