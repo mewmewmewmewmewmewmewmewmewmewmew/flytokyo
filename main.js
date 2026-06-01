@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.96';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.96';
+import { TrainSystem } from './train.js?v=11.95';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.95';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2231,9 +2231,6 @@ function createBirdControls(camera, domElement, collision) {
     getPitch() { return headPitch; },
     getRoll()  { return roll; },
     getSpeed() { return _vel.length(); },
-    // 0 at rest, 1 at top non-dive speed (can exceed 1 in a dive). Same measure
-    // that drives the fisheye blend — reused to scale the speed-ray overlay.
-    getSpeedFrac() { return _vel.length() / MOVE_MAX; },
     setFisheye(on) { fisheyeMode = on; updateCamera(); },
     init(x, y, z) { birdPos.set(x, y, z); updateCamera(); },
     update() {
@@ -2577,7 +2574,6 @@ function initScene(collision) {
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
     FISH_U.uFishAspect.value = w / h;
-    syncRaysSize();
   }
   window.addEventListener('resize', onResize);
   // visualViewport fires when the iOS address bar slides in/out (innerHeight
@@ -2592,81 +2588,6 @@ function initScene(collision) {
   const speedEl    = document.getElementById('speed');
   const compassEl  = document.getElementById('compass');
   const compassCtx = compassEl ? compassEl.getContext('2d') : null;
-
-  // ── Speed rays ────────────────────────────────────────────────────────────
-  // Full-screen CMYK streaks fanning out from the centre, echoing the converging
-  // colour rays on the Sotte Bosse cover. They fade in with speed (same onset
-  // band as the fisheye) and lengthen toward top speed, while the centre stays
-  // clear so the view ahead reads. Colours cycle through the accent palette.
-  const raysEl  = document.getElementById('rays');
-  const raysCtx = raysEl ? raysEl.getContext('2d') : null;
-  const RAY_RGB = [
-    [236, 58, 139],   // magenta
-    [0, 166, 224],    // cyan
-    [255, 226, 61],   // yellow
-    [182, 214, 52],   // lime
-    [44, 143, 199],   // deep cyan (the bird blue)
-  ];
-  // Fixed streak set so they don't flicker frame-to-frame. Each has a stable
-  // angle, colour, length, width and a speed threshold at which it appears.
-  const _rays = [];
-  for (let i = 0; i < 84; i++) {
-    _rays.push({
-      ang:    Math.random() * Math.PI * 2,
-      rgb:    RAY_RGB[i % RAY_RGB.length],
-      len:    0.45 + Math.random() * 0.55,
-      width:  1 + Math.random() * 2.4,
-      thresh: Math.random() * 0.55,
-    });
-  }
-  let _rW = 0, _rH = 0;
-  function syncRaysSize() {
-    if (!raysEl || !raysCtx) return;
-    const dpr = Math.min(devicePixelRatio, 2);
-    _rW = innerWidth; _rH = innerHeight;
-    raysEl.width  = Math.round(_rW * dpr);
-    raysEl.height = Math.round(_rH * dpr);
-    raysCtx.setTransform(dpr, 0, 0, dpr, 0, 0);   // draw in CSS pixels
-  }
-  syncRaysSize();
-  const _smoothstep = (e0, e1, x) => {
-    const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
-    return t * t * (3 - 2 * t);
-  };
-  function drawRays(frac, now) {
-    if (!raysCtx) return;
-    raysCtx.clearRect(0, 0, _rW, _rH);
-    const on = _smoothstep(0.42, 1.0, frac);   // nothing until ~cruising-fast
-    if (on <= 0.001) return;
-    const cx = _rW / 2, cy = _rH / 2;
-    const diag = Math.hypot(_rW, _rH) / 2;
-    const fc = Math.min(frac, 1);
-    raysCtx.lineCap = 'round';
-    for (const r of _rays) {
-      const local = (frac - r.thresh) / (1 - r.thresh);
-      if (local <= 0) continue;
-      const a = Math.min(local, 1) * on;
-      if (a <= 0.01) continue;
-      const dx = Math.cos(r.ang), dy = Math.sin(r.ang);
-      // Inner end retreats toward the centre as speed rises (rays grow longer),
-      // but never reaches it — the middle of the frame stays clear.
-      const inner = diag * (0.50 - 0.18 * fc);
-      const outer = diag * (0.66 + 0.42 * r.len);
-      const x0 = cx + dx * inner, y0 = cy + dy * inner;
-      const x1 = cx + dx * outer, y1 = cy + dy * outer;
-      const [R, G, B] = r.rgb;
-      const grad = raysCtx.createLinearGradient(x0, y0, x1, y1);
-      grad.addColorStop(0,   `rgba(${R},${G},${B},0)`);
-      grad.addColorStop(0.5, `rgba(${R},${G},${B},${0.5 * a})`);
-      grad.addColorStop(1,   `rgba(${R},${G},${B},0)`);
-      raysCtx.strokeStyle = grad;
-      raysCtx.lineWidth = r.width;
-      raysCtx.beginPath();
-      raysCtx.moveTo(x0, y0);
-      raysCtx.lineTo(x1, y1);
-      raysCtx.stroke();
-    }
-  }
   // Compass sizing: set inline styles + bitmap directly from JS so we're not
   // fighting the global `canvas { inset:0 }` cascade. Mobile = full-width 32 px
   // strip flush to top; desktop = 360 × 48 centred pill.
@@ -2934,7 +2855,6 @@ function initScene(collision) {
     // Bird heading vector is (-sinθ,0,-cosθ) for yaw θ; with +X=East and -Z=North
     // the true clockwise-from-North bearing is -θ, so negate getYaw() here.
     drawCompass(((-controls.getYaw() * 180 / Math.PI) % 360 + 360) % 360);
-    drawRays(controls.getSpeedFrac(), now);
     updateAreaName(controls.birdPos.x, controls.birdPos.z);
     // Sync bird mesh: position + flight orientation (yaw, nose pitch, bank roll)
     birdMesh.position.copy(controls.birdPos);
