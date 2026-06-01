@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.00';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.00';
+import { TrainSystem } from './train.js?v=12.01';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.01';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2999,115 +2999,116 @@ async function ipLocate() {
   return { lat: +d.latitude, lon: +d.longitude, label: d.city || 'My location' };
 }
 
-// A curated list of major world cities with coordinates baked in, so the
-// "surprise me" dice button can jump to a big city instantly — no geocoding,
-// no LLM. Coords point at each city's dense core. [name, lat, lon].
+// A curated list of major world cities with coordinates baked in, so the dice
+// and quiz buttons can jump to a big city instantly — no geocoding, no LLM.
+// Coords point at each city's dense core. [name, lat, lon, country].
 const MAJOR_CITIES = [
-  ['Tokyo', 35.6762, 139.6503], ['Delhi', 28.6139, 77.2090],
-  ['Shanghai', 31.2304, 121.4737], ['São Paulo', -23.5505, -46.6333],
-  ['Mexico City', 19.4326, -99.1332], ['Cairo', 30.0444, 31.2357],
-  ['Mumbai', 19.0760, 72.8777], ['Beijing', 39.9042, 116.4074],
-  ['Dhaka', 23.8103, 90.4125], ['Osaka', 34.6937, 135.5023],
-  ['New York', 40.7128, -74.0060], ['Karachi', 24.8607, 67.0011],
-  ['Buenos Aires', -34.6037, -58.3816], ['Chongqing', 29.4316, 106.9123],
-  ['Istanbul', 41.0082, 28.9784], ['Kolkata', 22.5726, 88.3639],
-  ['Manila', 14.5995, 120.9842], ['Lagos', 6.5244, 3.3792],
-  ['Rio de Janeiro', -22.9068, -43.1729], ['Guangzhou', 23.1291, 113.2644],
-  ['Los Angeles', 34.0522, -118.2437], ['Moscow', 55.7558, 37.6173],
-  ['Shenzhen', 22.5431, 114.0579], ['Lahore', 31.5204, 74.3587],
-  ['Bangalore', 12.9716, 77.5946], ['Paris', 48.8566, 2.3522],
-  ['Bogotá', 4.7110, -74.0721], ['Jakarta', -6.2088, 106.8456],
-  ['Chennai', 13.0827, 80.2707], ['Lima', -12.0464, -77.0428],
-  ['Bangkok', 13.7563, 100.5018], ['Seoul', 37.5665, 126.9780],
-  ['Nagoya', 35.1815, 136.9066], ['Hyderabad', 17.3850, 78.4867],
-  ['London', 51.5074, -0.1278], ['Tehran', 35.6892, 51.3890],
-  ['Chicago', 41.8781, -87.6298], ['Chengdu', 30.5728, 104.0668],
-  ['Nanjing', 32.0603, 118.7969], ['Wuhan', 30.5928, 114.3055],
-  ['Ho Chi Minh City', 10.8231, 106.6297], ['Luanda', -8.8390, 13.2894],
-  ['Ahmedabad', 23.0225, 72.5714], ['Kuala Lumpur', 3.1390, 101.6869],
-  ['Xi’an', 34.3416, 108.9398], ['Hong Kong', 22.3193, 114.1694],
-  ['Dongguan', 23.0207, 113.7518], ['Hangzhou', 30.2741, 120.1551],
-  ['Foshan', 23.0218, 113.1064], ['Riyadh', 24.7136, 46.6753],
-  ['Baghdad', 33.3152, 44.3661], ['Santiago', -33.4489, -70.6693],
-  ['Surat', 21.1702, 72.8311], ['Madrid', 40.4168, -3.7038],
-  ['Suzhou', 31.2989, 120.5853], ['Pune', 18.5204, 73.8567],
-  ['Harbin', 45.8038, 126.5350], ['Houston', 29.7604, -95.3698],
-  ['Dallas', 32.7767, -96.7970], ['Toronto', 43.6532, -79.3832],
-  ['Dar es Salaam', -6.7924, 39.2083], ['Miami', 25.7617, -80.1918],
-  ['Belo Horizonte', -19.9167, -43.9345], ['Singapore', 1.3521, 103.8198],
-  ['Philadelphia', 39.9526, -75.1652], ['Atlanta', 33.7490, -84.3880],
-  ['Fukuoka', 33.5904, 130.4017], ['Khartoum', 15.5007, 32.5599],
-  ['Barcelona', 41.3851, 2.1734], ['Johannesburg', -26.2041, 28.0473],
-  ['Saint Petersburg', 59.9311, 30.3609], ['Qingdao', 36.0671, 120.3826],
-  ['Dalian', 38.9140, 121.6147], ['Washington', 38.9072, -77.0369],
-  ['Yangon', 16.8409, 96.1735], ['Alexandria', 31.2001, 29.9187],
-  ['Jinan', 36.6512, 117.1201], ['Guadalajara', 20.6597, -103.3496],
-  ['Boston', 42.3601, -71.0589], ['Abidjan', 5.3600, -4.0083],
-  ['Ankara', 39.9334, 32.8597], ['Phoenix', 33.4484, -112.0740],
-  ['San Francisco', 37.7749, -122.4194], ['Berlin', 52.5200, 13.4050],
-  ['Sydney', -33.8688, 151.2093], ['Melbourne', -37.8136, 144.9631],
-  ['Casablanca', 33.5731, -7.5898], ['Montréal', 45.5017, -73.5673],
-  ['Nairobi', -1.2864, 36.8172], ['Cape Town', -33.9249, 18.4241],
-  ['Rome', 41.9028, 12.4964], ['Caracas', 10.4806, -66.9036],
-  ['Addis Ababa', 9.0250, 38.7469], ['Detroit', 42.3314, -83.0458],
-  ['Seattle', 47.6062, -122.3321], ['Kabul', 34.5553, 69.2075],
-  ['Pyongyang', 39.0392, 125.7625], ['Accra', 5.6037, -0.1870],
-  ['Kano', 12.0022, 8.5920], ['Taipei', 25.0330, 121.5654],
-  ['Kyiv', 50.4501, 30.5234], ['Guayaquil', -2.1709, -79.9224],
-  ['Hanoi', 21.0285, 105.8542], ['Medellín', 6.2476, -75.5658],
-  ['Minneapolis', 44.9778, -93.2650], ['San Diego', 32.7157, -117.1611],
-  ['Amman', 31.9454, 35.9284], ['Frankfurt', 50.1109, 8.6821],
-  ['Vienna', 48.2082, 16.3738], ['Hamburg', 53.5511, 9.9937],
-  ['Munich', 48.1351, 11.5820], ['Milan', 45.4642, 9.1900],
-  ['Athens', 37.9838, 23.7275], ['Warsaw', 52.2297, 21.0122],
-  ['Bucharest', 44.4268, 26.1025], ['Budapest', 47.4979, 19.0402],
-  ['Amsterdam', 52.3676, 4.9041], ['Brussels', 50.8503, 4.3517],
-  ['Lisbon', 38.7223, -9.1393], ['Stockholm', 59.3293, 18.0686],
-  ['Copenhagen', 55.6761, 12.5683], ['Prague', 50.0755, 14.4378],
-  ['Dubai', 25.2048, 55.2708], ['Abu Dhabi', 24.4539, 54.3773],
-  ['Doha', 25.2854, 51.5310], ['Kuwait City', 29.3759, 47.9774],
-  ['Tel Aviv', 32.0853, 34.7818], ['Jeddah', 21.4858, 39.1925],
-  ['Auckland', -36.8485, 174.7633], ['Brisbane', -27.4698, 153.0251],
-  ['Perth', -31.9523, 115.8613], ['Vancouver', 49.2827, -123.1207],
-  ['Las Vegas', 36.1699, -115.1398], ['Denver', 39.7392, -104.9903],
-  ['Tashkent', 41.2995, 69.2401], ['Baku', 40.4093, 49.8671],
-  ['Almaty', 43.2220, 76.8512], ['Minsk', 53.9006, 27.5590],
-  ['Dublin', 53.3498, -6.2603], ['Helsinki', 60.1699, 24.9384],
-  ['Oslo', 59.9139, 10.7522], ['Zürich', 47.3769, 8.5417],
-  ['Naples', 40.8518, 14.2681], ['Marseille', 43.2965, 5.3698],
-  ['Lyon', 45.7640, 4.8357], ['Porto', 41.1579, -8.6291],
-  ['Tunis', 36.8065, 10.1815], ['Algiers', 36.7538, 3.0588],
-  ['Tripoli', 32.8872, 13.1913], ['Beirut', 33.8938, 35.5018],
-  ['Damascus', 33.5138, 36.2765], ['Quito', -0.1807, -78.4678],
-  ['Montevideo', -34.9011, -56.1645], ['Asunción', -25.2637, -57.5759],
-  ['La Paz', -16.4897, -68.1193], ['Brasília', -15.7975, -47.8919],
-  ['Salvador', -12.9777, -38.5016], ['Fortaleza', -3.7319, -38.5267],
-  ['Recife', -8.0476, -34.8770], ['Curitiba', -25.4284, -49.2733],
-  ['Panama City', 8.9824, -79.5199], ['San José', 9.9281, -84.0907],
-  ['Havana', 23.1136, -82.3666], ['Santo Domingo', 18.4861, -69.9312],
-  ['Guatemala City', 14.6349, -90.5069], ['Maputo', -25.9692, 32.5732],
-  ['Kinshasa', -4.4419, 15.2663], ['Dakar', 14.7167, -17.4677],
-  ['Kampala', 0.3476, 32.5825], ['Lusaka', -15.3875, 28.3228],
-  ['Harare', -17.8252, 31.0335], ['Mombasa', -4.0435, 39.6682],
+  ['Tokyo', 35.6762, 139.6503, 'Japan'], ['Delhi', 28.6139, 77.2090, 'India'],
+  ['Shanghai', 31.2304, 121.4737, 'China'], ['São Paulo', -23.5505, -46.6333, 'Brazil'],
+  ['Mexico City', 19.4326, -99.1332, 'Mexico'], ['Cairo', 30.0444, 31.2357, 'Egypt'],
+  ['Mumbai', 19.0760, 72.8777, 'India'], ['Beijing', 39.9042, 116.4074, 'China'],
+  ['Dhaka', 23.8103, 90.4125, 'Bangladesh'], ['Osaka', 34.6937, 135.5023, 'Japan'],
+  ['New York', 40.7128, -74.0060, 'USA'], ['Karachi', 24.8607, 67.0011, 'Pakistan'],
+  ['Buenos Aires', -34.6037, -58.3816, 'Argentina'], ['Chongqing', 29.4316, 106.9123, 'China'],
+  ['Istanbul', 41.0082, 28.9784, 'Turkey'], ['Kolkata', 22.5726, 88.3639, 'India'],
+  ['Manila', 14.5995, 120.9842, 'Philippines'], ['Lagos', 6.5244, 3.3792, 'Nigeria'],
+  ['Rio de Janeiro', -22.9068, -43.1729, 'Brazil'], ['Guangzhou', 23.1291, 113.2644, 'China'],
+  ['Los Angeles', 34.0522, -118.2437, 'USA'], ['Moscow', 55.7558, 37.6173, 'Russia'],
+  ['Shenzhen', 22.5431, 114.0579, 'China'], ['Lahore', 31.5204, 74.3587, 'Pakistan'],
+  ['Bangalore', 12.9716, 77.5946, 'India'], ['Paris', 48.8566, 2.3522, 'France'],
+  ['Bogotá', 4.7110, -74.0721, 'Colombia'], ['Jakarta', -6.2088, 106.8456, 'Indonesia'],
+  ['Chennai', 13.0827, 80.2707, 'India'], ['Lima', -12.0464, -77.0428, 'Peru'],
+  ['Bangkok', 13.7563, 100.5018, 'Thailand'], ['Seoul', 37.5665, 126.9780, 'South Korea'],
+  ['Nagoya', 35.1815, 136.9066, 'Japan'], ['Hyderabad', 17.3850, 78.4867, 'India'],
+  ['London', 51.5074, -0.1278, 'UK'], ['Tehran', 35.6892, 51.3890, 'Iran'],
+  ['Chicago', 41.8781, -87.6298, 'USA'], ['Chengdu', 30.5728, 104.0668, 'China'],
+  ['Nanjing', 32.0603, 118.7969, 'China'], ['Wuhan', 30.5928, 114.3055, 'China'],
+  ['Ho Chi Minh City', 10.8231, 106.6297, 'Vietnam'], ['Luanda', -8.8390, 13.2894, 'Angola'],
+  ['Ahmedabad', 23.0225, 72.5714, 'India'], ['Kuala Lumpur', 3.1390, 101.6869, 'Malaysia'],
+  ['Xi’an', 34.3416, 108.9398, 'China'], ['Hong Kong', 22.3193, 114.1694, 'China'],
+  ['Dongguan', 23.0207, 113.7518, 'China'], ['Hangzhou', 30.2741, 120.1551, 'China'],
+  ['Foshan', 23.0218, 113.1064, 'China'], ['Riyadh', 24.7136, 46.6753, 'Saudi Arabia'],
+  ['Baghdad', 33.3152, 44.3661, 'Iraq'], ['Santiago', -33.4489, -70.6693, 'Chile'],
+  ['Surat', 21.1702, 72.8311, 'India'], ['Madrid', 40.4168, -3.7038, 'Spain'],
+  ['Suzhou', 31.2989, 120.5853, 'China'], ['Pune', 18.5204, 73.8567, 'India'],
+  ['Harbin', 45.8038, 126.5350, 'China'], ['Houston', 29.7604, -95.3698, 'USA'],
+  ['Dallas', 32.7767, -96.7970, 'USA'], ['Toronto', 43.6532, -79.3832, 'Canada'],
+  ['Dar es Salaam', -6.7924, 39.2083, 'Tanzania'], ['Miami', 25.7617, -80.1918, 'USA'],
+  ['Belo Horizonte', -19.9167, -43.9345, 'Brazil'], ['Singapore', 1.3521, 103.8198, 'Singapore'],
+  ['Philadelphia', 39.9526, -75.1652, 'USA'], ['Atlanta', 33.7490, -84.3880, 'USA'],
+  ['Fukuoka', 33.5904, 130.4017, 'Japan'], ['Khartoum', 15.5007, 32.5599, 'Sudan'],
+  ['Barcelona', 41.3851, 2.1734, 'Spain'], ['Johannesburg', -26.2041, 28.0473, 'South Africa'],
+  ['Saint Petersburg', 59.9311, 30.3609, 'Russia'], ['Qingdao', 36.0671, 120.3826, 'China'],
+  ['Dalian', 38.9140, 121.6147, 'China'], ['Washington', 38.9072, -77.0369, 'USA'],
+  ['Yangon', 16.8409, 96.1735, 'Myanmar'], ['Alexandria', 31.2001, 29.9187, 'Egypt'],
+  ['Jinan', 36.6512, 117.1201, 'China'], ['Guadalajara', 20.6597, -103.3496, 'Mexico'],
+  ['Boston', 42.3601, -71.0589, 'USA'], ['Abidjan', 5.3600, -4.0083, 'Ivory Coast'],
+  ['Ankara', 39.9334, 32.8597, 'Turkey'], ['Phoenix', 33.4484, -112.0740, 'USA'],
+  ['San Francisco', 37.7749, -122.4194, 'USA'], ['Berlin', 52.5200, 13.4050, 'Germany'],
+  ['Sydney', -33.8688, 151.2093, 'Australia'], ['Melbourne', -37.8136, 144.9631, 'Australia'],
+  ['Casablanca', 33.5731, -7.5898, 'Morocco'], ['Montréal', 45.5017, -73.5673, 'Canada'],
+  ['Nairobi', -1.2864, 36.8172, 'Kenya'], ['Cape Town', -33.9249, 18.4241, 'South Africa'],
+  ['Rome', 41.9028, 12.4964, 'Italy'], ['Caracas', 10.4806, -66.9036, 'Venezuela'],
+  ['Addis Ababa', 9.0250, 38.7469, 'Ethiopia'], ['Detroit', 42.3314, -83.0458, 'USA'],
+  ['Seattle', 47.6062, -122.3321, 'USA'], ['Kabul', 34.5553, 69.2075, 'Afghanistan'],
+  ['Pyongyang', 39.0392, 125.7625, 'North Korea'], ['Accra', 5.6037, -0.1870, 'Ghana'],
+  ['Kano', 12.0122, 8.5920, 'Nigeria'], ['Taipei', 25.0330, 121.5654, 'Taiwan'],
+  ['Kyiv', 50.4501, 30.5234, 'Ukraine'], ['Guayaquil', -2.1709, -79.9224, 'Ecuador'],
+  ['Hanoi', 21.0285, 105.8542, 'Vietnam'], ['Medellín', 6.2476, -75.5658, 'Colombia'],
+  ['Minneapolis', 44.9778, -93.2650, 'USA'], ['San Diego', 32.7157, -117.1611, 'USA'],
+  ['Amman', 31.9454, 35.9284, 'Jordan'], ['Frankfurt', 50.1109, 8.6821, 'Germany'],
+  ['Vienna', 48.2082, 16.3738, 'Austria'], ['Hamburg', 53.5511, 9.9937, 'Germany'],
+  ['Munich', 48.1351, 11.5820, 'Germany'], ['Milan', 45.4642, 9.1900, 'Italy'],
+  ['Athens', 37.9838, 23.7275, 'Greece'], ['Warsaw', 52.2297, 21.0122, 'Poland'],
+  ['Bucharest', 44.4268, 26.1025, 'Romania'], ['Budapest', 47.4979, 19.0402, 'Hungary'],
+  ['Amsterdam', 52.3676, 4.9041, 'Netherlands'], ['Brussels', 50.8503, 4.3517, 'Belgium'],
+  ['Lisbon', 38.7223, -9.1393, 'Portugal'], ['Stockholm', 59.3293, 18.0686, 'Sweden'],
+  ['Copenhagen', 55.6761, 12.5683, 'Denmark'], ['Prague', 50.0755, 14.4378, 'Czechia'],
+  ['Dubai', 25.2048, 55.2708, 'UAE'], ['Abu Dhabi', 24.4539, 54.3773, 'UAE'],
+  ['Doha', 25.2854, 51.5310, 'Qatar'], ['Kuwait City', 29.3759, 47.9774, 'Kuwait'],
+  ['Tel Aviv', 32.0853, 34.7818, 'Israel'], ['Jeddah', 21.4858, 39.1925, 'Saudi Arabia'],
+  ['Auckland', -36.8485, 174.7633, 'New Zealand'], ['Brisbane', -27.4698, 153.0251, 'Australia'],
+  ['Perth', -31.9523, 115.8613, 'Australia'], ['Vancouver', 49.2827, -123.1207, 'Canada'],
+  ['Las Vegas', 36.1699, -115.1398, 'USA'], ['Denver', 39.7392, -104.9903, 'USA'],
+  ['Tashkent', 41.2995, 69.2401, 'Uzbekistan'], ['Baku', 40.4093, 49.8671, 'Azerbaijan'],
+  ['Almaty', 43.2220, 76.8512, 'Kazakhstan'], ['Minsk', 53.9006, 27.5590, 'Belarus'],
+  ['Dublin', 53.3498, -6.2603, 'Ireland'], ['Helsinki', 60.1699, 24.9384, 'Finland'],
+  ['Oslo', 59.9139, 10.7522, 'Norway'], ['Zürich', 47.3769, 8.5417, 'Switzerland'],
+  ['Naples', 40.8518, 14.2681, 'Italy'], ['Marseille', 43.2965, 5.3698, 'France'],
+  ['Lyon', 45.7640, 4.8357, 'France'], ['Porto', 41.1579, -8.6291, 'Portugal'],
+  ['Tunis', 36.8065, 10.1815, 'Tunisia'], ['Algiers', 36.7538, 3.0588, 'Algeria'],
+  ['Tripoli', 32.8872, 13.1913, 'Libya'], ['Beirut', 33.8938, 35.5018, 'Lebanon'],
+  ['Damascus', 33.5138, 36.2765, 'Syria'], ['Quito', -0.1807, -78.4678, 'Ecuador'],
+  ['Montevideo', -34.9011, -56.1645, 'Uruguay'], ['Asunción', -25.2637, -57.5759, 'Paraguay'],
+  ['La Paz', -16.4897, -68.1193, 'Bolivia'], ['Brasília', -15.7975, -47.8919, 'Brazil'],
+  ['Salvador', -12.9777, -38.5016, 'Brazil'], ['Fortaleza', -3.7319, -38.5267, 'Brazil'],
+  ['Recife', -8.0476, -34.8770, 'Brazil'], ['Curitiba', -25.4284, -49.2733, 'Brazil'],
+  ['Panama City', 8.9824, -79.5199, 'Panama'], ['San José', 9.9281, -84.0907, 'Costa Rica'],
+  ['Havana', 23.1136, -82.3666, 'Cuba'], ['Santo Domingo', 18.4861, -69.9312, 'Dominican Republic'],
+  ['Guatemala City', 14.6349, -90.5069, 'Guatemala'], ['Maputo', -25.9692, 32.5732, 'Mozambique'],
+  ['Kinshasa', -4.4419, 15.2663, 'DR Congo'], ['Dakar', 14.7167, -17.4677, 'Senegal'],
+  ['Kampala', 0.3476, 32.5825, 'Uganda'], ['Lusaka', -15.3875, 28.3228, 'Zambia'],
+  ['Harare', -17.8252, 31.0335, 'Zimbabwe'], ['Mombasa', -4.0435, 39.6682, 'Kenya'],
 ];
 
 // Build one quiz round: a random answer city plus two distinct decoys, with the
 // three names shuffled. Returns a promptLocation-style result tagged quiz:true.
 function makeQuizCity() {
   const pick = () => MAJOR_CITIES[(Math.random() * MAJOR_CITIES.length) | 0];
+  const fmt  = c => `${c[0]}, ${c[3]}`;                  // "City, Country"
   const ans = pick();
   const wrong = [];
   while (wrong.length < 2) {
     const c = pick();
     if (c[0] !== ans[0] && !wrong.some(w => w[0] === c[0])) wrong.push(c);
   }
-  const options = [ans[0], wrong[0][0], wrong[1][0]];
+  const options = [fmt(ans), fmt(wrong[0]), fmt(wrong[1])];
   for (let i = options.length - 1; i > 0; i--) {        // Fisher–Yates shuffle
     const j = (Math.random() * (i + 1)) | 0;
     [options[i], options[j]] = [options[j], options[i]];
   }
   return { lat: ans[1], lon: ans[2], label: ans[0], shortLabel: ans[0],
-           quiz: true, answer: ans[0], options };
+           quiz: true, answer: fmt(ans), options };
 }
 
 // Shows the search field on the loading screen and resolves once the user picks a
@@ -3328,6 +3329,7 @@ async function main() {
   // Switch the loading screen from search mode to progress mode.
   document.getElementById('load-search').style.display = 'none';
   document.getElementById('place-me').style.display    = 'none';
+  document.getElementById('place-quiz').style.display  = 'none';
   document.getElementById('search-msg').style.display  = 'none';
   document.getElementById('pbar-bg').style.display = '';
 
