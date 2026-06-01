@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.85';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.85';
+import { TrainSystem } from './train.js?v=11.86';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.86';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2588,15 +2588,27 @@ function initScene(collision) {
   const speedEl    = document.getElementById('speed');
   const compassEl  = document.getElementById('compass');
   const compassCtx = compassEl ? compassEl.getContext('2d') : null;
-  // Keep the canvas bitmap in sync with its CSS size (especially on mobile where
-  // CSS makes it 100 vw × 32 px instead of the default 360 × 48).
+  // Compass sizing: set inline styles + bitmap directly from JS so we're not
+  // fighting the global `canvas { inset:0 }` cascade. Mobile = full-width 32 px
+  // strip flush to top; desktop = 360 × 48 centred pill.
+  let _cW = 360, _cH = 48;   // logical (CSS-pixel) compass dimensions
   function syncCompassSize() {
     if (!compassEl) return;
-    const r = compassEl.getBoundingClientRect();
-    const dpr = Math.min(devicePixelRatio, 2);
-    compassEl.width  = Math.round(r.width  * dpr);
-    compassEl.height = Math.round(r.height * dpr);
-    compassCtx.scale(dpr, dpr);
+    const mobile = window.innerWidth <= 768;
+    _cW = mobile ? window.innerWidth : 360;
+    _cH = mobile ? 32 : 48;
+    // Inline styles override everything including the global canvas rule.
+    compassEl.style.width     = _cW + 'px';
+    compassEl.style.height    = _cH + 'px';
+    compassEl.style.left      = mobile ? '0' : '50%';
+    compassEl.style.transform = mobile ? 'none' : 'translateX(-50%)';
+    compassEl.style.top       = '0';
+    compassEl.style.right     = 'auto';
+    compassEl.style.bottom    = 'auto';
+    // Bitmap: one real pixel per CSS pixel (skip DPR scaling — the tape is
+    // text + lines, not photography; 1× is perfectly crisp on all screens).
+    compassEl.width  = _cW;
+    compassEl.height = _cH;
   }
   syncCompassSize();
   window.addEventListener('resize', syncCompassSize);
@@ -2605,9 +2617,7 @@ function initScene(collision) {
   // degree = 1 px; cardinals are labelled every 45° and tick marks every 10°.
   function drawCompass(bearing) {
     if (!compassCtx) return;
-    // Use logical (CSS) dimensions so drawing coords don't depend on DPR.
-    const r = compassEl.getBoundingClientRect();
-    const W = r.width, H = r.height;
+    const W = _cW, H = _cH;
     const cx = W / 2;
     compassCtx.clearRect(0, 0, W, H);
 
