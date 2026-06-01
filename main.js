@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.71';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.71';
+import { TrainSystem } from './train.js?v=11.72';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.72';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1776,45 +1776,76 @@ function buildBirdMesh() {
   // Bird faces −Z (Three.js default forward). Dorsal (top-down) layout:
   //  −Z = head/beak, +Z = tail, ±X = wingtips, +Y = up (back).
 
-  // ── Body: a single TEARDROP that is head + torso in one shape — a rounded
-  // bulb up front (the head) tapering to a skinny point at the back where it
-  // merges into the tail. Drawn minimally: a few longitudinal profile curves +
-  // a few cross rings, not a dense sphere grid.
-  function buildBody() {
-    const R = 0.30;                       // max body radius (at the chest)
-    const zFront = -0.92, zBack = 0.75;   // nose (beak root) → tail merge point
-    const peak   = 0.27;                  // span fraction where the bulb is widest
-    const flatY  = 0.88;                  // slight vertical flattening
-    const yMid   = 0.02;
-    const rProfile = (u) => {
-      if (u <= 0 || u >= 1) return 0;
-      if (u < peak) return R * Math.sin((u / peak) * Math.PI / 2);   // rounded head bulb
-      const tu = (u - peak) / (1 - peak);
-      return R * Math.pow(1 - tu, 1.25);                            // taper to a point
+  // ── Body + tail as ONE continuous form ──────────────────────────────────
+  // The body's outer silhouette flows back and out into the tail's outer edges
+  // (no separate teardrop that ends in a point). Up front a slight bulb reads
+  // as the head; the chest is the widest point; the body narrows to a slim
+  // waist and the same side lines continue out to the forked tail tips. Cross
+  // sections are wider than tall (height ≈ 0.82 × width) and flatten toward the
+  // tail. Drawn as minimal edge lines.
+  function buildBodyTail() {
+    const yMid  = 0.02;
+    const zNose = -0.95, zWaist = 0.55;          // body runs nose → waist
+    const tipX  = 0.36, tipZ = 1.85, notchZ = 1.02;
+    const Wwaist = 0.10;
+    // Half-width (W) and half-height (H) control points along the body
+    // (u: 0 = nose … 1 = waist). A small bump near u=0.10 is the head.
+    const Wc = [[0,0],[0.10,0.085],[0.20,0.072],[0.42,0.170],[0.70,0.125],[1.0,Wwaist]];
+    const Hc = [[0,0],[0.10,0.070],[0.20,0.058],[0.42,0.140],[0.70,0.060],[1.0,0.018]];
+    const interp = (c, u) => {
+      for (let i = 0; i < c.length - 1; i++)
+        if (u <= c[i+1][0]) {
+          const t = (u - c[i][0]) / (c[i+1][0] - c[i][0]);
+          return c[i][1] + (c[i+1][1] - c[i][1]) * t;
+        }
+      return c[c.length - 1][1];
     };
-    const pt = (u, phi) => {
-      const r = rProfile(u);
-      return [r * Math.cos(phi), yMid + r * Math.sin(phi) * flatY, zFront + (zBack - zFront) * u];
-    };
+    const zBody = u => zNose + (zWaist - zNose) * u;
     const verts = [];
-    const seg = (a, b) => verts.push(a[0], a[1], a[2], b[0], b[1], b[2]);
-    // Longitudinal profile ribs (top, bottom, both sides).
-    const nU = 22;
-    for (const phi of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
-      let prev = pt(0, phi);
-      for (let i = 1; i <= nU; i++) { const c = pt(i / nU, phi); seg(prev, c); prev = c; }
+    // Add a polyline through the given [x,y,z] points as connected segments.
+    const polyline = (pts) => {
+      for (let i = 0; i < pts.length - 1; i++)
+        verts.push(pts[i][0], pts[i][1], pts[i][2], pts[i+1][0], pts[i+1][1], pts[i+1][2]);
+    };
+    const nU = 20;
+
+    // 1. Side outline (each side): nose → body sides → waist → tail tip (one curve).
+    for (const sx of [1, -1]) {
+      const pts = [[0, yMid, zNose]];
+      for (let i = 1; i <= nU; i++) { const u = i/nU; pts.push([sx*interp(Wc,u), yMid, zBody(u)]); }
+      const nT = 6;
+      for (let i = 1; i <= nT; i++) {
+        const t = i/nT;
+        pts.push([sx*(Wwaist + (tipX-Wwaist)*t), yMid, zWaist + (tipZ-zWaist)*t]);
+      }
+      polyline(pts);
     }
-    // A few cross-section rings.
+    // 2. Top + bottom ridges (body only) — give it height up front, flat by the waist.
+    for (const sy of [1, -1]) {
+      const pts = [[0, yMid, zNose]];
+      for (let i = 1; i <= nU; i++) { const u = i/nU; pts.push([0, yMid + sy*interp(Hc,u), zBody(u)]); }
+      polyline(pts);
+    }
+    // 3. A few cross-section rings on the body front (wider than tall).
     const nPhi = 12;
-    for (const u of [0.20, 0.40, 0.62]) {
-      let prev = pt(u, 0);
-      for (let j = 1; j <= nPhi; j++) { const c = pt(u, j / nPhi * Math.PI * 2); seg(prev, c); prev = c; }
+    for (const u of [0.20, 0.42, 0.70]) {
+      const w = interp(Wc,u), h = interp(Hc,u), z = zBody(u);
+      const pts = [];
+      for (let j = 0; j <= nPhi; j++) { const phi = j/nPhi*Math.PI*2; pts.push([w*Math.cos(phi), yMid + h*Math.sin(phi), z]); }
+      polyline(pts);
     }
+    // 4. Tail rounded fork trailing edge (parabola, right tip → notch → left tip).
+    const fork = [];
+    for (let k = 0; k <= 16; k++) { const a = 1 - 2*k/16; fork.push([a*tipX, yMid, notchZ + (tipZ-notchZ)*a*a]); }
+    polyline(fork);
+    // 5. Tail centre spine (waist → notch).
+    polyline([[0, yMid, zWaist], [0, yMid, notchZ]]);
+
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
     return new THREE.LineSegments(geo, matLine);
   }
-  group.add(buildBody());
+  group.add(buildBodyTail());
 
   // ── Beak: slim cone pointing −Z ──
   const beak = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.30, 4, 1), matBeak);
@@ -1866,33 +1897,6 @@ function buildBirdMesh() {
   // Exposed so the animate loop can flap/flex/tuck them per-vertex.
   group.userData.wingR = wingR;
   group.userData.wingL = wingL;
-
-  // ── Tail: deeply forked V with a ROUNDED notch (barn-swallow streamers) ──
-  // Two pointed streamers sweep back and slightly out; the trailing edge dips
-  // forward at the centre on a parabola, giving the rounded valley of the fork.
-  function buildTail() {
-    const y = -0.02;
-    const bodyX = 0.13, bodyZ = 0.55;   // attaches behind the body
-    const tipX  = 0.36, tipZ  = 1.85;   // long streamer tips, swept out + back
-    const notchZ = 1.02;                 // centre of the rounded fork (forward of tips)
-    const verts = [];
-    const seg = (x1, z1, x2, z2) => verts.push(x1, y, z1, x2, y, z2);
-    seg( bodyX, bodyZ,  tipX, tipZ);     // outer right edge
-    seg(-bodyX, bodyZ, -tipX, tipZ);     // outer left edge
-    seg(-bodyX, bodyZ,  bodyX, bodyZ);   // body edge
-    // Rounded inner V: parabola from right tip across the notch to left tip.
-    const N = 16; let px = tipX, pz = tipZ;
-    for (let k = 1; k <= N; k++) {
-      const a = 1 - 2 * k / N;                       // +1 (right tip) → −1 (left tip)
-      const x = a * tipX;
-      const z = notchZ + (tipZ - notchZ) * a * a;    // rounded valley at centre
-      seg(px, pz, x, z); px = x; pz = z;
-    }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-    return new THREE.LineSegments(geo, matLine);
-  }
-  group.add(buildTail());
 
   group.scale.setScalar(0.5);   // half size
 
