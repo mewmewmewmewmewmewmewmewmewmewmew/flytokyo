@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.72';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.72';
+import { TrainSystem } from './train.js?v=11.73';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.73';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1768,7 +1768,7 @@ function applyFisheye(mat) {
 
 function buildBirdMesh() {
   const group   = new THREE.Group();
-  const matBeak = applyFisheye(new THREE.MeshBasicMaterial({ color: 0xff9a3c, wireframe: true }));
+  const matBeak = applyFisheye(new THREE.MeshBasicMaterial({ color: 0x2c8fc7, wireframe: true }));
   // Body, wings + tail are drawn as EDGE lines only (no inner triangulation),
   // all in the same colour.
   const matLine = applyFisheye(new THREE.LineBasicMaterial({ color: 0x2c8fc7 }));
