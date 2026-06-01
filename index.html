@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v11.89 -->
+  <meta charset="UTF-8"><!-- v11.90 -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -63,11 +63,13 @@
        to the top — keep only the location title and speed (pushed below the
        bar), and hide the stats line, the hotkey hint, and the version badge. */
     @media (max-width: 768px), (pointer: coarse) {
-      #overlay { top: 42px; }
-      #overlay #status { display: none; }
-      #speed   { top: 48px; }
-      #hint    { display: none; }
-      #version { display: none; }
+      /* !important so these beat the base #speed/#overlay rules, which appear
+         later in the stylesheet and would otherwise win on source order. */
+      #overlay { top: 42px !important; }
+      #overlay #status { display: none !important; }
+      #speed   { top: 52px !important; }
+      #hint    { display: none !important; }
+      #version { display: none !important; }
     }
 
     #loading {
@@ -276,7 +278,7 @@
     <div id="search-msg"></div>
     <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
     <div id="load-msg"></div>
-    <div id="load-version">v11.89</div>
+    <div id="load-version">v11.90</div>
   </div>
 
   <div id="overlay">
@@ -284,7 +286,7 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v11.89</div>
+  <div id="version">v11.90</div>
   <div id="speed"></div>
   <canvas id="compass" width="360" height="48"></canvas>
 
@@ -321,6 +323,6 @@
     }
   }
   </script>
-  <script type="module" src="main.js?v=11.89"></script>
+  <script type="module" src="main.js?v=11.90"></script>
 </body>
 </html>
