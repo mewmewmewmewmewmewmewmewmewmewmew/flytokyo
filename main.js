@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.99';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.99';
+import { TrainSystem } from './train.js?v=12.00';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.00';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2773,6 +2773,9 @@ function initScene(collision) {
     paused = p;
     if (helpEl) helpEl.classList.toggle('hidden', !p);
   }
+  // Freeze motion WITHOUT showing the F1 help overlay — used by quiz mode, which
+  // brings up its own panel and must not flash the controls menu underneath.
+  function setFrozen(p) { paused = p; }
   // Clicking the backdrop (anywhere outside the panel) closes the menu.
   if (helpEl) helpEl.addEventListener('click', e => {
     if (e.target === helpEl) setPaused(false);
@@ -2959,7 +2962,7 @@ function initScene(collision) {
   })();
 
   return { scene, camera, controls, trainRef, labelsRef, ground, renderer,
-           setPaused, isPaused: () => paused, isTouch: _helpTouch };
+           setPaused, setFrozen, isPaused: () => paused, isTouch: _helpTouch };
 }
 
 // ─── Geocoding (OpenStreetMap Nominatim — no API key) ─────────────────────────
@@ -3304,7 +3307,7 @@ async function main() {
   // Mutable ref so controls (created first) can call collision once tiles arrive
   const collision = { fn: null };
   const { scene, camera, controls, trainRef, labelsRef, ground, renderer,
-          setPaused, isPaused, isTouch } = initScene(collision);
+          setPaused, setFrozen, isPaused, isTouch } = initScene(collision);
 
   // Ask where to start, geocode it, then center the world there.
   const place = await promptLocation();
@@ -3462,13 +3465,13 @@ async function main() {
       actionsEl.appendChild(explore);
       fadeEl.style.opacity = '0';
       show(true);
-      setPaused(true);
+      setFrozen(true);
     }
 
     // 2) Explore — unfreeze, run the countdown, wash to white in the last 2 s.
     function startExplore() {
       show(false);
-      setPaused(false);
+      setFrozen(false);
       elapsed = 0; lastT = performance.now(); exploring = true;
       document.body.classList.add('quiz-exploring');
       requestAnimationFrame(tick);
@@ -3489,7 +3492,9 @@ async function main() {
     function endExplore() {
       exploring = false;
       document.body.classList.remove('quiz-exploring');
-      setPaused(true);
+      setFrozen(true);
+      // Free the mouse so the player can click an option (flight locks it).
+      if (document.exitPointerLock) document.exitPointerLock();
       qEl.textContent = 'Where were you?';
       renderOptions(true);
       clear(actionsEl);
@@ -3530,7 +3535,7 @@ async function main() {
       timerEl.textContent = '';
       setPlaceLabel(answer);
       seedStartTile(answer);   // _rgStarted → area-name labels resume
-      setPaused(false);
+      setFrozen(false);
     }
 
     preExplore();
