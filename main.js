@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.80';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.80';
+import { TrainSystem } from './train.js?v=11.81';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.81';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -543,12 +543,14 @@ function renderLabelCanvas(text, { bg, stroke, fg = '#fff', fontSize = 48 }) {
 function wallPlaneMesh(tex, w, h, x, z, nx, nz, y) {
   const mesh = new THREE.Mesh(
     new THREE.PlaneGeometry(w, h),
-    applyFisheye(new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide })),
+    applyFisheye(new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, depthWrite: false, depthTest: false, side: THREE.DoubleSide,
+    })),
   );
   const off = 0.4;
   mesh.position.set(x + nx * off, y, z + nz * off);
   mesh.lookAt(mesh.position.x + nx, mesh.position.y, mesh.position.z + nz);  // face outward, upright
-  mesh.renderOrder = 5;
+  mesh.renderOrder = 12;   // draw after the world so it's never hidden by curved walls
   return mesh;
 }
 
@@ -624,9 +626,11 @@ function makePoiLabel(px, pz, text, footprints) {
     const y = (terrain ? terrain.sample(wall.qx, wall.qz) : 0) + 3.5;
     return wallPlaneMesh(tex, w, h, wall.qx, wall.qz, nx, nz, y);
   }
-  const spr = new THREE.Sprite(applyFisheyeSprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false })));
+  const spr = new THREE.Sprite(applyFisheyeSprite(new THREE.SpriteMaterial({
+    map: tex, transparent: true, depthWrite: false, depthTest: false,
+  })));
   spr.scale.set(2 * aspect, 2, 1);
-  spr.renderOrder = 5;
+  spr.renderOrder = 12;   // draw after the world so it's never hidden by curved walls
   const y = (terrain ? terrain.sample(px, pz) : 0) + 4;
   spr.position.set(px, y, pz);
   return spr;
