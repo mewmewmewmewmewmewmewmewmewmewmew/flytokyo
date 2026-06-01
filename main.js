@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.87';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.87';
+import { TrainSystem } from './train.js?v=11.88';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.88';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2593,11 +2593,12 @@ function initScene(collision) {
   // strip flush to top; desktop = 360 × 48 centred pill.
   const _isTouch = (window.matchMedia && matchMedia('(pointer: coarse)').matches)
                 || ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
-  let _cW = 360, _cH = 48;   // logical (CSS-pixel) compass dimensions
+  let _cW = 360, _cH = 48, _cFlush = false;   // logical compass size; flush = edge-to-edge bar
   function syncCompassSize() {
     if (!compassEl) return;
     const vw = document.documentElement.clientWidth || window.innerWidth;
     const mobile = _isTouch || vw <= 768;
+    _cFlush = mobile;                          // mobile = flush full-width bar (no inset pill)
     _cW = mobile ? vw : 360;
     _cH = mobile ? 32 : 48;
     // Inline styles override everything including the global canvas rule.
@@ -2633,9 +2634,10 @@ function initScene(collision) {
     bgR.addColorStop(0,   'rgba(10,12,24,0.55)');
     bgR.addColorStop(1,   'rgba(10,12,24,0.30)');
     compassCtx.fillStyle = bgR;
-    const PX = 18, PY = 6;
+    // Flush (mobile): edge-to-edge bar, no padding/rounding. Desktop: inset pill.
+    const PX = _cFlush ? 0 : 18, PY = _cFlush ? 0 : 6;
     compassCtx.beginPath();
-    compassCtx.roundRect(PX, PY, W - PX * 2, H - PY * 2, 6);
+    compassCtx.roundRect(PX, PY, W - PX * 2, H - PY * 2, _cFlush ? 0 : 6);
     compassCtx.fill();
 
     // Cardinal labels and tick marks. Iterate over the MARK degrees themselves
