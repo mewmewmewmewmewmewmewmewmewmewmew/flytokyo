@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.84';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.84';
+import { TrainSystem } from './train.js?v=11.85';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.85';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2181,26 +2181,34 @@ function createBirdControls(camera, domElement, collision) {
 
   domElement.addEventListener('contextmenu', e => e.preventDefault());
 
-  let touchLast = null, touchHoldTimer = null;
+  // ── Joystick touch control ───────────────────────────────────────────────
+  // On touchstart we record the finger's origin. While the finger stays down:
+  //   • thrust is on (fly toward camera direction)
+  //   • the live offset from origin steers: horizontal → yaw turn rate,
+  //     vertical → pitch, both proportional to distance from centre.
+  // "Centre" is where the finger first landed, not the screen centre, so the
+  // control works wherever the user touches. Max turn rate is reached at
+  // JOYSTICK_RADIUS pixels from origin.
+  const JOYSTICK_RADIUS = Math.min(innerWidth, innerHeight) * 0.28;
+  const JOYSTICK_YAW    = 2.2;   // max yaw rate (rad/s) at full deflection
+  const JOYSTICK_PITCH  = 1.6;   // max pitch rate (rad/s) at full deflection
+  let touchOrigin = null;         // {x,y} where finger first landed
+  let touchCurrent = null;        // {x,y} live finger position
+  let touchHoldTimer = null;
+
   domElement.addEventListener('touchstart', e => {
     if (e.touches.length === 1) {
-      touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-      touchHoldTimer = setTimeout(() => { mouseThrust = true; }, 200);
+      const t = e.touches[0];
+      touchOrigin  = { x: t.clientX, y: t.clientY };
+      touchCurrent = { x: t.clientX, y: t.clientY };
+      touchHoldTimer = setTimeout(() => { mouseThrust = true; }, 120);
     }
     e.preventDefault();
   }, { passive: false });
 
   domElement.addEventListener('touchmove', e => {
-    if (e.touches.length === 1 && touchLast) {
-      const cx = e.touches[0].clientX, cy = e.touches[0].clientY;
-      const dx = cx - touchLast.x, dy = cy - touchLast.y;
-      touchLast = { x: cx, y: cy };
-      camYaw   += -dx * TOUCH_SPEED;
-      camPitch  = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, camPitch - dy * TOUCH_SPEED));
-      updateCamera();
-      dispatcher.dispatchEvent({ type: 'change' });
-      // Drag = fly toward where camera is aiming (same as left-click + drag).
-      // Cancel the hold-to-thrust timer so thrust kicks in immediately on drag.
+    if (e.touches.length === 1 && touchOrigin) {
+      touchCurrent = { x: e.touches[0].clientX, y: e.touches[0].clientY };
       if (touchHoldTimer) { clearTimeout(touchHoldTimer); touchHoldTimer = null; }
       mouseThrust = true;
     }
@@ -2208,10 +2216,11 @@ function createBirdControls(camera, domElement, collision) {
   }, { passive: false });
 
   domElement.addEventListener('touchend', () => {
-    touchLast = null;
     clearTimeout(touchHoldTimer);
     touchHoldTimer = null;
-    mouseThrust = false;
+    touchOrigin  = null;
+    touchCurrent = null;
+    mouseThrust  = false;
   });
 
   let prevHeadYaw = 0;
@@ -2230,6 +2239,23 @@ function createBirdControls(camera, domElement, collision) {
       lastTime     = now;
 
       let moved = false;
+
+      // Joystick: apply continuous yaw/pitch rate from the live finger offset.
+      if (touchOrigin && touchCurrent) {
+        const ox = (touchCurrent.x - touchOrigin.x) / JOYSTICK_RADIUS;
+        const oy = (touchCurrent.y - touchOrigin.y) / JOYSTICK_RADIUS;
+        const mag = Math.hypot(ox, oy);
+        // Dead zone of 5 % radius, then cubic easing for fine control near centre.
+        if (mag > 0.05) {
+          const f = Math.min(mag, 1);
+          const ease = f * f * f;   // cubic: very gradual near centre, sharp at edge
+          const nx = ox / mag, ny = oy / mag;
+          camYaw   -= nx * ease * JOYSTICK_YAW   * dt;
+          camPitch  = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT,
+                       camPitch - ny * ease * JOYSTICK_PITCH * dt));
+          updateCamera();
+        }
+      }
 
       // Velocity-based movement. _vel carries both direction and speed so coasting
       // is natural — just bleed the magnitude each frame when not thrusting.
@@ -2562,12 +2588,26 @@ function initScene(collision) {
   const speedEl    = document.getElementById('speed');
   const compassEl  = document.getElementById('compass');
   const compassCtx = compassEl ? compassEl.getContext('2d') : null;
+  // Keep the canvas bitmap in sync with its CSS size (especially on mobile where
+  // CSS makes it 100 vw × 32 px instead of the default 360 × 48).
+  function syncCompassSize() {
+    if (!compassEl) return;
+    const r = compassEl.getBoundingClientRect();
+    const dpr = Math.min(devicePixelRatio, 2);
+    compassEl.width  = Math.round(r.width  * dpr);
+    compassEl.height = Math.round(r.height * dpr);
+    compassCtx.scale(dpr, dpr);
+  }
+  syncCompassSize();
+  window.addEventListener('resize', syncCompassSize);
 
   // Heading tape: a 360px-wide horizontal strip.  The tape pixel-scrolls so each
   // degree = 1 px; cardinals are labelled every 45° and tick marks every 10°.
   function drawCompass(bearing) {
     if (!compassCtx) return;
-    const W = compassEl.width, H = compassEl.height;
+    // Use logical (CSS) dimensions so drawing coords don't depend on DPR.
+    const r = compassEl.getBoundingClientRect();
+    const W = r.width, H = r.height;
     const cx = W / 2;
     compassCtx.clearRect(0, 0, W, H);
 

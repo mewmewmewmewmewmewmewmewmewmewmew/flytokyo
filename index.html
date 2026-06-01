@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v11.84 -->
+  <meta charset="UTF-8"><!-- v11.85 -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -192,9 +192,19 @@
       width: 360px;
       height: 48px;
       transform: translateX(-50%);
-      z-index: 5;           /* sit above the WebGL canvas (appended later in the DOM) */
+      z-index: 6;           /* sit above the WebGL canvas */
       pointer-events: none;
       user-select: none;
+    }
+
+    /* On mobile: full-width, shorter, flush to the top edge. */
+    @media (max-width: 768px) {
+      #compass {
+        left: 0;
+        width: 100vw;
+        height: 32px;
+        transform: none;
+      }
     }
 
     /* F1 hotkey menu — a 40% white wash over the whole screen with a panel
@@ -265,7 +275,7 @@
     <div id="search-msg"></div>
     <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
     <div id="load-msg"></div>
-    <div id="load-version">v11.84</div>
+    <div id="load-version">v11.85</div>
   </div>
 
   <div id="overlay">
@@ -273,7 +283,7 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v11.84</div>
+  <div id="version">v11.85</div>
   <div id="speed"></div>
   <canvas id="compass" width="360" height="48"></canvas>
 
@@ -310,6 +320,6 @@
     }
   }
   </script>
-  <script type="module" src="main.js?v=11.84"></script>
+  <script type="module" src="main.js?v=11.85"></script>
 </body>
 </html>
