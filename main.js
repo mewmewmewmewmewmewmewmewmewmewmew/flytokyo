@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.70';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.70';
+import { TrainSystem } from './train.js?v=11.71';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.71';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1768,25 +1768,53 @@ function applyFisheye(mat) {
 
 function buildBirdMesh() {
   const group   = new THREE.Group();
-  const matBody = applyFisheye(new THREE.MeshBasicMaterial({ color: 0x2c8fc7, wireframe: true }));
   const matBeak = applyFisheye(new THREE.MeshBasicMaterial({ color: 0xff9a3c, wireframe: true }));
-  // Wings + tail are drawn as EDGE lines only (no inner triangulation), in the
-  // same colour as the body.
+  // Body, wings + tail are drawn as EDGE lines only (no inner triangulation),
+  // all in the same colour.
   const matLine = applyFisheye(new THREE.LineBasicMaterial({ color: 0x2c8fc7 }));
 
   // Bird faces −Z (Three.js default forward). Dorsal (top-down) layout:
   //  −Z = head/beak, +Z = tail, ±X = wingtips, +Y = up (back).
 
-  // ── Body: slim, streamlined ellipsoid (swallow torso) ──
-  const body = new THREE.Mesh(new THREE.SphereGeometry(0.5, 16, 11), matBody);
-  body.scale.set(0.34, 0.34, 1.45);     // narrow, streamlined, long
-  group.add(body);
-
-  // ── Head: smaller ellipsoid blended into the front ──
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.5, 12, 9), matBody);
-  head.scale.set(0.25, 0.25, 0.32);
-  head.position.set(0, 0.05, -0.68);
-  group.add(head);
+  // ── Body: a single TEARDROP that is head + torso in one shape — a rounded
+  // bulb up front (the head) tapering to a skinny point at the back where it
+  // merges into the tail. Drawn minimally: a few longitudinal profile curves +
+  // a few cross rings, not a dense sphere grid.
+  function buildBody() {
+    const R = 0.30;                       // max body radius (at the chest)
+    const zFront = -0.92, zBack = 0.75;   // nose (beak root) → tail merge point
+    const peak   = 0.27;                  // span fraction where the bulb is widest
+    const flatY  = 0.88;                  // slight vertical flattening
+    const yMid   = 0.02;
+    const rProfile = (u) => {
+      if (u <= 0 || u >= 1) return 0;
+      if (u < peak) return R * Math.sin((u / peak) * Math.PI / 2);   // rounded head bulb
+      const tu = (u - peak) / (1 - peak);
+      return R * Math.pow(1 - tu, 1.25);                            // taper to a point
+    };
+    const pt = (u, phi) => {
+      const r = rProfile(u);
+      return [r * Math.cos(phi), yMid + r * Math.sin(phi) * flatY, zFront + (zBack - zFront) * u];
+    };
+    const verts = [];
+    const seg = (a, b) => verts.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+    // Longitudinal profile ribs (top, bottom, both sides).
+    const nU = 22;
+    for (const phi of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
+      let prev = pt(0, phi);
+      for (let i = 1; i <= nU; i++) { const c = pt(i / nU, phi); seg(prev, c); prev = c; }
+    }
+    // A few cross-section rings.
+    const nPhi = 12;
+    for (const u of [0.20, 0.40, 0.62]) {
+      let prev = pt(u, 0);
+      for (let j = 1; j <= nPhi; j++) { const c = pt(u, j / nPhi * Math.PI * 2); seg(prev, c); prev = c; }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    return new THREE.LineSegments(geo, matLine);
+  }
+  group.add(buildBody());
 
   // ── Beak: slim cone pointing −Z ──
   const beak = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.30, 4, 1), matBeak);
