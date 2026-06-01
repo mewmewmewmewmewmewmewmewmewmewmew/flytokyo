@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.74';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.74';
+import { TrainSystem } from './train.js?v=11.75';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.75';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1768,7 +1768,7 @@ function applyFisheye(mat) {
 
 function buildBirdMesh() {
   const group   = new THREE.Group();
-  const matBeak = applyFisheye(new THREE.MeshBasicMaterial({ color: 0x2c8fc7, wireframe: true }));
+  const matBeak = applyFisheye(new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true }));
   // Body, wings + tail are drawn as EDGE lines only (no inner triangulation),
   // all in the same colour.
   const matLine = applyFisheye(new THREE.LineBasicMaterial({ color: 0x2c8fc7 }));
@@ -1852,10 +1852,10 @@ function buildBirdMesh() {
   }
   group.add(buildBodyTail());
 
-  // ── Beak: slim cone pointing −Z, mounted at the (now closer) nose ──
-  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.24, 4, 1), matBeak);
+  // ── Beak: short stubby black cone pointing −Z, mounted at the nose ──
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.12, 4, 1), matBeak);
   beak.rotation.x = -Math.PI / 2;       // +Y axis → −Z
-  beak.position.set(0, 0.02, -0.54);
+  beak.position.set(0, 0.02, -0.50);
   group.add(beak);
 
   // ── Wings: swallow silhouette — EDGE LINES only (leading + trailing outline,
