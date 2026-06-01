@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.97';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.97';
+import { TrainSystem } from './train.js?v=11.98';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.98';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -125,6 +125,45 @@ class TerrainSampler {
   }
 }
 
+// Decode raw PNG bytes into the {data,w,h,…} pixel record the sampler needs.
+// Decoding from a blob: URL keeps the canvas un-tainted, so getImageData works
+// without relying on the source server's CORS headers.
+function decodeTerrainPng(buf, tx, ty) {
+  return new Promise(resolve => {
+    const url = URL.createObjectURL(new Blob([buf], { type: 'image/png' }));
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = img.width; c.height = img.height;
+      const ctx2 = c.getContext('2d');
+      ctx2.drawImage(img, 0, 0);
+      const { data } = ctx2.getImageData(0, 0, img.width, img.height);
+      URL.revokeObjectURL(url);
+      resolve({ data, w: img.width, h: img.height, z: TERRAIN_ZOOM, tx, ty });
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    img.src = url;
+  });
+}
+
+// One elevation tile: served from the IndexedDB cache when present (no network),
+// otherwise fetched from S3 as raw bytes and cached for next time. Returns the
+// decoded pixel record, or null if both cache and network miss.
+async function loadTerrainTile(tx, ty) {
+  const key = `${TERRAIN_ZOOM}/${tx}/${ty}`;
+  const hit = await cacheGet(key, TERRAIN_STORE);
+  if (hit && hit.buf) return decodeTerrainPng(hit.buf, tx, ty);
+  try {
+    const res = await fetch(
+      `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${TERRAIN_ZOOM}/${tx}/${ty}.png`,
+      { mode: 'cors' });
+    if (!res.ok) return null;
+    const buf = await res.arrayBuffer();
+    cachePut(key, { ts: Date.now(), buf }, TERRAIN_STORE);   // fire-and-forget
+    return decodeTerrainPng(buf, tx, ty);
+  } catch { return null; }
+}
+
 async function loadTerrain() {
   const extra = LOAD_RADIUS + 1;
   const bounds = {
@@ -135,24 +174,9 @@ async function loadTerrain() {
   const tyMin = terrainTY(bounds.n, TERRAIN_ZOOM), tyMax = terrainTY(bounds.s, TERRAIN_ZOOM);
 
   const fetches = [];
-  for (let ty = tyMin; ty <= tyMax; ty++) {
-    for (let tx = txMin; tx <= txMax; tx++) {
-      fetches.push(new Promise(resolve => {
-        const img = new Image();
-        img.crossOrigin = 'anonymous';
-        img.onload = () => {
-          const c = document.createElement('canvas');
-          c.width = img.width; c.height = img.height;
-          const ctx2 = c.getContext('2d');
-          ctx2.drawImage(img, 0, 0);
-          const { data } = ctx2.getImageData(0, 0, img.width, img.height);
-          resolve({ data, w: img.width, h: img.height, z: TERRAIN_ZOOM, tx, ty });
-        };
-        img.onerror = () => resolve(null);
-        img.src = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${TERRAIN_ZOOM}/${tx}/${ty}.png`;
-      }));
-    }
-  }
+  for (let ty = tyMin; ty <= tyMax; ty++)
+    for (let tx = txMin; tx <= txMax; tx++)
+      fetches.push(loadTerrainTile(tx, ty));
 
   const tiles = (await Promise.all(fetches)).filter(Boolean);
   if (!tiles.length) return null;
@@ -202,39 +226,46 @@ function bldgTerrainInfo(ring, height) {
 
 // ─── Overpass response cache (IndexedDB, 3-day TTL) ───────────────────────────
 
-const CACHE_DB = 'tokyo3d', CACHE_STORE = 'overpass';
-const CACHE_TTL = 3 * 24 * 60 * 60 * 1000;   // 3 days
+const CACHE_DB = 'tokyo3d', CACHE_STORE = 'overpass', TERRAIN_STORE = 'terrain';
+const CACHE_TTL   = 3 * 24 * 60 * 60 * 1000;    // 3 days  — Overpass map data
+const TERRAIN_TTL = 30 * 24 * 60 * 60 * 1000;   // 30 days — elevation is static
 const QUERY_VERSION = 'v2';                  // bump to invalidate cache when the query changes
 
 let _dbPromise = null;
 function openCache() {
   if (_dbPromise) return _dbPromise;
   _dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(CACHE_DB, 1);
-    req.onupgradeneeded = () => req.result.createObjectStore(CACHE_STORE);
+    // v2 adds the terrain store. onupgradeneeded fires for fresh DBs and for the
+    // v1→v2 bump alike; guard each create so it's safe either way.
+    const req = indexedDB.open(CACHE_DB, 2);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(CACHE_STORE))   db.createObjectStore(CACHE_STORE);
+      if (!db.objectStoreNames.contains(TERRAIN_STORE)) db.createObjectStore(TERRAIN_STORE);
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror   = () => reject(req.error);
   }).catch(() => null);   // private mode / blocked → run without a cache
   return _dbPromise;
 }
 
-async function cacheGet(key) {
+async function cacheGet(key, store = CACHE_STORE) {
   const db = await openCache();
   if (!db) return null;
   return new Promise(resolve => {
     try {
-      const r = db.transaction(CACHE_STORE, 'readonly').objectStore(CACHE_STORE).get(key);
+      const r = db.transaction(store, 'readonly').objectStore(store).get(key);
       r.onsuccess = () => resolve(r.result || null);
       r.onerror   = () => resolve(null);
     } catch { resolve(null); }
   });
 }
 
-async function cachePut(key, value) {
+async function cachePut(key, value, store = CACHE_STORE) {
   const db = await openCache();
   if (!db) return;
   try {
-    db.transaction(CACHE_STORE, 'readwrite').objectStore(CACHE_STORE).put(value, key);
+    db.transaction(store, 'readwrite').objectStore(store).put(value, key);
   } catch { /* ignore */ }
 }
 
@@ -242,15 +273,17 @@ async function cachePut(key, value) {
 async function pruneCache() {
   const db = await openCache();
   if (!db) return;
-  try {
-    const cur = db.transaction(CACHE_STORE, 'readwrite').objectStore(CACHE_STORE).openCursor();
-    cur.onsuccess = e => {
-      const c = e.target.result;
-      if (!c) return;
-      if (!c.value || Date.now() - c.value.ts > CACHE_TTL) c.delete();
-      c.continue();
-    };
-  } catch { /* ignore */ }
+  for (const [store, ttl] of [[CACHE_STORE, CACHE_TTL], [TERRAIN_STORE, TERRAIN_TTL]]) {
+    try {
+      const cur = db.transaction(store, 'readwrite').objectStore(store).openCursor();
+      cur.onsuccess = e => {
+        const c = e.target.result;
+        if (!c) return;
+        if (!c.value || Date.now() - c.value.ts > ttl) c.delete();
+        c.continue();
+      };
+    } catch { /* ignore */ }
+  }
 }
 
 // ─── Overpass ────────────────────────────────────────────────────────────────
