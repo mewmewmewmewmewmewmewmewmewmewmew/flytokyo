@@ -1,55 +1,22 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v11.96 -->
+  <meta charset="UTF-8"><!-- v11.95 -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Tokyo 3D</title>
   <style>
-    /* ─── Palette ────────────────────────────────────────────────────────────
-       Pulled from the Sotte Bosse "ボクたちのうた" cover: a white-dominant sky,
-       layered watercolor cyans, ink-black birds, and saturated CMYK accents that
-       carry the sense of speed. Everything visual references these tokens. */
-    :root {
-      --paper:   #ffffff;   /* dominant white negative space */
-      --ink:     #14171c;   /* bird silhouettes / line work   */
-      --cyan-1:  #eaf6fc;   /* palest wash */
-      --cyan-2:  #cfe9f7;
-      --cyan-3:  #9fd6ef;
-      --cyan-4:  #5bb6e0;
-      --cyan-5:  #2c8fc7;   /* deepest — same blue as the bird fill */
-      --acc-magenta: #ec3a8b;
-      --acc-cyan:    #00a6e0;
-      --acc-yellow:  #ffe23d;
-      --acc-lime:    #b6d634;
-    }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html { height: 100%; overflow: hidden; }
-    /* White-dominant sky washing to a soft cyan at the horizon — most of the
-       frame stays white (negative space), like the album. The watercolor clouds
-       live in the #sky layer behind the transparent WebGL canvas. */
-    body { background: linear-gradient(to bottom,
-             var(--paper) 0%, var(--paper) 34%, var(--cyan-1) 60%,
-             var(--cyan-2) 84%, var(--cyan-3) 100%);
+    body { background: linear-gradient(to bottom, #f4f8ff 0%, #f0f2f8 42%, #e4e8f2 58%, #d8dce8 100%);
            overflow: hidden; overscroll-behavior: none;
-           font-family: system-ui, sans-serif; color: var(--ink); }
+           font-family: system-ui, sans-serif; color: #1a1e30; }
     /* position:fixed + inset:0 fills the visual viewport even when the mobile
        browser chrome (address bar) shows/hides. touch-action:none hands all
        touch events to JS so drag look works correctly on iOS/Android. */
     canvas { display: block; position: fixed; inset: 0; touch-action: none; }
-
-    /* Watercolor cloud layer — sits BEHIND the transparent WebGL canvas (which
-       clears to nothing), so clouds show through wherever no 3D geometry is
-       drawn (i.e. the open sky above the city). Rendered once; not animated. */
-    #sky { position: fixed; inset: 0; z-index: -1; pointer-events: none; }
-    #sky svg { width: 100%; height: 100%; display: block; }
-
-    /* Speed rays — a full-screen canvas of CMYK streaks fanning from the centre.
-       Drawn each frame in main.js; opacity/length scale with speed, echoing the
-       converging colour rays on the cover. Above the world, below the HUD. */
-    #rays { z-index: 5; pointer-events: none; }
 
     #overlay {
       position: fixed;
@@ -113,9 +80,7 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      background: linear-gradient(to bottom,
-        var(--paper) 0%, var(--paper) 34%, var(--cyan-1) 60%,
-        var(--cyan-2) 84%, var(--cyan-3) 100%);
+      background: linear-gradient(to bottom, #f4f8ff 0%, #f0f2f8 42%, #e4e8f2 58%, #d8dce8 100%);
       gap: 16px;
       z-index: 10;
       transition: opacity 0.7s ease;
@@ -315,40 +280,6 @@
   </style>
 </head>
 <body>
-  <!-- Watercolor sky: torn-edged cyan washes (feTurbulence displacement) plus a
-       panel of diagonal screen-print hatching, clustered toward the top so the
-       lower frame stays open for the city — mirroring the album composition. -->
-  <div id="sky" aria-hidden="true">
-    <svg viewBox="0 0 1000 720" preserveAspectRatio="xMidYMin slice">
-      <defs>
-        <filter id="wc" x="-25%" y="-25%" width="150%" height="150%">
-          <feTurbulence type="fractalNoise" baseFrequency="0.011 0.015"
-                        numOctaves="3" seed="7" result="n"/>
-          <feDisplacementMap in="SourceGraphic" in2="n" scale="46"
-                             xChannelSelector="R" yChannelSelector="G"/>
-          <feGaussianBlur stdDeviation="1.6"/>
-        </filter>
-        <pattern id="hatch" width="13" height="13" patternUnits="userSpaceOnUse"
-                 patternTransform="rotate(35)">
-          <line x1="0" y1="0" x2="0" y2="13" stroke="#bfe0ef" stroke-width="2.4"/>
-        </pattern>
-      </defs>
-      <!-- diagonal hatching, top-left corner -->
-      <rect x="-40" y="-40" width="460" height="320" fill="url(#hatch)" opacity="0.45"/>
-      <!-- layered watercolor cloud blobs -->
-      <g filter="url(#wc)">
-        <ellipse cx="330" cy="190" rx="200" ry="120" fill="#cdeaf7" opacity="0.9"/>
-        <ellipse cx="560" cy="150" rx="165" ry="95"  fill="#a9d8ef" opacity="0.85"/>
-        <ellipse cx="210" cy="300" rx="170" ry="100" fill="#bfe2f3" opacity="0.8"/>
-        <ellipse cx="690" cy="250" rx="150" ry="92"  fill="#9fd6ef" opacity="0.7"/>
-        <ellipse cx="450" cy="270" rx="140" ry="80"  fill="#dcf0fa" opacity="0.85"/>
-        <ellipse cx="120" cy="170" rx="120" ry="78"  fill="#bfe2f3" opacity="0.7"/>
-        <ellipse cx="820" cy="150" rx="140" ry="84"  fill="#cdeaf7" opacity="0.7"/>
-      </g>
-    </svg>
-  </div>
-  <canvas id="rays"></canvas>
-
   <div id="loading">
     <div id="load-title">Where to?</div>
     <div id="load-search">
@@ -361,7 +292,7 @@
     <div id="search-msg"></div>
     <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
     <div id="load-msg"></div>
-    <div id="load-version">v11.96</div>
+    <div id="load-version">v11.95</div>
   </div>
 
   <div id="overlay">
@@ -369,7 +300,7 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v11.96</div>
+  <div id="version">v11.95</div>
   <div id="speed"></div>
   <canvas id="compass" width="360" height="48"></canvas>
 
@@ -405,6 +336,6 @@
     }
   }
   </script>
-  <script type="module" src="main.js?v=11.96"></script>
+  <script type="module" src="main.js?v=11.95"></script>
 </body>
 </html>
