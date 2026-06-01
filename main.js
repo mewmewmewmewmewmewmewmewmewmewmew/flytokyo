@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.77';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.77';
+import { TrainSystem } from './train.js?v=11.78';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.78';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1929,12 +1929,10 @@ function createBirdControls(camera, domElement, collision) {
 
   const LOOK_SPEED  = 0.00175;
   const MOVE_SPEED  = 0.35;
-  const MOVE_MAX    = MOVE_SPEED * 3;  // top speed (non-sprint) — 1.5× the previous max
+  const MOVE_MAX    = MOVE_SPEED * 6;  // top speed — raised to absorb the removed sprint boost
   const ACCEL_TIME  = 3.0;             // seconds from standstill to top speed
   const DECEL_TIME  = 1.5;             // seconds to coast back to a stop
-  const BRAKE_TIME  = 0.5;             // seconds to brake to a stop when S is held
-  const TURN_SPEED  = 0.022;   // A/D yaw turn rate (radians per frame)
-  const LIFT_SPEED  = 0.30;    // spacebar ascent per frame
+  const BRAKE_TIME  = 0.5;             // seconds to brake to a stop when Space is held
   const MIN_CLEAR   = 0.3;     // can skim almost to the ground
   const CAM_FLOOR_CLEAR = 1.2; // keep the orbit camera this far above the floor
   const BIRD_RADIUS = 2.0;     // collision radius against building walls
@@ -2066,7 +2064,7 @@ function createBirdControls(camera, domElement, collision) {
   domElement.addEventListener('touchstart', e => {
     if (e.touches.length === 1) {
       touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-      touchHoldTimer = setTimeout(() => keys.add('KeyW'), 200);
+      touchHoldTimer = setTimeout(() => { mouseThrust = true; }, 200);
     }
     e.preventDefault();
   }, { passive: false });
@@ -2081,9 +2079,8 @@ function createBirdControls(camera, domElement, collision) {
       updateCamera();
       dispatcher.dispatchEvent({ type: 'change' });
       // Drag = fly toward where camera is aiming (same as left-click + drag).
-      // Cancel the hold-to-walk timer so thrust kicks in immediately on drag.
+      // Cancel the hold-to-thrust timer so thrust kicks in immediately on drag.
       if (touchHoldTimer) { clearTimeout(touchHoldTimer); touchHoldTimer = null; }
-      keys.delete('KeyW');
       mouseThrust = true;
     }
     e.preventDefault();
@@ -2093,7 +2090,6 @@ function createBirdControls(camera, domElement, collision) {
     touchLast = null;
     clearTimeout(touchHoldTimer);
     touchHoldTimer = null;
-    keys.delete('KeyW');
     mouseThrust = false;
   });
 
@@ -2112,21 +2108,15 @@ function createBirdControls(camera, domElement, collision) {
       const dt     = Math.min((now - lastTime) / 1000, 0.1);  // seconds, capped
       lastTime     = now;
 
-      const sprint = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 2 : 1;
       let moved = false;
-
-      // A/D turn the bird's heading; shift camYaw by the same delta so the
-      // camera orbit offset relative to the bird is preserved (no snap).
-      if (keys.has('KeyA')) { headYaw += TURN_SPEED; camYaw += TURN_SPEED; moved = true; }
-      if (keys.has('KeyD')) { headYaw -= TURN_SPEED; camYaw -= TURN_SPEED; moved = true; }
 
       // Velocity-based movement. _vel carries both direction and speed so coasting
       // is natural — just bleed the magnitude each frame when not thrusting.
-      // S is the brake (not reverse): it overrides the throttle and decelerates
+      // Space is the brake (not reverse): it overrides the throttle and decelerates
       // the current velocity quickly, regardless of which way the bird is facing.
-      const braking   = keys.has('KeyS');
-      const thrusting = !braking && (keys.has('KeyW') || mouseThrust);
-      const topSpeed  = MOVE_MAX * sprint;
+      const braking   = keys.has('Space');
+      const thrusting = !braking && mouseThrust;
+      const topSpeed  = MOVE_MAX;
 
       if (braking) {
         const curSpeed = _vel.length();
@@ -2134,15 +2124,12 @@ function createBirdControls(camera, domElement, collision) {
         if (curSpeed <= brake) _vel.set(0, 0, 0);
         else                   _vel.multiplyScalar((curSpeed - brake) / curSpeed);
       } else if (thrusting) {
-        // Build desired direction. W and left-click are NOT additive in speed —
-        // directions are summed then normalised so holding both doesn't go faster.
+        // Fly toward where the camera is aiming (left-click / touch thrust). The
+        // bird's heading eases toward the camera so it banks into the turn.
         const tx = new THREE.Vector3();
-        if (keys.has('KeyW'))  tx.add(getHeading());
-        if (mouseThrust) {
-          tx.add(getLook());
-          headYaw   += (camYaw   - headYaw)   * 0.12;
-          if (!_ramp.active) headPitch += (camPitch - headPitch) * 0.12;
-        }
+        tx.add(getLook());
+        headYaw   += (camYaw   - headYaw)   * 0.12;
+        if (!_ramp.active) headPitch += (camPitch - headPitch) * 0.12;
         if (tx.lengthSq() > 1e-6) {
           tx.normalize();
           // Diving (tx.y < 0) builds speed PAST the normal top speed and pulls
@@ -2273,9 +2260,6 @@ function createBirdControls(camera, domElement, collision) {
       else              fovDeg = FOV_SPRINT_DEG + (FOV_DIVE_DEG   - FOV_SPRINT_DEG) * Math.min((tt - 2) / 2, 1);
       FISH_U.uFishBlend.value   = fisheyeMode ? blend : 0;
       FISH_U.uFishHalfFov.value = (fovDeg * Math.PI / 180) / 2;
-
-      // Spacebar gains elevation.
-      if (keys.has('Space')) { birdPos.y += LIFT_SPEED * sprint; moved = true; }
 
       // Stay above the floor: terrain outside buildings, rooftop when over one
       // (so a dive lands the bird on the roof instead of sinking through it).
@@ -2555,6 +2539,7 @@ function initScene(collision) {
 
   // Backtick (`) toggles fisheye + closer follow camera.
   window.addEventListener('keydown', e => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
     if (e.code === 'Backquote') {
       e.preventDefault();
       fisheyeActive = !fisheyeActive;
@@ -2574,8 +2559,14 @@ function initScene(collision) {
     if (helpEl) helpEl.classList.toggle('hidden', !p);
   }
   window.addEventListener('keydown', e => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
     if (e.code === 'F1') { e.preventDefault(); setPaused(!paused); }
     else if (e.code === 'Escape' && paused) { e.preventDefault(); setPaused(false); }
+    else if (e.code === 'KeyF') {
+      e.preventDefault();
+      if (document.fullscreenElement) document.exitFullscreen();
+      else document.documentElement.requestFullscreen().catch(() => {});
+    }
   });
 
   // Wing-flap state. The bird flaps in short bursts then glides, the way a
@@ -2977,6 +2968,7 @@ async function main() {
   labelsRef.bldgGroup = manager.buildingLabelGroup;
   labelsRef.poiGroup  = manager.poiLabelGroup;
   window.addEventListener('keydown', e => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
     if (e.code === 'Digit1') {
       e.preventDefault();
       manager.buildingLabelGroup.visible = !manager.buildingLabelGroup.visible;
