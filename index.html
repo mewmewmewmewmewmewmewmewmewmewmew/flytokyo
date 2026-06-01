@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v11.91 -->
+  <meta charset="UTF-8"><!-- v11.92 -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -66,6 +66,7 @@
       /* !important so these beat the base #speed/#overlay rules, which appear
          later in the stylesheet and would otherwise win on source order. */
       #overlay { top: 42px !important; }
+      #overlay h1 { font-size: 13px !important; }  /* match the speed text size */
       #overlay #status { display: none !important; }
       #speed   { top: 42px !important; }   /* align with the location title */
       #hint    { display: none !important; }
@@ -278,7 +279,7 @@
     <div id="search-msg"></div>
     <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
     <div id="load-msg"></div>
-    <div id="load-version">v11.91</div>
+    <div id="load-version">v11.92</div>
   </div>
 
   <div id="overlay">
@@ -286,7 +287,7 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v11.91</div>
+  <div id="version">v11.92</div>
   <div id="speed"></div>
   <canvas id="compass" width="360" height="48"></canvas>
 
@@ -305,12 +306,11 @@
         <div><dt>1</dt><dd>Hide UI &amp; compass</dd></div>
         <div><dt>2</dt><dd>Building names</dd></div>
         <div><dt>3</dt><dd>POI labels</dd></div>
-        <div><dt>` (backtick)</dt><dd>Fisheye warp</dd></div>
+        <div><dt>`</dt><dd>Fisheye warp</dd></div>
         <div><dt>F</dt><dd>Fullscreen</dd></div>
-        <div><dt>F1</dt><dd>This menu (pause)</dd></div>
+        <div><dt>F1</dt><dd>Menu / Pause</dd></div>
         <div><dt>Esc</dt><dd>Release pointer / close</dd></div>
       </dl>
-      <div id="help-foot">F1 or Esc to close</div>
     </div>
   </div>
 
@@ -323,6 +323,6 @@
     }
   }
   </script>
-  <script type="module" src="main.js?v=11.91"></script>
+  <script type="module" src="main.js?v=11.92"></script>
 </body>
 </html>
