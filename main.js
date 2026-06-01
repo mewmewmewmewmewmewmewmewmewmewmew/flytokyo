@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.81';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.81';
+import { TrainSystem } from './train.js?v=11.82';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.82';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1917,15 +1917,45 @@ function buildBirdMesh() {
     const mesh = new THREE.LineSegments(geo, matLine);
     mesh.userData = { rest: Float32Array.from(verts), tt: Float32Array.from(tts),
                       count: verts.length / 3, sx };
+
+    // ── Solid surface membrane (30 % blue fill) ──────────────────────────────
+    // 2*n vertices: first n = leading edge, next n = trailing edge.
+    // Same userData format as the line mesh so deformWing() works on it directly.
+    const surfPos = [], surfTt = [];
+    for (const s of st) { surfPos.push(s.x, s.y, s.zF); surfTt.push(s.t); }
+    for (const s of st) { surfPos.push(s.x, s.y, s.zB); surfTt.push(s.t); }
+    const surfIdx = [];
+    for (let i = 0; i < n - 1; i++) {
+      surfIdx.push(i, n + i, i + 1);
+      surfIdx.push(n + i, n + i + 1, i + 1);
+    }
+    const surfGeo = new THREE.BufferGeometry();
+    surfGeo.setAttribute('position', new THREE.Float32BufferAttribute(surfPos, 3));
+    surfGeo.setIndex(surfIdx);
+    const surfMat = applyFisheye(new THREE.MeshBasicMaterial({
+      color: 0x2c8fc7, transparent: true, opacity: 0.30,
+      depthWrite: false, side: THREE.DoubleSide,
+    }));
+    const surfMesh = new THREE.Mesh(surfGeo, surfMat);
+    surfMesh.userData = { rest: Float32Array.from(surfPos), tt: Float32Array.from(surfTt),
+                          count: surfPos.length / 3, sx };
+
+    mesh.userData.surface = surfMesh;
     return mesh;
   }
   const wingR = buildWing( 1);
   const wingL = buildWing(-1);
+  // Surface fill meshes draw first (lower renderOrder) so edge lines always sit
+  // on top regardless of depth-fighting at the thin wing profile.
+  group.add(wingR.userData.surface);
+  group.add(wingL.userData.surface);
   group.add(wingR);
   group.add(wingL);
   // Exposed so the animate loop can flap/flex/tuck them per-vertex.
-  group.userData.wingR = wingR;
-  group.userData.wingL = wingL;
+  group.userData.wingR    = wingR;
+  group.userData.wingL    = wingL;
+  group.userData.surfaceR = wingR.userData.surface;
+  group.userData.surfaceL = wingL.userData.surface;
 
   group.scale.setScalar(0.5);   // half size
 
@@ -2593,8 +2623,10 @@ function initScene(collision) {
   // motion ripples outward, not like a rigid board), with a chordwise twist
   // that feathers the wing through the stroke. When the bird dives the wings
   // stop flapping and tuck back into a swept glide.
-  const wingR = birdMesh.userData.wingR;
-  const wingL = birdMesh.userData.wingL;
+  const wingR    = birdMesh.userData.wingR;
+  const wingL    = birdMesh.userData.wingL;
+  const surfaceR = birdMesh.userData.surfaceR;
+  const surfaceL = birdMesh.userData.surfaceL;
   const bodyTail = birdMesh.userData.bodyTail;
 
   // Gently flutter the tail in the "wind": sway each tail vertex (those behind
@@ -2728,6 +2760,8 @@ function initScene(collision) {
       const beatAmp = flapAmp * (flapBurst > 0 ? beatAmpScale : 1);
       deformWing(wingR, beatAmp, flapPhase, wingTuck);
       deformWing(wingL, beatAmp, flapPhase, wingTuck);
+      if (surfaceR) deformWing(surfaceR, beatAmp, flapPhase, wingTuck);
+      if (surfaceL) deformWing(surfaceL, beatAmp, flapPhase, wingTuck);
     }
     flutterTail(now);
     if (trainRef.system) trainRef.system.update(dt);
