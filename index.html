@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v11.88 -->
+  <meta charset="UTF-8"><!-- v11.89 -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -59,11 +59,15 @@
     body.ui-hidden #hint,
     body.ui-hidden #compass { display: none; }
 
-    /* Mobile: the compass is a 32px full-width bar flush to the top, so push the
-       title/stats and speed readout below it instead of overlapping. */
+    /* Mobile: keep the HUD minimal. The compass is a 32px full-width bar flush
+       to the top — keep only the location title and speed (pushed below the
+       bar), and hide the stats line, the hotkey hint, and the version badge. */
     @media (max-width: 768px), (pointer: coarse) {
-      #overlay { top: 40px; }
-      #speed   { top: 40px; }
+      #overlay { top: 42px; }
+      #overlay #status { display: none; }
+      #speed   { top: 48px; }
+      #hint    { display: none; }
+      #version { display: none; }
     }
 
     #loading {
@@ -272,7 +276,7 @@
     <div id="search-msg"></div>
     <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
     <div id="load-msg"></div>
-    <div id="load-version">v11.88</div>
+    <div id="load-version">v11.89</div>
   </div>
 
   <div id="overlay">
@@ -280,7 +284,7 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v11.88</div>
+  <div id="version">v11.89</div>
   <div id="speed"></div>
   <canvas id="compass" width="360" height="48"></canvas>
 
@@ -317,6 +321,6 @@
     }
   }
   </script>
-  <script type="module" src="main.js?v=11.88"></script>
+  <script type="module" src="main.js?v=11.89"></script>
 </body>
 </html>
