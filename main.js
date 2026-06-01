@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.98';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.98';
+import { TrainSystem } from './train.js?v=11.99';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.99';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2958,7 +2958,8 @@ function initScene(collision) {
     renderer.render(scene, camera);
   })();
 
-  return { scene, camera, controls, trainRef, labelsRef, ground, renderer };
+  return { scene, camera, controls, trainRef, labelsRef, ground, renderer,
+           setPaused, isPaused: () => paused, isTouch: _helpTouch };
 }
 
 // ─── Geocoding (OpenStreetMap Nominatim — no API key) ─────────────────────────
@@ -3087,20 +3088,51 @@ const MAJOR_CITIES = [
   ['Harare', -17.8252, 31.0335], ['Mombasa', -4.0435, 39.6682],
 ];
 
+// Build one quiz round: a random answer city plus two distinct decoys, with the
+// three names shuffled. Returns a promptLocation-style result tagged quiz:true.
+function makeQuizCity() {
+  const pick = () => MAJOR_CITIES[(Math.random() * MAJOR_CITIES.length) | 0];
+  const ans = pick();
+  const wrong = [];
+  while (wrong.length < 2) {
+    const c = pick();
+    if (c[0] !== ans[0] && !wrong.some(w => w[0] === c[0])) wrong.push(c);
+  }
+  const options = [ans[0], wrong[0][0], wrong[1][0]];
+  for (let i = options.length - 1; i > 0; i--) {        // Fisher–Yates shuffle
+    const j = (Math.random() * (i + 1)) | 0;
+    [options[i], options[j]] = [options[j], options[i]];
+  }
+  return { lat: ans[1], lon: ans[2], label: ans[0], shortLabel: ans[0],
+           quiz: true, answer: ans[0], options };
+}
+
 // Shows the search field on the loading screen and resolves once the user picks a
 // place that geocodes successfully. Returns { lat, lon, label, shortLabel }.
 function promptLocation() {
   return new Promise(resolve => {
+    // "Play again" reloads the page with ?quiz=1 — auto-start a fresh quiz round
+    // and skip the menu entirely.
+    if (new URLSearchParams(location.search).get('quiz') === '1') {
+      const ls = document.getElementById('load-search');
+      const lt = document.getElementById('load-title');
+      if (ls) ls.style.display = 'none';
+      if (lt) lt.textContent = 'Quiz';
+      resolve(makeQuizCity());
+      return;
+    }
+
     const input = document.getElementById('place-input');
     const btn   = document.getElementById('place-go');
     const meBtn = document.getElementById('place-me');
     const rndBtn = document.getElementById('place-random');
+    const quizBtn = document.getElementById('place-quiz');
     const msg   = document.getElementById('search-msg');
     input.focus();
     input.select();
 
-    const lock   = () => { btn.disabled = input.disabled = meBtn.disabled = rndBtn.disabled = true; };
-    const unlock = () => { btn.disabled = input.disabled = meBtn.disabled = rndBtn.disabled = false; };
+    const lock   = () => { btn.disabled = input.disabled = meBtn.disabled = rndBtn.disabled = quizBtn.disabled = true; };
+    const unlock = () => { btn.disabled = input.disabled = meBtn.disabled = rndBtn.disabled = quizBtn.disabled = false; };
 
     async function go() {
       const q = input.value.trim();
@@ -3144,9 +3176,17 @@ function promptLocation() {
       resolve({ lat, lon, label: name, shortLabel: name });
     }
 
+    // Quiz me — drop into a random city with its name hidden and guess where.
+    function startQuiz() {
+      lock();
+      msg.textContent = 'Starting quiz…';
+      resolve(makeQuizCity());
+    }
+
     btn.addEventListener('click', go);
     meBtn.addEventListener('click', useMyLocation);
     rndBtn.addEventListener('click', randomCity);
+    quizBtn.addEventListener('click', startQuiz);
     input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
   });
 }
@@ -3263,13 +3303,24 @@ async function main() {
 
   // Mutable ref so controls (created first) can call collision once tiles arrive
   const collision = { fn: null };
-  const { scene, camera, controls, trainRef, labelsRef, ground, renderer } = initScene(collision);
+  const { scene, camera, controls, trainRef, labelsRef, ground, renderer,
+          setPaused, isPaused, isTouch } = initScene(collision);
 
   // Ask where to start, geocode it, then center the world there.
   const place = await promptLocation();
+  const quizActive = !!place.quiz;
   setCenter(place.lat, place.lon);
-  setPlaceLabel(place.shortLabel);
-  seedStartTile(place.shortLabel);   // pin the chosen name to the start tile
+  if (quizActive) {
+    // Quiz: keep the city anonymous — no start label, and skip seedStartTile so
+    // _rgStarted stays false and the animate loop never reverse-geocodes an area
+    // name. The countdown stands in for the location until "Explore more".
+    document.body.classList.add('quiz-mode');
+    const lt = document.getElementById('load-title');
+    if (lt) lt.textContent = 'Quiz';
+  } else {
+    setPlaceLabel(place.shortLabel);
+    seedStartTile(place.shortLabel);   // pin the chosen name to the start tile
+  }
 
   // Switch the loading screen from search mode to progress mode.
   document.getElementById('load-search').style.display = 'none';
@@ -3300,11 +3351,13 @@ async function main() {
       e.preventDefault();
       document.body.classList.toggle('ui-hidden');
     }
-    if (e.code === 'Digit2') {
+    // Names would give the quiz away — ignore the label toggles until the round
+    // is over (the quiz-mode class is dropped when the player picks Explore more).
+    if (e.code === 'Digit2' && !document.body.classList.contains('quiz-mode')) {
       e.preventDefault();
       manager.buildingLabelGroup.visible = !manager.buildingLabelGroup.visible;
     }
-    if (e.code === 'Digit3') {
+    if (e.code === 'Digit3' && !document.body.classList.contains('quiz-mode')) {
       e.preventDefault();
       manager.poiLabelGroup.visible = !manager.poiLabelGroup.visible;
     }
@@ -3348,9 +3401,139 @@ async function main() {
     loading.classList.add('fade-out');
     setTimeout(() => {
       loading.remove();
-      if (!_helpTouch) setPaused(true);
+      // Desktop: open the controls menu on first load — but not in a quiz, where
+      // the quiz panel takes over instead.
+      if (!isTouch && !quizActive) setPaused(true);
     }, 800);
     syncTrains();
+  }
+
+  // ── Quiz round ─────────────────────────────────────────────────────────────
+  // Drives the whole flow: preview the three choices → 20 s to explore (the last
+  // 2 s wash to white) → guess → result → play again / explore more. World motion
+  // is frozen (setPaused) during the question screens and live while exploring.
+  function startQuizGame(answer, options) {
+    const quizEl    = document.getElementById('quiz');
+    const optionsEl = document.getElementById('quiz-options');
+    const actionsEl = document.getElementById('quiz-actions');
+    const resultEl  = document.getElementById('quiz-result');
+    const fadeEl    = document.getElementById('quiz-fade');
+    const timerEl   = document.getElementById('quiz-timer');
+    const qEl       = document.getElementById('quiz-q');
+    const EXPLORE_SECONDS = 20, FADE_AT = 18;
+    let selected = null, exploring = false, elapsed = 0, lastT = 0;
+
+    const clear = el => { while (el.firstChild) el.removeChild(el.firstChild); };
+    const show  = on => quizEl.classList.toggle('hidden', !on);
+    const mkBtn = (label, primary) => {
+      const b = document.createElement('button');
+      b.className = 'quiz-btn' + (primary ? '' : ' ghost');
+      b.textContent = label;
+      return b;
+    };
+
+    function renderOptions(clickable) {
+      clear(optionsEl);
+      selected = null;
+      for (const name of options) {
+        const b = document.createElement('button');
+        b.className = 'quiz-opt';
+        b.textContent = name;
+        b.disabled = !clickable;
+        if (clickable) b.addEventListener('click', () => {
+          selected = name;
+          for (const c of optionsEl.children) c.classList.toggle('selected', c === b);
+          const sub = document.getElementById('quiz-submit');
+          if (sub) sub.disabled = false;
+        });
+        optionsEl.appendChild(b);
+      }
+    }
+
+    // 1) Preview — show the choices (not selectable yet) and an Explore button.
+    function preExplore() {
+      document.body.classList.remove('quiz-exploring');
+      resultEl.textContent = ''; resultEl.className = '';
+      qEl.textContent = 'Where am I?';
+      renderOptions(false);
+      clear(actionsEl);
+      const explore = mkBtn(`Explore (${EXPLORE_SECONDS}s)`, true);
+      explore.addEventListener('click', startExplore);
+      actionsEl.appendChild(explore);
+      fadeEl.style.opacity = '0';
+      show(true);
+      setPaused(true);
+    }
+
+    // 2) Explore — unfreeze, run the countdown, wash to white in the last 2 s.
+    function startExplore() {
+      show(false);
+      setPaused(false);
+      elapsed = 0; lastT = performance.now(); exploring = true;
+      document.body.classList.add('quiz-exploring');
+      requestAnimationFrame(tick);
+    }
+    function tick() {
+      if (!exploring) return;
+      const now = performance.now();
+      const dt = (now - lastT) / 1000; lastT = now;
+      if (!isPaused()) elapsed += dt;   // don't count time spent in the F1 menu
+      const left = Math.max(0, EXPLORE_SECONDS - elapsed);
+      timerEl.textContent = `⏱ ${Math.ceil(left)}s`;
+      fadeEl.style.opacity = String(Math.max(0, Math.min(1, (elapsed - FADE_AT) / (EXPLORE_SECONDS - FADE_AT))));
+      if (left <= 0) { endExplore(); return; }
+      requestAnimationFrame(tick);
+    }
+
+    // 3) Guess — freeze, bring the panel back with the now-selectable choices.
+    function endExplore() {
+      exploring = false;
+      document.body.classList.remove('quiz-exploring');
+      setPaused(true);
+      qEl.textContent = 'Where were you?';
+      renderOptions(true);
+      clear(actionsEl);
+      const submit = mkBtn('Submit', true);
+      submit.id = 'quiz-submit';
+      submit.disabled = true;
+      submit.addEventListener('click', showResult);
+      actionsEl.appendChild(submit);
+      show(true);
+      requestAnimationFrame(() => { fadeEl.style.opacity = '0'; });  // panel wash covers
+    }
+
+    // 4) Result — mark right/wrong, offer play again or free exploration.
+    function showResult() {
+      const correct = selected === answer;
+      for (const c of optionsEl.children) {
+        c.disabled = true;
+        if (c.textContent === answer)        c.classList.add('right');
+        else if (c.textContent === selected) c.classList.add('wrong');
+      }
+      resultEl.className = correct ? 'correct' : 'wrong';
+      resultEl.textContent = correct
+        ? `Correct! You were in ${answer}.`
+        : `Not quite — you were in ${answer}.`;
+      clear(actionsEl);
+      const again = mkBtn('Play again', true);
+      again.addEventListener('click', () => { location.href = '?quiz=1'; });
+      const more  = mkBtn('Explore more', false);
+      more.addEventListener('click', exploreMore);
+      actionsEl.appendChild(again);
+      actionsEl.appendChild(more);
+    }
+
+    // 5) Explore more — drop the quiz veil, reveal the city, free flight.
+    function exploreMore() {
+      show(false);
+      document.body.classList.remove('quiz-mode');
+      timerEl.textContent = '';
+      setPlaceLabel(answer);
+      seedStartTile(answer);   // _rgStarted → area-name labels resume
+      setPaused(false);
+    }
+
+    preExplore();
   }
 
   // One Overpass request covers the whole load region. (Previously a second
@@ -3398,6 +3581,7 @@ async function main() {
   for (let i = 0; i < 5; i++) await nextFrame();
 
   reveal();
+  if (quizActive) startQuizGame(place.answer, place.options);
   // Background: only POIs remain (off by default; F2 to show).
   manager.loadPOIs(region.bbox);
 }
