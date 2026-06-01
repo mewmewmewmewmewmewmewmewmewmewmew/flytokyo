@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.83';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.83';
+import { TrainSystem } from './train.js?v=11.84';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.84';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1909,30 +1909,27 @@ function buildBirdMesh() {
       idx.push(lv[i], rv[i+1], lv[i+1]);
     }
 
-    // Tail: right outer edge (waist→tip) + fork (right tip→notch→left tip) + left outer edge
+    // Tail: a single triangle fan from the waist centre over the whole fork
+    // outline. From (0,zWaist) the swallowtail is star-shaped, so fanning the
+    // ordered boundary (waist-right → tip-right → notch → tip-left → waist-left)
+    // tiles it with no gaps or overlaps.
     const nT = 6, nFork = 16;
-    const rTail = [rv[nU]];
-    for (let i = 1; i <= nT; i++) {
+    const centreV = addV(0, zWaist);
+    const bnd = [rv[nU]];                                  // waist-right
+    for (let i = 1; i <= nT; i++) {                        // right edge → tip-right
       const t = i / nT;
-      rTail.push(addV(Wwaist + (tipX - Wwaist) * t, zWaist + (tipZ - zWaist) * t));
+      bnd.push(addV(Wwaist + (tipX - Wwaist) * t, zWaist + (tipZ - zWaist) * t));
     }
-    const fork = [];
-    for (let k = 0; k <= nFork; k++) {
+    for (let k = 1; k <= nFork; k++) {                    // fork tip-right → notch → tip-left
       const a = 1 - 2 * k / nFork;
-      fork.push(addV(a * tipX, notchZ + (tipZ - notchZ) * a * a));
+      bnd.push(addV(a * tipX, notchZ + (tipZ - notchZ) * a * a));
     }
-    const lTail = [lv[nU]];
-    for (let i = 1; i <= nT; i++) {
+    for (let i = nT - 1; i >= 1; i--) {                   // tip-left → left edge
       const t = i / nT;
-      lTail.push(addV(-(Wwaist + (tipX - Wwaist) * t), zWaist + (tipZ - zWaist) * t));
+      bnd.push(addV(-(Wwaist + (tipX - Wwaist) * t), zWaist + (tipZ - zWaist) * t));
     }
-    const notchV = fork[nFork / 2]; // centre of fork (x≈0, z=notchZ)
-    // Right half: fan from notch → right outer edge, then right fork half
-    for (let i = 0; i < nT; i++)          idx.push(notchV, rTail[i],    rTail[i+1]);
-    for (let i = 0; i < nFork/2; i++)     idx.push(notchV, fork[i],     fork[i+1]);
-    // Left half: mirror winding
-    for (let i = 0; i < nT; i++)          idx.push(notchV, lTail[i+1],  lTail[i]);
-    for (let i = 0; i < nFork/2; i++)     idx.push(notchV, fork[nFork-i], fork[nFork-i-1]);
+    bnd.push(lv[nU]);                                     // waist-left
+    for (let i = 0; i < bnd.length - 1; i++) idx.push(centreV, bnd[i], bnd[i + 1]);
 
     const surfGeo = new THREE.BufferGeometry();
     surfGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
