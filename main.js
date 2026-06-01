@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.76';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.76';
+import { TrainSystem } from './train.js?v=11.77';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.77';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2553,15 +2553,29 @@ function initScene(collision) {
     });
   }
 
-  // F3 toggles fisheye + closer follow camera.
+  // Backtick (`) toggles fisheye + closer follow camera.
   window.addEventListener('keydown', e => {
-    if (e.code === 'F3') {
+    if (e.code === 'Backquote') {
       e.preventDefault();
       fisheyeActive = !fisheyeActive;
       FISH_U.uFishOn.value = fisheyeActive ? 1 : 0;
       if (fisheyeActive) fishCullEnter(); else fishCullExit();
       controls.setFisheye(fisheyeActive);
     }
+  });
+
+  // F1 = pause everything and show the hotkey menu (a 40% white wash over the
+  // whole screen). While paused the animate loop skips all motion/animation
+  // updates and just re-renders the frozen frame. F1 or Esc closes it.
+  let paused = false;
+  const helpEl = document.getElementById('help');
+  function setPaused(p) {
+    paused = p;
+    if (helpEl) helpEl.classList.toggle('hidden', !p);
+  }
+  window.addEventListener('keydown', e => {
+    if (e.code === 'F1') { e.preventDefault(); setPaused(!paused); }
+    else if (e.code === 'Escape' && paused) { e.preventDefault(); setPaused(false); }
   });
 
   // Wing-flap state. The bird flaps in short bursts then glides, the way a
@@ -2649,6 +2663,8 @@ function initScene(collision) {
     const now = performance.now();
     const dt  = Math.min((now - lastTime) / 1000, 0.1);
     lastTime  = now;
+    // Paused (F1 menu open): freeze all motion/animation, just re-render.
+    if (paused) { renderer.render(scene, camera); return; }
     controls.update();
     if (speedEl && dt > 0) {
       const kmh = (controls.getSpeed() / dt * 3.6).toFixed(0);
@@ -2957,15 +2973,15 @@ async function main() {
   collision.fn      = (x, z, y, R) => manager.isInBuilding(x, z, y, R);
   collision.floorFn = (x, z)    => manager.getFloorHeight(x, z);
 
-  // F1 = building names, F2 = POI labels (both off by default).
+  // 1 = building names, 2 = POI labels (both off by default).
   labelsRef.bldgGroup = manager.buildingLabelGroup;
   labelsRef.poiGroup  = manager.poiLabelGroup;
   window.addEventListener('keydown', e => {
-    if (e.code === 'F1') {
+    if (e.code === 'Digit1') {
       e.preventDefault();
       manager.buildingLabelGroup.visible = !manager.buildingLabelGroup.visible;
     }
-    if (e.code === 'F2') {
+    if (e.code === 'Digit2') {
       e.preventDefault();
       manager.poiLabelGroup.visible = !manager.poiLabelGroup.visible;
     }
