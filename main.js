@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.02';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.02';
+import { TrainSystem } from './train.js?v=12.03';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.03';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -3052,7 +3052,7 @@ const MAJOR_CITIES = [
   ['Addis Ababa', 9.0250, 38.7469, 'Ethiopia'], ['Detroit', 42.3314, -83.0458, 'USA'],
   ['Seattle', 47.6062, -122.3321, 'USA'], ['Kabul', 34.5553, 69.2075, 'Afghanistan'],
   ['Pyongyang', 39.0392, 125.7625, 'North Korea'], ['Accra', 5.6037, -0.1870, 'Ghana'],
-  ['Kano', 12.0222, 8.5920, 'Nigeria'], ['Taipei', 25.0330, 121.5654, 'Taiwan'],
+  ['Kano', 12.0322, 8.5920, 'Nigeria'], ['Taipei', 25.0330, 121.5654, 'Taiwan'],
   ['Kyiv', 50.4501, 30.5234, 'Ukraine'], ['Guayaquil', -2.1709, -79.9224, 'Ecuador'],
   ['Hanoi', 21.0285, 105.8542, 'Vietnam'], ['Medellín', 6.2476, -75.5658, 'Colombia'],
   ['Minneapolis', 44.9778, -93.2650, 'USA'], ['San Diego', 32.7157, -117.1611, 'USA'],
@@ -3414,9 +3414,10 @@ async function main() {
   }
 
   // ── Quiz round ─────────────────────────────────────────────────────────────
-  // Drives the whole flow: preview the three choices → 20 s to explore (the last
-  // 2 s wash to white) → guess → result → play again / explore more. World motion
-  // is frozen (setPaused) during the question screens and live while exploring.
+  // Drives the whole flow: explore immediately for 20 s with the question + three
+  // choices floating in the sky (the last 2 s wash to white) → guess in a panel →
+  // result → play again / explore more. World motion is live while exploring and
+  // frozen only for the guess/result panel.
   function startQuizGame(answer, options) {
     const quizEl    = document.getElementById('quiz');
     const optionsEl = document.getElementById('quiz-options');
@@ -3425,6 +3426,7 @@ async function main() {
     const fadeEl    = document.getElementById('quiz-fade');
     const timerEl   = document.getElementById('quiz-timer');
     const qEl       = document.getElementById('quiz-q');
+    const skyEl     = document.getElementById('quiz-sky');
     const EXPLORE_SECONDS = 20, FADE_AT = 18;
     let selected = null, exploring = false, elapsed = 0, lastT = 0;
 
@@ -3455,23 +3457,28 @@ async function main() {
       }
     }
 
-    // 1) Preview — show the choices (not selectable yet) and an Explore button.
-    function preExplore() {
-      document.body.classList.remove('quiz-exploring');
-      resultEl.textContent = ''; resultEl.className = '';
-      qEl.textContent = 'Where am I?';
-      renderOptions(false);
-      clear(actionsEl);
-      const explore = mkBtn(`Explore (${EXPLORE_SECONDS}s)`, true);
-      explore.addEventListener('click', startExplore);
-      actionsEl.appendChild(explore);
-      fadeEl.style.opacity = '0';
-      show(true);
-      setFrozen(true);
+    // Persistent "sky" text shown while exploring: the question and the three
+    // choices as a plain list — you're not picking yet, so no buttons.
+    function renderSky() {
+      clear(skyEl);
+      const q = document.createElement('div');
+      q.className = 'quiz-sky-q';
+      q.textContent = 'Where am I?';
+      skyEl.appendChild(q);
+      for (const name of options) {
+        const o = document.createElement('div');
+        o.className = 'quiz-sky-opt';
+        o.textContent = name;
+        skyEl.appendChild(o);
+      }
     }
 
-    // 2) Explore — unfreeze, run the countdown, wash to white in the last 2 s.
+    // 1) Explore — starts immediately: world live, countdown running, the choices
+    //    floating in the sky. The final 2 s wash to white.
     function startExplore() {
+      resultEl.textContent = ''; resultEl.className = '';
+      fadeEl.style.opacity = '0';
+      renderSky();
       show(false);
       setFrozen(false);
       elapsed = 0; lastT = performance.now(); exploring = true;
@@ -3540,7 +3547,7 @@ async function main() {
       setFrozen(false);
     }
 
-    preExplore();
+    startExplore();
   }
 
   // One Overpass request covers the whole load region. (Previously a second
