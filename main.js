@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.69';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.69';
+import { TrainSystem } from './train.js?v=11.70';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.70';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1769,8 +1769,10 @@ function applyFisheye(mat) {
 function buildBirdMesh() {
   const group   = new THREE.Group();
   const matBody = applyFisheye(new THREE.MeshBasicMaterial({ color: 0x2c8fc7, wireframe: true }));
-  const matWing = applyFisheye(new THREE.MeshBasicMaterial({ color: 0x46c0ff, wireframe: true }));
   const matBeak = applyFisheye(new THREE.MeshBasicMaterial({ color: 0xff9a3c, wireframe: true }));
+  // Wings + tail are drawn as EDGE lines only (no inner triangulation), in the
+  // same colour as the body.
+  const matLine = applyFisheye(new THREE.LineBasicMaterial({ color: 0x2c8fc7 }));
 
   // Bird faces −Z (Three.js default forward). Dorsal (top-down) layout:
   //  −Z = head/beak, +Z = tail, ±X = wingtips, +Y = up (back).
@@ -1792,72 +1794,41 @@ function buildBirdMesh() {
   beak.position.set(0, 0.04, -0.92);
   group.add(beak);
 
-  // Build a THIN SOLID sheet (top + bottom skins) from per-station chord lines.
-  // stations[i] = { x, y, zF, zB } gives the spanwise position, vertical
-  // baseline, and front/back z of the chord at that station. The thickness
-  // bulges to `th` at mid-chord and tapers to 0 at the leading/trailing edges
-  // so the outline stays crisp while the surface has real volume. Returns a
-  // mesh whose userData carries { tt, count }: tt is each vertex's spanwise
-  // fraction (0..1), used by the flap deformer.
-  function makeSolidSheet(stations, th, mat, tipTaper) {
-    const n = stations.length, m = 5, NM = n * m;
-    const pos = new Array(2 * NM * 3);
-    const tt  = new Float32Array(2 * NM);
-    for (let i = 0; i < n; i++) {
-      const s = stations[i], f = i / (n - 1);
-      const taper = 1 - (tipTaper || 0) * f;           // thinner toward the tip
-      for (let j = 0; j < m; j++) {
-        const c = j / (m - 1);
-        const z = s.zF + (s.zB - s.zF) * c;
-        const bulge = th * Math.sin(Math.PI * c) * taper;
-        const kt = i * m + j, kb = NM + i * m + j;
-        pos[kt*3] = s.x; pos[kt*3+1] = s.y + bulge; pos[kt*3+2] = z;
-        pos[kb*3] = s.x; pos[kb*3+1] = s.y - bulge; pos[kb*3+2] = z;
-        tt[kt] = f; tt[kb] = f;
-      }
-    }
-    const idx = [];
-    const quad = (a, b, c, d) => idx.push(a, b, d, a, d, c);
-    for (let i = 0; i < n - 1; i++) for (let j = 0; j < m - 1; j++) {
-      const p = i*m + j;        quad(p, p+1, p+m, p+m+1);        // top skin
-      const q = NM + i*m + j;   quad(q, q+m, q+1, q+m+1);        // bottom skin (flipped)
-    }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    geo.setIndex(idx);
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.userData = { tt, count: 2 * NM };
-    return mesh;
-  }
-
-  // ── Wings: swallow silhouette — broad inner arm + sharply-swept outer primaries ──
-  // Leading and trailing edges are defined independently (not center ± half-chord)
-  // so the chord widens through the inner arm before narrowing to a pointed tip.
-  // The leading edge sweeps backward MONOTONICALLY from the root (no forward
-  // bulge), so the two wings' front edges meet at the body at one shared sweep
-  // angle — a single continuous chevron when seen from the top.
-  //
-  // Leading  edge Z: −0.30 (root) → +0.90 (tip), via 0.55·t + 0.65·t²
-  // Trailing edge Z: +0.25 (root) → +0.90 (tip), meeting the leading edge at the tip
-  // Span reduced to ~2/3 of the old reach. The leading-edge near-root slope
-  // (0.55 / 1.46 ≈ 0.38 in z per x) sets the bird's chevron angle, reused by
-  // the tail's back edge below.
+  // ── Wings: swallow silhouette — EDGE LINES only (leading + trailing outline,
+  // a root rib and a few feather ribs), no inner triangulation. ──
+  // Leading edge sweeps back MONOTONICALLY from the root so both wings' front
+  // edges meet at the body at one shared angle (a continuous chevron). The
+  // trailing edge meets it at the tip. Span ≈2/3 of the old reach; the
+  // near-root slope (0.55/1.46 ≈ 0.38 z per x) sets the bird's chevron angle,
+  // reused by the tail below. userData carries rest/tt/sx so the flap deformer
+  // can flex these line vertices per-frame exactly like the old mesh.
   function buildWing(sx) {
     const n = 16;
-    const stations = [];
+    const st = [];
     for (let i = 0; i < n; i++) {
       const t = i / (n - 1);
       const e = t * t * (3 - 2 * t);
-      stations.push({
+      st.push({
+        t,
         x:  sx * (0.15 + 1.46 * t),          // span (≈2/3 of the previous 2.18)
         y:  0.06 - 0.13 * e,                 // slight dihedral droop
         zF: -0.30 + 0.55 * t + 0.65 * t * t, // leading edge (monotonic chevron)
         zB:  0.25 + 0.61 * t + 0.04 * t * t, // trailing edge → meets leading at tip
       });
     }
-    const mesh = makeSolidSheet(stations, 0.06, matWing, 0.6);
-    mesh.userData.sx   = sx;
-    mesh.userData.rest = Float32Array.from(mesh.geometry.attributes.position.array);
+    const verts = [], tts = [];
+    const add = (s, back) => { verts.push(s.x, s.y, back ? s.zB : s.zF); tts.push(s.t); };
+    for (let i = 0; i < n - 1; i++) { add(st[i], false); add(st[i+1], false); } // leading edge
+    for (let i = 0; i < n - 1; i++) { add(st[i], true);  add(st[i+1], true);  } // trailing edge
+    add(st[0], false); add(st[0], true);                                        // root rib
+    for (const f of [0.45, 0.65, 0.82]) {                                       // feather ribs
+      const i = Math.round(f * (n - 1)); add(st[i], false); add(st[i], true);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    const mesh = new THREE.LineSegments(geo, matLine);
+    mesh.userData = { rest: Float32Array.from(verts), tt: Float32Array.from(tts),
+                      count: verts.length / 3, sx };
     return mesh;
   }
   const wingR = buildWing( 1);
@@ -1868,25 +1839,30 @@ function buildBirdMesh() {
   group.userData.wingR = wingR;
   group.userData.wingL = wingL;
 
-  // ── Tail: forked, with a CHEVRON trailing edge matching the wing sweep ──
-  // The front edge attaches straight behind the body; the back edge notches
-  // forward at the centre and sweeps back toward the outer corners at the same
-  // 0.38 z-per-x slope as the wing leading edge, so the tail fork echoes the
-  // bird's chevron. Built as a thin solid sheet for thickness.
+  // ── Tail: deeply forked V with a ROUNDED notch (barn-swallow streamers) ──
+  // Two pointed streamers sweep back and slightly out; the trailing edge dips
+  // forward at the centre on a parabola, giving the rounded valley of the fork.
   function buildTail() {
-    const n = 17;
-    const halfW = 0.60, frontZ = 0.55, notchZ = 0.80, slope = 0.38;
-    const stations = [];
-    for (let i = 0; i < n; i++) {
-      const a = (i / (n - 1) - 0.5) * 2;        // −1 … 1 across the span
-      const x = a * halfW;
-      stations.push({
-        x, y: -0.02,
-        zF: frontZ,
-        zB: notchZ + slope * Math.abs(x),       // chevron back edge (same angle as wing)
-      });
+    const y = -0.02;
+    const bodyX = 0.13, bodyZ = 0.55;   // attaches behind the body
+    const tipX  = 0.36, tipZ  = 1.85;   // long streamer tips, swept out + back
+    const notchZ = 1.02;                 // centre of the rounded fork (forward of tips)
+    const verts = [];
+    const seg = (x1, z1, x2, z2) => verts.push(x1, y, z1, x2, y, z2);
+    seg( bodyX, bodyZ,  tipX, tipZ);     // outer right edge
+    seg(-bodyX, bodyZ, -tipX, tipZ);     // outer left edge
+    seg(-bodyX, bodyZ,  bodyX, bodyZ);   // body edge
+    // Rounded inner V: parabola from right tip across the notch to left tip.
+    const N = 16; let px = tipX, pz = tipZ;
+    for (let k = 1; k <= N; k++) {
+      const a = 1 - 2 * k / N;                       // +1 (right tip) → −1 (left tip)
+      const x = a * tipX;
+      const z = notchZ + (tipZ - notchZ) * a * a;    // rounded valley at centre
+      seg(px, pz, x, z); px = x; pz = z;
     }
-    return makeSolidSheet(stations, 0.04, matBody, 0);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    return new THREE.LineSegments(geo, matLine);
   }
   group.add(buildTail());
 
