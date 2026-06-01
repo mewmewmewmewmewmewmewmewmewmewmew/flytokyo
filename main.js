@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.91';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.91';
+import { TrainSystem } from './train.js?v=11.92';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.92';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2732,12 +2732,20 @@ function initScene(collision) {
   // F1 = pause everything and show the hotkey menu (a 40% white wash over the
   // whole screen). While paused the animate loop skips all motion/animation
   // updates and just re-renders the frozen frame. F1 or Esc closes it.
+  const _helpTouch = (window.matchMedia && matchMedia('(pointer: coarse)').matches)
+                  || ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
   let paused = false;
   const helpEl = document.getElementById('help');
   function setPaused(p) {
     paused = p;
     if (helpEl) helpEl.classList.toggle('hidden', !p);
   }
+  // On desktop, open the controls menu on first load. Skip on touch devices.
+  if (!_helpTouch) setPaused(true);
+  // Clicking the backdrop (anywhere outside the panel) closes the menu.
+  if (helpEl) helpEl.addEventListener('click', e => {
+    if (e.target === helpEl) setPaused(false);
+  });
   window.addEventListener('keydown', e => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
     if (e.code === 'F1') { e.preventDefault(); setPaused(!paused); }
