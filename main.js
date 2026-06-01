@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.75';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.75';
+import { TrainSystem } from './train.js?v=11.76';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.76';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1768,7 +1768,7 @@ function applyFisheye(mat) {
 
 function buildBirdMesh() {
   const group   = new THREE.Group();
-  const matBeak = applyFisheye(new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true }));
+  const matBeak = applyFisheye(new THREE.MeshBasicMaterial({ color: 0x7b919d, wireframe: true }));
   // Body, wings + tail are drawn as EDGE lines only (no inner triangulation),
   // all in the same colour.
   const matLine = applyFisheye(new THREE.LineBasicMaterial({ color: 0x2c8fc7 }));
@@ -1848,9 +1848,15 @@ function buildBirdMesh() {
 
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-    return new THREE.LineSegments(geo, matLine);
+    const mesh = new THREE.LineSegments(geo, matLine);
+    // Stash rest positions + the waist Z so the animate loop can flutter only
+    // the tail (vertices behind the waist) in the wind.
+    mesh.userData = { rest: Float32Array.from(verts), zWaist };
+    return mesh;
   }
-  group.add(buildBodyTail());
+  const bodyTail = buildBodyTail();
+  group.add(bodyTail);
+  group.userData.bodyTail = bodyTail;
 
   // ── Beak: short stubby black cone pointing −Z, mounted at the nose ──
   const beak = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.12, 4, 1), matBeak);
@@ -2566,6 +2572,26 @@ function initScene(collision) {
   // stop flapping and tuck back into a swept glide.
   const wingR = birdMesh.userData.wingR;
   const wingL = birdMesh.userData.wingL;
+  const bodyTail = birdMesh.userData.bodyTail;
+
+  // Gently flutter the tail in the "wind": sway each tail vertex (those behind
+  // the waist) vertically + a little laterally, scaled by how far back it is so
+  // the fork tips drift most while the body stays put. Recomputed from rest.
+  function flutterTail(now) {
+    if (!bodyTail) return;
+    const arr = bodyTail.geometry.attributes.position.array;
+    const rest = bodyTail.userData.rest, zW = bodyTail.userData.zWaist;
+    const t = now * 0.001;
+    for (let k = 0; k < rest.length; k += 3) {
+      const z = rest[k + 2];
+      if (z <= zW) continue;                       // body: leave at rest
+      const f = z - zW;                             // distance into the tail
+      arr[k]     = rest[k]     + Math.sin(t * 5.5 + z * 1.6) * 0.018 * f;  // lateral
+      arr[k + 1] = rest[k + 1] + Math.sin(t * 4.0 + z * 2.2) * 0.030 * f;  // vertical
+    }
+    bodyTail.geometry.attributes.position.needsUpdate = true;
+  }
+
   let flapPhase  = 0;     // running flap phase (shoulder); tips lag behind
   let flapAmp    = 0.06;  // current (eased) amplitude in radians
   let flapFreq   = 2;     // current (eased) angular speed
@@ -2678,6 +2704,7 @@ function initScene(collision) {
       deformWing(wingR, beatAmp, flapPhase, wingTuck);
       deformWing(wingL, beatAmp, flapPhase, wingTuck);
     }
+    flutterTail(now);
     if (trainRef.system) trainRef.system.update(dt);
     // Declutter: only keep labels near the camera visible.
     const cp = camera.position;
