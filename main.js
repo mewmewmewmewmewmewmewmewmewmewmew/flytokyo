@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.73';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.73';
+import { TrainSystem } from './train.js?v=11.74';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.74';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1785,17 +1785,22 @@ function buildBirdMesh() {
   // tail. Drawn as minimal edge lines.
   function buildBodyTail() {
     const yMid  = 0.02;
-    const zNose = -0.95, zWaist = 0.55;          // body runs nose → waist
+    // Short body: the head sits just ahead of the wing leading edge (root ≈
+    // z −0.30) rather than out at a long nose tip.
+    const zNose = -0.45, zWaist = 0.58;          // body runs nose → waist
     const tipX  = 0.36, tipZ = 1.85, notchZ = 1.02;
     const Wwaist = 0.10;
     // Half-width (W) and half-height (H) control points along the body
-    // (u: 0 = nose … 1 = waist). A small bump near u=0.10 is the head.
-    const Wc = [[0,0],[0.10,0.085],[0.20,0.072],[0.42,0.170],[0.70,0.125],[1.0,Wwaist]];
-    const Hc = [[0,0],[0.10,0.070],[0.20,0.058],[0.42,0.140],[0.70,0.060],[1.0,0.018]];
+    // (u: 0 = nose … 1 = waist). Interpolated with smoothstep so the widest
+    // part is a ROUNDED curve, not two straight edges meeting at a peak, and
+    // the short front rounds off into a blunt head (no pointy tip).
+    const Wc = [[0,0],[0.15,0.110],[0.36,0.170],[1.0,Wwaist]];
+    const Hc = [[0,0],[0.15,0.090],[0.36,0.140],[1.0,0.020]];
     const interp = (c, u) => {
       for (let i = 0; i < c.length - 1; i++)
         if (u <= c[i+1][0]) {
-          const t = (u - c[i][0]) / (c[i+1][0] - c[i][0]);
+          const r = (u - c[i][0]) / (c[i+1][0] - c[i][0]);
+          const t = r * r * (3 - 2 * r);               // smoothstep → rounded joints
           return c[i][1] + (c[i+1][1] - c[i][1]) * t;
         }
       return c[c.length - 1][1];
@@ -1847,10 +1852,10 @@ function buildBirdMesh() {
   }
   group.add(buildBodyTail());
 
-  // ── Beak: slim cone pointing −Z ──
-  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.30, 4, 1), matBeak);
+  // ── Beak: slim cone pointing −Z, mounted at the (now closer) nose ──
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.24, 4, 1), matBeak);
   beak.rotation.x = -Math.PI / 2;       // +Y axis → −Z
-  beak.position.set(0, 0.04, -0.92);
+  beak.position.set(0, 0.02, -0.54);
   group.add(beak);
 
   // ── Wings: swallow silhouette — EDGE LINES only (leading + trailing outline,
