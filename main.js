@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.93';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.93';
+import { TrainSystem } from './train.js?v=11.94';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.94';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2740,8 +2740,6 @@ function initScene(collision) {
     paused = p;
     if (helpEl) helpEl.classList.toggle('hidden', !p);
   }
-  // On desktop, open the controls menu on first load. Skip on touch devices.
-  if (!_helpTouch) setPaused(true);
   // Clicking the backdrop (anywhere outside the panel) closes the menu.
   if (helpEl) helpEl.addEventListener('click', e => {
     if (e.target === helpEl) setPaused(false);
@@ -3315,7 +3313,10 @@ async function main() {
   function reveal() {
     setLoad('Ready', 1);
     loading.classList.add('fade-out');
-    setTimeout(() => loading.remove(), 800);
+    setTimeout(() => {
+      loading.remove();
+      if (!_helpTouch) setPaused(true);
+    }, 800);
     syncTrains();
   }
 
