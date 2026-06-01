@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=11.82';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.82';
+import { TrainSystem } from './train.js?v=11.83';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=11.83';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1872,9 +1872,85 @@ function buildBirdMesh() {
     mesh.userData = { rest: Float32Array.from(verts), zWaist };
     return mesh;
   }
+  // ── Body+tail planform fill ──────────────────────────────────────────────
+  // Flat mesh at y=yMid tracing the same silhouette as the edge lines.
+  // Body: quad strip nose→waist; tail: fan from notch out to both fork arms.
+  // userData.{rest, zWaist} matches what flutterTail expects so the surface
+  // waves in the wind together with the edge lines.
+  function buildBodyTailSurface() {
+    const yMid = 0.02;
+    const zNose = -0.45, zWaist = 0.58;
+    const tipX = 0.36, tipZ = 1.85, notchZ = 1.02;
+    const Wwaist = 0.10;
+    const Wc = [[0,0],[0.15,0.110],[0.36,0.170],[1.0,Wwaist]];
+    const interp = (c, u) => {
+      for (let i = 0; i < c.length - 1; i++)
+        if (u <= c[i+1][0]) {
+          const r = (u - c[i][0]) / (c[i+1][0] - c[i][0]);
+          const t = r * r * (3 - 2 * r);
+          return c[i][1] + (c[i+1][1] - c[i][1]) * t;
+        }
+      return c[c.length - 1][1];
+    };
+    const zBody = u => zNose + (zWaist - zNose) * u;
+    const pos = [], idx = [];
+    const addV = (x, z) => { pos.push(x, yMid, z); return pos.length / 3 - 1; };
+
+    // Body: sample nU+1 stations nose→waist, build quad strip
+    const nU = 20;
+    const lv = [], rv = [];
+    for (let i = 0; i <= nU; i++) {
+      const u = i / nU, w = interp(Wc, u), z = zBody(u);
+      rv.push(addV( w, z));
+      lv.push(addV(-w, z));
+    }
+    for (let i = 0; i < nU; i++) {
+      idx.push(lv[i], rv[i], rv[i+1]);
+      idx.push(lv[i], rv[i+1], lv[i+1]);
+    }
+
+    // Tail: right outer edge (waist→tip) + fork (right tip→notch→left tip) + left outer edge
+    const nT = 6, nFork = 16;
+    const rTail = [rv[nU]];
+    for (let i = 1; i <= nT; i++) {
+      const t = i / nT;
+      rTail.push(addV(Wwaist + (tipX - Wwaist) * t, zWaist + (tipZ - zWaist) * t));
+    }
+    const fork = [];
+    for (let k = 0; k <= nFork; k++) {
+      const a = 1 - 2 * k / nFork;
+      fork.push(addV(a * tipX, notchZ + (tipZ - notchZ) * a * a));
+    }
+    const lTail = [lv[nU]];
+    for (let i = 1; i <= nT; i++) {
+      const t = i / nT;
+      lTail.push(addV(-(Wwaist + (tipX - Wwaist) * t), zWaist + (tipZ - zWaist) * t));
+    }
+    const notchV = fork[nFork / 2]; // centre of fork (x≈0, z=notchZ)
+    // Right half: fan from notch → right outer edge, then right fork half
+    for (let i = 0; i < nT; i++)          idx.push(notchV, rTail[i],    rTail[i+1]);
+    for (let i = 0; i < nFork/2; i++)     idx.push(notchV, fork[i],     fork[i+1]);
+    // Left half: mirror winding
+    for (let i = 0; i < nT; i++)          idx.push(notchV, lTail[i+1],  lTail[i]);
+    for (let i = 0; i < nFork/2; i++)     idx.push(notchV, fork[nFork-i], fork[nFork-i-1]);
+
+    const surfGeo = new THREE.BufferGeometry();
+    surfGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    surfGeo.setIndex(idx);
+    const surf = new THREE.Mesh(surfGeo, applyFisheye(new THREE.MeshBasicMaterial({
+      color: 0x2c8fc7, transparent: true, opacity: 0.50,
+      depthWrite: false, side: THREE.DoubleSide,
+    })));
+    surf.userData = { rest: Float32Array.from(pos), zWaist };
+    return surf;
+  }
+
   const bodyTail = buildBodyTail();
+  const bodyTailSurf = buildBodyTailSurface();
+  group.add(bodyTailSurf);   // surface first so edge lines render on top
   group.add(bodyTail);
-  group.userData.bodyTail = bodyTail;
+  group.userData.bodyTail     = bodyTail;
+  group.userData.bodyTailSurf = bodyTailSurf;
 
   // ── Beak: short stubby black cone pointing −Z, mounted at the nose ──
   const beak = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.12, 4, 1), matBeak);
@@ -1933,7 +2009,7 @@ function buildBirdMesh() {
     surfGeo.setAttribute('position', new THREE.Float32BufferAttribute(surfPos, 3));
     surfGeo.setIndex(surfIdx);
     const surfMat = applyFisheye(new THREE.MeshBasicMaterial({
-      color: 0x2c8fc7, transparent: true, opacity: 0.30,
+      color: 0x2c8fc7, transparent: true, opacity: 0.50,
       depthWrite: false, side: THREE.DoubleSide,
     }));
     const surfMesh = new THREE.Mesh(surfGeo, surfMat);
@@ -2627,24 +2703,27 @@ function initScene(collision) {
   const wingL    = birdMesh.userData.wingL;
   const surfaceR = birdMesh.userData.surfaceR;
   const surfaceL = birdMesh.userData.surfaceL;
-  const bodyTail = birdMesh.userData.bodyTail;
+  const bodyTail     = birdMesh.userData.bodyTail;
+  const bodyTailSurf = birdMesh.userData.bodyTailSurf;
 
-  // Gently flutter the tail in the "wind": sway each tail vertex (those behind
-  // the waist) vertically + a little laterally, scaled by how far back it is so
-  // the fork tips drift most while the body stays put. Recomputed from rest.
-  function flutterTail(now) {
-    if (!bodyTail) return;
-    const arr = bodyTail.geometry.attributes.position.array;
-    const rest = bodyTail.userData.rest, zW = bodyTail.userData.zWaist;
-    const t = now * 0.001;
+  // Apply tail-wind flutter to one geometry buffer (lines or surface mesh).
+  function _flutterGeo(mesh, t) {
+    const arr = mesh.geometry.attributes.position.array;
+    const rest = mesh.userData.rest, zW = mesh.userData.zWaist;
     for (let k = 0; k < rest.length; k += 3) {
       const z = rest[k + 2];
-      if (z <= zW) continue;                       // body: leave at rest
-      const f = z - zW;                             // distance into the tail
-      arr[k]     = rest[k]     + Math.sin(t * 5.5 + z * 1.6) * 0.018 * f;  // lateral
-      arr[k + 1] = rest[k + 1] + Math.sin(t * 4.0 + z * 2.2) * 0.030 * f;  // vertical
+      if (z <= zW) continue;
+      const f = z - zW;
+      arr[k]     = rest[k]     + Math.sin(t * 5.5 + z * 1.6) * 0.018 * f;
+      arr[k + 1] = rest[k + 1] + Math.sin(t * 4.0 + z * 2.2) * 0.030 * f;
     }
-    bodyTail.geometry.attributes.position.needsUpdate = true;
+    mesh.geometry.attributes.position.needsUpdate = true;
+  }
+
+  function flutterTail(now) {
+    const t = now * 0.001;
+    if (bodyTail)     _flutterGeo(bodyTail, t);
+    if (bodyTailSurf) _flutterGeo(bodyTailSurf, t);
   }
 
   let flapPhase  = 0;     // running flap phase (shoulder); tips lag behind
