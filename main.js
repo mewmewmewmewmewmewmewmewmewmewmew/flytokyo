@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.13';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.13';
+import { TrainSystem } from './train.js?v=12.14';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.14';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -3042,7 +3042,7 @@ const MAJOR_CITIES = [
   ['Shenzhen', 22.5431, 114.0579, 'China'], ['Lahore', 31.5204, 74.3587, 'Pakistan'],
   ['Bangalore', 12.9716, 77.5946, 'India'], ['Paris', 48.8566, 2.3522, 'France'],
   ['Bogotá', 4.7110, -74.0721, 'Colombia'], ['Jakarta', -6.2088, 106.8456, 'Indonesia'],
-  ['Chennai', 13.0827, 80.2707, 'India'], ['Lima', -12.1364, -77.0428, 'Peru'],
+  ['Chennai', 13.0827, 80.2707, 'India'], ['Lima', -12.1464, -77.0428, 'Peru'],
   ['Bangkok', 13.7563, 100.5018, 'Thailand'], ['Seoul', 37.5665, 126.9780, 'South Korea'],
   ['Nagoya', 35.1815, 136.9066, 'Japan'], ['Hyderabad', 17.3850, 78.4867, 'India'],
   ['London', 51.5074, -0.1278, 'UK'], ['Tehran', 35.6892, 51.3890, 'Iran'],
@@ -3068,7 +3068,7 @@ const MAJOR_CITIES = [
   ['Yangon', 16.8409, 96.1735, 'Myanmar'], ['Alexandria', 31.2001, 29.9187, 'Egypt'],
   ['Jinan', 36.6512, 117.1201, 'China'], ['Guadalajara', 20.6597, -103.3496, 'Mexico'],
   ['Boston', 42.3601, -71.0589, 'USA'], ['Abidjan', 5.3600, -4.0083, 'Ivory Coast'],
-  ['Ankara', 39.9334, 32.8597, 'Turkey'], ['Phoenix', 33.4484, -112.1340, 'USA'],
+  ['Ankara', 39.9334, 32.8597, 'Turkey'], ['Phoenix', 33.4484, -112.1440, 'USA'],
   ['San Francisco', 37.7749, -122.4194, 'USA'], ['Berlin', 52.5200, 13.4050, 'Germany'],
   ['Sydney', -33.8688, 151.2093, 'Australia'], ['Melbourne', -37.8136, 144.9631, 'Australia'],
   ['Casablanca', 33.5731, -7.5898, 'Morocco'], ['Montréal', 45.5017, -73.5673, 'Canada'],
@@ -3549,7 +3549,7 @@ async function main() {
       submit.addEventListener('click', showResult);
       actionsEl.appendChild(submit);
       show(true);
-      requestAnimationFrame(() => { fadeEl.style.opacity = '0'; });  // panel wash covers
+      fadeEl.style.opacity = '1';   // hold the view fully white through the guess
     }
 
     // 4) Result — mark right/wrong, offer play again or free exploration.
@@ -3577,6 +3577,7 @@ async function main() {
     function exploreMore() {
       clearSky();
       show(false);
+      fadeEl.style.opacity = '0';   // lift the white veil to reveal the city
       document.body.classList.remove('quiz-mode');
       timerEl.textContent = '';
       setPlaceLabel(answer);
