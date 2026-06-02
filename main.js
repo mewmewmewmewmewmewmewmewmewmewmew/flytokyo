@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.08';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.08';
+import { TrainSystem } from './train.js?v=12.09';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.09';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -3042,7 +3042,7 @@ const MAJOR_CITIES = [
   ['Shenzhen', 22.5431, 114.0579, 'China'], ['Lahore', 31.5204, 74.3587, 'Pakistan'],
   ['Bangalore', 12.9716, 77.5946, 'India'], ['Paris', 48.8566, 2.3522, 'France'],
   ['Bogotá', 4.7110, -74.0721, 'Colombia'], ['Jakarta', -6.2088, 106.8456, 'Indonesia'],
-  ['Chennai', 13.0827, 80.2707, 'India'], ['Lima', -12.0864, -77.0428, 'Peru'],
+  ['Chennai', 13.0827, 80.2707, 'India'], ['Lima', -12.0964, -77.0428, 'Peru'],
   ['Bangkok', 13.7563, 100.5018, 'Thailand'], ['Seoul', 37.5665, 126.9780, 'South Korea'],
   ['Nagoya', 35.1815, 136.9066, 'Japan'], ['Hyderabad', 17.3850, 78.4867, 'India'],
   ['London', 51.5074, -0.1278, 'UK'], ['Tehran', 35.6892, 51.3890, 'Iran'],
@@ -3068,7 +3068,7 @@ const MAJOR_CITIES = [
   ['Yangon', 16.8409, 96.1735, 'Myanmar'], ['Alexandria', 31.2001, 29.9187, 'Egypt'],
   ['Jinan', 36.6512, 117.1201, 'China'], ['Guadalajara', 20.6597, -103.3496, 'Mexico'],
   ['Boston', 42.3601, -71.0589, 'USA'], ['Abidjan', 5.3600, -4.0083, 'Ivory Coast'],
-  ['Ankara', 39.9334, 32.8597, 'Turkey'], ['Phoenix', 33.4484, -112.0840, 'USA'],
+  ['Ankara', 39.9334, 32.8597, 'Turkey'], ['Phoenix', 33.4484, -112.0940, 'USA'],
   ['San Francisco', 37.7749, -122.4194, 'USA'], ['Berlin', 52.5200, 13.4050, 'Germany'],
   ['Sydney', -33.8688, 151.2093, 'Australia'], ['Melbourne', -37.8136, 144.9631, 'Australia'],
   ['Casablanca', 33.5731, -7.5898, 'Morocco'], ['Montréal', 45.5017, -73.5673, 'Canada'],
@@ -3452,11 +3452,10 @@ async function main() {
     const resultEl  = document.getElementById('quiz-result');
     const fadeEl    = document.getElementById('quiz-fade');
     const timerEl   = document.getElementById('quiz-timer');
+    const skyEl     = document.getElementById('quiz-sky');
     const qEl       = document.getElementById('quiz-q');
     const EXPLORE_SECONDS = 20, FADE_AT = 18;
     let selected = null, exploring = false, elapsed = 0, lastT = 0;
-    let skyGroup = null;
-    const _fwd = new THREE.Vector3();
 
     const clear = el => { while (el.firstChild) el.removeChild(el.firstChild); };
     const show  = on => quizEl.classList.toggle('hidden', !on);
@@ -3485,65 +3484,33 @@ async function main() {
       }
     }
 
-    // Build the question + choices as 3D sprites PINNED at a fixed point in the
-    // world — ahead of the start heading and a little above the horizon. Anchoring
-    // in world space (instead of re-deriving the position from the live camera
-    // every frame) means looking around simply pans past the text, rather than
-    // the text appearing to counter-rotate against the mouse. depthTest:true lets
-    // land and buildings occlude it so it reads as part of the scene.
-    function buildSkyText() {
-      disposeSkyText();
-      const g = new THREE.Group();
-      const lines = ['Where am I?', ...options];
-      // 0.7× the previous sizes; BASE_Y lifts the lowest line off the horizon.
-      const GAP = 50, MAX_W = 490, BASE_Y = 75;
-      lines.forEach((text, i) => {
-        const isQ = i === 0;
-        const { tex, aspect } = renderLabelCanvas(text, {
-          fg: '#10131c', stroke: 'rgba(255,255,255,0.92)', fontSize: isQ ? 62 : 49,
-        });
-        let h = isQ ? 45 : 36, w = h * aspect;
-        if (w > MAX_W) { h *= MAX_W / w; w = MAX_W; }
-        const spr = new THREE.Sprite(applyFisheyeSprite(new THREE.SpriteMaterial({
-          map: tex, transparent: true, depthTest: true, depthWrite: false,
-        })));
-        spr.scale.set(w, h, 1);
-        // Lowest line sits BASE_Y above the horizon; earlier lines stack upward.
-        spr.position.set(0, BASE_Y + (lines.length - 1 - i) * GAP, 0);
-        g.add(spr);
-      });
-      // Pin once to a fixed world point: 500 m ahead of the current heading, at
-      // eye level. The group never moves again — sprites still billboard to face
-      // the camera, so the text stays readable as you look around it.
-      const D = 500;
-      camera.getWorldDirection(_fwd);
-      _fwd.y = 0;
-      if (_fwd.lengthSq() < 1e-6) _fwd.set(0, 0, -1);
-      _fwd.normalize();
-      g.position.set(camera.position.x + _fwd.x * D,
-                     camera.position.y,
-                     camera.position.z + _fwd.z * D);
-      g.visible = false;
-      scene.add(g);
-      skyGroup = g;
+    // The question + choices live in a screen-space overlay (#quiz-sky), centered
+    // horizontally in the browser and a fixed pixel size — so neither flying nor
+    // looking around changes its size or horizontal placement. It's a plain list
+    // (no buttons) since you're not picking yet; the body.quiz-exploring class
+    // controls its visibility.
+    function renderSky() {
+      clear(skyEl);
+      const q = document.createElement('div');
+      q.className = 'quiz-sky-q';
+      q.textContent = 'Where am I?';
+      skyEl.appendChild(q);
+      for (const name of options) {
+        const o = document.createElement('div');
+        o.className = 'quiz-sky-opt';
+        o.textContent = name;
+        skyEl.appendChild(o);
+      }
     }
 
-    function disposeSkyText() {
-      if (!skyGroup) return;
-      scene.remove(skyGroup);
-      skyGroup.traverse(o => {
-        if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
-      });
-      skyGroup = null;
-    }
+    function clearSky() { clear(skyEl); }
 
     // 1) Explore — starts immediately: world live, countdown running, the choices
     //    floating in the sky. The final 2 s wash to white.
     function startExplore() {
       resultEl.textContent = ''; resultEl.className = '';
       fadeEl.style.opacity = '0';
-      buildSkyText();
-      skyGroup.visible = true;
+      renderSky();
       show(false);
       setFrozen(false);
       elapsed = 0; lastT = performance.now(); exploring = true;
@@ -3566,7 +3533,7 @@ async function main() {
     function endExplore() {
       exploring = false;
       document.body.classList.remove('quiz-exploring');
-      disposeSkyText();
+      clearSky();
       setFrozen(true);
       // Free the mouse so the player can click an option (flight locks it).
       if (document.exitPointerLock) document.exitPointerLock();
@@ -3605,7 +3572,7 @@ async function main() {
 
     // 5) Explore more — drop the quiz veil, reveal the city, free flight.
     function exploreMore() {
-      disposeSkyText();
+      clearSky();
       show(false);
       document.body.classList.remove('quiz-mode');
       timerEl.textContent = '';
