@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.26';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.26';
+import { TrainSystem } from './train.js?v=12.27';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.27';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2487,7 +2487,6 @@ function createBirdControls(camera, domElement, collision) {
       _czSmooth      += ((fisheyeMode ? cz : 0) - _czSmooth) * ease;
       FISH_U.uFishBlend.value   = _fishSmooth;
       FISH_U.uFishHalfFov.value = (fovDeg * Math.PI / 180) / 2;
-      if (vignetteEl) vignetteEl.style.opacity = _fishSmooth.toFixed(3);
 
       // Stay above the floor: terrain outside buildings, rooftop when over one
       // (so a dive lands the bird on the roof instead of sinking through it).
@@ -3002,6 +3001,9 @@ function initScene(collision) {
     }
     // Outline ribbons need the aspect every frame regardless of fisheye state.
     FISH_U.uFishAspect.value = camera.aspect;
+    // Lens vignette tracks the (smoothed) fisheye blend — darkens the periphery
+    // as the warp eases in, hiding the sparse outer ring beyond render distance.
+    if (vignetteEl) vignetteEl.style.opacity = FISH_U.uFishBlend.value.toFixed(3);
     if (fisheyeActive) {
       // Newly streamed-in tiles must also skip frustum culling (they'd otherwise
       // pop at the periphery). Cheap: a handful of merged meshes per tile.
