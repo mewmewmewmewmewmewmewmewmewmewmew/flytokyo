@@ -59,14 +59,23 @@ export const FISH_PROJ_GLSL = /* glsl */`
     float tanHalfP = 1.0 / projectionMatrix[1][1];
     float aspect   = projectionMatrix[1][1] / projectionMatrix[0][0];
 
-    // Perspective radius (gnomonic, r ∝ tanθ) — clamp θ just under 90° so tan stays
-    // bounded; such verts land far off-screen and the GPU clips them, exactly as a
-    // normal perspective frustum would. Fisheye radius (equidistant, r ∝ θ); the
-    // sqrt(aspect²+1) factor reproduces the original fisheye's corner-fill framing
-    // (it matches the old s·a scaling) so the full-blend look is unchanged.
-    float Rp = tan(min(theta, 1.5533)) / tanHalfP;
+    // Perspective radius (gnomonic, r ∝ tanθ) is only meaningful for θ < ~89°. Past
+    // that, tan() is clamped — so EVERY far/behind-hemisphere vert (θ ≥ 89°) piles
+    // onto the same radius and tears into a "fold ring" at a constant angle around
+    // the view axis. That ring sits off-screen at rest (perspective shoves it past
+    // the frame) but slides inward into view as the fisheye widens with speed.
+    // Cure: ramp the blend to FULL fisheye as θ nears the horizon, so the clamped
+    // Rp carries zero weight there and R is the pure equidistant Rf (finite, smooth
+    // all the way to 180° — no fold). The ramp band (74°–89°) is off-screen in the
+    // resting perspective view, so blend≈0 still frames exactly like the flat cam.
+    const float TC = 1.5533;                          // ~89°, just under tan()'s blow-up
+    float horizonFish = smoothstep(1.30, TC, theta);  // 0 below ~74° … 1 by ~89°
+    float b  = max(uFishBlend, horizonFish);
+    // The sqrt(aspect²+1) factor reproduces the original fisheye's corner-fill
+    // framing (matches the old s·a scaling) so the full-blend look is unchanged.
+    float Rp = tan(min(theta, TC)) / tanHalfP;
     float Rf = sqrt(aspect * aspect + 1.0) * theta / uFishHalfFov;
-    float R  = mix(Rp, Rf, uFishBlend);
+    float R  = mix(Rp, Rf, b);
     vec2  ndc = vec2(R * cos(phi) / aspect, R * sin(phi));
 
     // Keep the TRUE perspective depth wherever it's valid (in front of the camera)
