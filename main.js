@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.06';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.06';
+import { TrainSystem } from './train.js?v=12.07';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.07';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -3023,7 +3023,7 @@ const MAJOR_CITIES = [
   ['Shenzhen', 22.5431, 114.0579, 'China'], ['Lahore', 31.5204, 74.3587, 'Pakistan'],
   ['Bangalore', 12.9716, 77.5946, 'India'], ['Paris', 48.8566, 2.3522, 'France'],
   ['Bogotá', 4.7110, -74.0721, 'Colombia'], ['Jakarta', -6.2088, 106.8456, 'Indonesia'],
-  ['Chennai', 13.0827, 80.2707, 'India'], ['Lima', -12.0664, -77.0428, 'Peru'],
+  ['Chennai', 13.0827, 80.2707, 'India'], ['Lima', -12.0764, -77.0428, 'Peru'],
   ['Bangkok', 13.7563, 100.5018, 'Thailand'], ['Seoul', 37.5665, 126.9780, 'South Korea'],
   ['Nagoya', 35.1815, 136.9066, 'Japan'], ['Hyderabad', 17.3850, 78.4867, 'India'],
   ['London', 51.5074, -0.1278, 'UK'], ['Tehran', 35.6892, 51.3890, 'Iran'],
@@ -3466,48 +3466,47 @@ async function main() {
       }
     }
 
-    // Build the question + choices as big 3D sprites placed far ahead in the
-    // world, stacked from the horizon up into the sky. depthTest:true lets the
-    // land and buildings occlude them, so the lines sit *behind* the skyline.
+    // Build the question + choices as 3D sprites PINNED at a fixed point in the
+    // world — ahead of the start heading and a little above the horizon. Anchoring
+    // in world space (instead of re-deriving the position from the live camera
+    // every frame) means looking around simply pans past the text, rather than
+    // the text appearing to counter-rotate against the mouse. depthTest:true lets
+    // land and buildings occlude it so it reads as part of the scene.
     function buildSkyText() {
       disposeSkyText();
       const g = new THREE.Group();
       const lines = ['Where am I?', ...options];
-      const GAP = 72, MAX_W = 700;       // metres between lines; max line width
+      // 0.7× the previous sizes; BASE_Y lifts the lowest line off the horizon.
+      const GAP = 50, MAX_W = 490, BASE_Y = 75;
       lines.forEach((text, i) => {
         const isQ = i === 0;
         const { tex, aspect } = renderLabelCanvas(text, {
-          fg: '#10131c', stroke: 'rgba(255,255,255,0.92)', fontSize: isQ ? 88 : 70,
+          fg: '#10131c', stroke: 'rgba(255,255,255,0.92)', fontSize: isQ ? 62 : 49,
         });
-        let h = isQ ? 64 : 52, w = h * aspect;
+        let h = isQ ? 45 : 36, w = h * aspect;
         if (w > MAX_W) { h *= MAX_W / w; w = MAX_W; }
         const spr = new THREE.Sprite(applyFisheyeSprite(new THREE.SpriteMaterial({
           map: tex, transparent: true, depthTest: true, depthWrite: false,
         })));
         spr.scale.set(w, h, 1);
-        // The last line (i = lines.length-1) sits on the horizon (y 0); earlier
-        // lines rise into the sky above it.
-        spr.position.set(0, (lines.length - 1 - i) * GAP, 0);
+        // Lowest line sits BASE_Y above the horizon; earlier lines stack upward.
+        spr.position.set(0, BASE_Y + (lines.length - 1 - i) * GAP, 0);
         g.add(spr);
       });
-      g.userData.DIST = 500;             // metres ahead of the camera
-      g.visible = false;
-      scene.add(g);
-      skyGroup = g;
-    }
-
-    // Float the text ~500 m ahead along the (horizontal) heading, base at eye
-    // level so the bottom line hugs the horizon. Sprites billboard to face us.
-    function updateSkyText() {
-      if (!skyGroup) return;
+      // Pin once to a fixed world point: 500 m ahead of the current heading, at
+      // eye level. The group never moves again — sprites still billboard to face
+      // the camera, so the text stays readable as you look around it.
+      const D = 500;
       camera.getWorldDirection(_fwd);
       _fwd.y = 0;
       if (_fwd.lengthSq() < 1e-6) _fwd.set(0, 0, -1);
       _fwd.normalize();
-      const D = skyGroup.userData.DIST;
-      skyGroup.position.set(camera.position.x + _fwd.x * D,
-                            camera.position.y,
-                            camera.position.z + _fwd.z * D);
+      g.position.set(camera.position.x + _fwd.x * D,
+                     camera.position.y,
+                     camera.position.z + _fwd.z * D);
+      g.visible = false;
+      scene.add(g);
+      skyGroup = g;
     }
 
     function disposeSkyText() {
@@ -3526,7 +3525,6 @@ async function main() {
       fadeEl.style.opacity = '0';
       buildSkyText();
       skyGroup.visible = true;
-      updateSkyText();
       show(false);
       setFrozen(false);
       elapsed = 0; lastT = performance.now(); exploring = true;
@@ -3538,7 +3536,6 @@ async function main() {
       const now = performance.now();
       const dt = (now - lastT) / 1000; lastT = now;
       if (!isPaused()) elapsed += dt;   // don't count time spent in the F1 menu
-      updateSkyText();
       const left = Math.max(0, EXPLORE_SECONDS - elapsed);
       timerEl.textContent = `⏱ ${Math.ceil(left)}s`;
       fadeEl.style.opacity = String(Math.max(0, Math.min(1, (elapsed - FADE_AT) / (EXPLORE_SECONDS - FADE_AT))));
