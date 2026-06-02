@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.20';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.20';
+import { TrainSystem } from './train.js?v=12.21';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.21';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2479,7 +2479,12 @@ function createBirdControls(camera, domElement, collision) {
       // gentler lag here keeps the warp from feeling like it trails the speed.
       const ease      = Math.min(1, dt * 6.0);
       _fishSmooth    += ((fisheyeMode ? blend : 0) - _fishSmooth) * ease;
-      _czSmooth      += ((fisheyeMode ? e * e * (3 - 2 * e) : 0) - _czSmooth) * ease;
+      // Camera pull-in uses an ease-OUT curve (front-loaded, near-linear early)
+      // so the camera tucks close to the bird EARLY in the speed ramp — before
+      // the warp band opens — which hides the peripheral edge artifacts that
+      // appear as the fisheye eases in.
+      const cz        = 1 - (1 - e) * (1 - e);
+      _czSmooth      += ((fisheyeMode ? cz : 0) - _czSmooth) * ease;
       FISH_U.uFishBlend.value   = _fishSmooth;
       FISH_U.uFishHalfFov.value = (fovDeg * Math.PI / 180) / 2;
 
