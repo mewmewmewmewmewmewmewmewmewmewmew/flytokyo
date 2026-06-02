@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.17';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.17';
+import { TrainSystem } from './train.js?v=12.18';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.18';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -916,11 +916,12 @@ function buildSingleBuildingGeo(ring, topY, vertexH) {
   return geo;
 }
 
-function buildSurfaceMesh(buildings, mat) {
+function buildSurfaceMesh(buildings, terrainInfos, mat) {
   const pos = [], norm = [], col = [], idx = [];
   let v = 0;
 
-  for (const { ring, height } of buildings) {
+  for (let bi = 0; bi < buildings.length; bi++) {
+    const { ring, height } = buildings[bi];
     const n  = ring.length;
     const rc = heightColor(height);
     const wc = rc.clone().multiplyScalar(0.55);
@@ -928,7 +929,7 @@ function buildSurfaceMesh(buildings, mat) {
     const tris = earcut(flat);
     if (!tris.length) continue;
 
-    const { topY, vertexH } = bldgTerrainInfo(ring, height);
+    const { topY, vertexH } = terrainInfos[bi];
 
     // Tessellate each earcut roof triangle so fisheye has enough vertices to curve it
     for (let t = 0; t < tris.length; t += 3) {
@@ -1000,11 +1001,12 @@ function buildSurfaceMesh(buildings, mat) {
   return mesh;
 }
 
-function buildEdgesGeoMesh(buildings, mat) {
+function buildEdgesGeoMesh(buildings, terrainInfos, mat) {
   const allPos = [], allCol = [];
 
-  for (const { ring, height } of buildings) {
-    const { topY, vertexH } = bldgTerrainInfo(ring, height);
+  for (let bi = 0; bi < buildings.length; bi++) {
+    const { ring, height } = buildings[bi];
+    const { topY, vertexH } = terrainInfos[bi];
     const base = buildSingleBuildingGeo(ring, topY, vertexH);
     if (!base) continue;
     const edgesGeo = new THREE.EdgesGeometry(base);
@@ -1487,10 +1489,15 @@ class TileManager {
     const waterways  = parseWaterways(osm, nodeMap)
       .filter(w => { if (this.seenIds.has(w.id)) return false; this.seenIds.add(w.id); return true; });
 
+    // Pre-compute terrain info once per building — used by footprints, surface
+    // mesh, and edge mesh, so this avoids triple terrain sampling per building.
+    const bldgTInfo = bldgs.map(({ ring, height }) => bldgTerrainInfo(ring, height));
+
     // Register footprints for collision; add a name label above named buildings.
-    for (const { ring, height, name } of bldgs) {
+    for (let bi = 0; bi < bldgs.length; bi++) {
+      const { ring, height, name } = bldgs[bi];
       const xs = ring.map(p => p[0]), zs = ring.map(p => p[1]);
-      const { topY: bTop } = bldgTerrainInfo(ring, height);
+      const { topY: bTop } = bldgTInfo[bi];
       this.footprints.push({
         ring, height,
         topY: bTop,
@@ -1510,8 +1517,8 @@ class TileManager {
 
     const group = new THREE.Group();
     if (bldgs.length) {
-      group.add(buildSurfaceMesh(bldgs, this.mats.surface));
-      group.add(buildEdgesGeoMesh(bldgs, this.mats.wireframe));
+      group.add(buildSurfaceMesh(bldgs, bldgTInfo, this.mats.surface));
+      group.add(buildEdgesGeoMesh(bldgs, bldgTInfo, this.mats.wireframe));
       this.buildings += bldgs.length;
     }
     if (strs.length) {
@@ -3637,7 +3644,7 @@ async function main() {
   // overlay lifts so the bird is genuinely movable the instant it appears.
   setLoad('Warming up…', 0.97);
   renderer.compile(scene, camera);
-  for (let i = 0; i < 5; i++) await nextFrame();
+  for (let i = 0; i < 2; i++) await nextFrame();
 
   reveal();
   if (quizActive) startQuizGame(place.answer, place.options);
