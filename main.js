@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.18';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.18';
+import { TrainSystem } from './train.js?v=12.19';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.19';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2152,6 +2152,8 @@ function createBirdControls(camera, domElement, collision) {
   let _pitchTarget = null;
   let _bounceLock  = 0;       // frames a fresh ground bounce overrides left-click steering
   const PITCH_EASE = 0.14;    // per-frame approach toward the target pitch
+  let _fishSmooth  = 0;       // temporally smoothed uFishBlend — eases the shader warp in/out
+  let _czSmooth    = 0;       // temporally smoothed camera-zoom blend — eases follow-cam in/out
 
   // Wall-ramp state. A head-on building hit sends the bird climbing vertically up
   // the face (parallel to the wall); once it clears the roof it peels forward at a
@@ -2196,10 +2198,8 @@ function createBirdControls(camera, domElement, collision) {
     // NOT the fisheye warp blend (uFishBlend = pow(speed,6.2)), which stays flat
     // then snaps near the top and made the zoom-in feel abrupt. smoothstep eases
     // in gradually and flattens as you approach max speed for a smooth arrival.
-    const sFrac   = Math.min(_vel.length() / MOVE_MAX, 1);
-    const cz      = fisheyeMode ? sFrac * sFrac * (3 - 2 * sFrac) : 0;
-    const camBack = BIRD_CAM_BACK + (FISH_CAM_BACK - BIRD_CAM_BACK) * cz;
-    const camUp   = BIRD_CAM_UP   + (FISH_CAM_UP   - BIRD_CAM_UP)   * cz;
+    const camBack = BIRD_CAM_BACK + (FISH_CAM_BACK - BIRD_CAM_BACK) * _czSmooth;
+    const camUp   = BIRD_CAM_UP   + (FISH_CAM_UP   - BIRD_CAM_UP)   * _czSmooth;
     camera.position.set(
       birdPos.x - look.x * camBack,
       birdPos.y - look.y * camBack + camUp,
@@ -2470,7 +2470,12 @@ function createBirdControls(camera, domElement, collision) {
       if (tt <= 1)      fovDeg = FOV_REST_DEG   + (FOV_MAX_DEG    - FOV_REST_DEG)   * tt;
       else if (tt <= 2) fovDeg = FOV_MAX_DEG    + (FOV_SPRINT_DEG - FOV_MAX_DEG)    * (tt - 1);
       else              fovDeg = FOV_SPRINT_DEG + (FOV_DIVE_DEG   - FOV_SPRINT_DEG) * Math.min((tt - 2) / 2, 1);
-      FISH_U.uFishBlend.value   = fisheyeMode ? blend : 0;
+      // Ease blend and camera zoom toward their targets so both the speed ramp and
+      // the toggle (backtick) transition smoothly instead of snapping.
+      const ease      = Math.min(1, dt * 4.0);
+      _fishSmooth    += ((fisheyeMode ? blend : 0) - _fishSmooth) * ease;
+      _czSmooth      += ((fisheyeMode ? e * e * (3 - 2 * e) : 0) - _czSmooth) * ease;
+      FISH_U.uFishBlend.value   = _fishSmooth;
       FISH_U.uFishHalfFov.value = (fovDeg * Math.PI / 180) / 2;
 
       // Stay above the floor: terrain outside buildings, rooftop when over one
