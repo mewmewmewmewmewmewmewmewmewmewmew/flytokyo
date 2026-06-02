@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v12.10 -->
+  <meta charset="UTF-8"><!-- v12.11 -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -159,7 +159,16 @@
     }
     #place-go:hover { background: #3a4795; }
     #place-go:disabled { opacity: 0.5; cursor: default; }
+    /* Dice + quiz share a row whose total width matches the search field+Go
+       row above; each button flexes to fill half the row. */
+    #load-extra {
+      display: flex;
+      gap: 8px;
+      width: 320px;
+      max-width: 80vw;
+    }
     #place-random, #place-quiz {
+      flex: 1;
       padding: 9px 12px;
       font-size: 15px;
       line-height: 1;
@@ -171,7 +180,11 @@
     }
     #place-random:hover, #place-quiz:hover { background: #fff; border-color: #4455aa; }
     #place-random:disabled, #place-quiz:disabled { opacity: 0.5; cursor: default; }
+    /* Left-aligned, flush under the search field. */
     #place-me {
+      width: 320px;
+      max-width: 80vw;
+      text-align: left;
       font-size: 12px;
       font-family: inherit;
       color: #4455aa;
@@ -179,7 +192,7 @@
       border: none;
       cursor: pointer;
       opacity: 0.8;
-      padding: 2px 4px;
+      padding: 2px;
     }
     #place-me:hover { opacity: 1; text-decoration: underline; }
     #place-me:disabled { opacity: 0.4; cursor: default; text-decoration: none; }
@@ -440,14 +453,16 @@
       <input id="place-input" type="text" autocomplete="off" spellcheck="false"
              placeholder="e.g. Shibuya Scramble Crossing">
       <button id="place-go">Go</button>
+    </div>
+    <button id="place-me">Use my location</button>
+    <div id="load-extra">
       <button id="place-random" title="Surprise me — fly to a random city">🎲</button>
       <button id="place-quiz" title="Quiz — guess the city">📝</button>
     </div>
-    <button id="place-me">📍 Use my location</button>
     <div id="search-msg"></div>
     <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
     <div id="load-msg"></div>
-    <div id="load-version">v12.10</div>
+    <div id="load-version">v12.11</div>
   </div>
 
   <div id="overlay">
@@ -455,7 +470,7 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v12.10</div>
+  <div id="version">v12.11</div>
   <div id="speed"></div>
   <canvas id="compass" width="360" height="48"></canvas>
 
@@ -508,6 +523,6 @@
     }
   }
   </script>
-  <script type="module" src="main.js?v=12.10"></script>
+  <script type="module" src="main.js?v=12.11"></script>
 </body>
 </html>
