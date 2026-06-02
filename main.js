@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.07';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.07';
+import { TrainSystem } from './train.js?v=12.08';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.08';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -288,19 +288,79 @@ async function pruneCache() {
 
 // ─── Overpass ────────────────────────────────────────────────────────────────
 
-// Known to send permissive CORS headers from the browser. More mirrors = more
-// per-IP concurrency headroom; a rate-limited server is skipped on the next call.
+// Known to send permissive CORS headers from the browser. Any one of these can
+// be slow, rate-limit (429), or be unreachable at a given moment, so we don't
+// trust a single one for the first try — see fetchOverpassRaced() below.
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
   'https://overpass.private.coffee/api/interpreter',
 ];
-// Start at a RANDOM mirror each page load. "Play again" reloads the page, which
-// would otherwise reset this to 0 and make every consecutive quiz round hammer
-// overpass-api.de first — that server then rate-limits us (429) and the first
-// attempt fails with "Network busy — retrying". Randomising the start spreads
-// back-to-back loads across mirrors so the first attempt usually lands clean.
+// Rotate which endpoint leads each call (random start per page load) so
+// back-to-back loads — e.g. the quiz "Play again" reload — don't always lead
+// with the same server and trip its per-IP rate limit.
 let _opIdx = (Math.random() * OVERPASS_ENDPOINTS.length) | 0;
+function orderedEndpoints() {
+  const n = OVERPASS_ENDPOINTS.length;
+  const s = _opIdx++ % n;
+  return Array.from({ length: n }, (_, k) => OVERPASS_ENDPOINTS[(s + k) % n]);
+}
+
+const OP_HEDGE_MS = 1400;   // head start for the lead mirror before fanning out
+
+// One POST to a single Overpass mirror, validated. 30 s hard timeout.
+async function overpassOnce(url, query) {
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30_000);
+  try {
+    const res = await fetch(url, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body:    'data=' + encodeURIComponent(query),
+      signal:  ctrl.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status} @ ${url}`);
+    const data = await res.json();
+    // Overpass returns 200 OK even on server-side timeout/error — detect via remark.
+    if (data.remark && /error|timeout/i.test(data.remark))
+      throw new Error(`Overpass: ${data.remark}`);
+    if (!Array.isArray(data.elements))
+      throw new Error('Overpass: malformed response (no elements array)');
+    return data;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Hedged request: fire the lead mirror immediately; if it hasn't answered within
+// OP_HEDGE_MS — or it fails fast — fan out to the remaining mirrors and take
+// whichever returns first. The visible "Network busy" retry then only happens
+// when EVERY mirror fails at once (rare), instead of any time one flaky mirror
+// happens to be first in a round-robin. A healthy lead mirror still answers
+// alone, so we stay gentle on the free servers in the common case.
+const _HEDGE = Symbol('hedge');
+async function fetchOverpassRaced(query) {
+  const eps = orderedEndpoints();
+  const inflight = [];
+  const fire = url => { const p = overpassOnce(url, query); inflight.push(p); return p; };
+
+  const lead = fire(eps[0]);
+  const winner = await Promise.race([
+    lead.then(d => ({ ok: d }), e => ({ err: e })),
+    sleep(OP_HEDGE_MS).then(() => _HEDGE),
+  ]);
+  if (winner !== _HEDGE && winner.ok) return winner.ok;   // lead won outright
+
+  // Lead is slow (hedge elapsed) or already failed → bring up the backups and
+  // race everything still in flight. Promise.any ignores the rejected ones.
+  for (let i = 1; i < eps.length; i++) fire(eps[i]);
+  try {
+    return await Promise.any(inflight);
+  } catch (agg) {
+    const msgs = (agg && agg.errors || []).map(e => e.message).join(' · ');
+    throw new Error(`all Overpass mirrors failed${msgs ? ': ' + msgs : ''}`);
+  }
+}
 
 async function fetchOSMBbox(bbox) {
   const { south, west, north, east } = bbox;
@@ -318,32 +378,9 @@ async function fetchOSMBbox(bbox) {
     `way["landuse"="reservoir"](${south},${west},${north},${east});`,
     ');out body;>;out skel qt;',
   ].join('');
-  // Round-robin across mirrors: one public endpoint only gives ~2 slots/IP and
-  // rate-limits (429) or times out (504) under load, which was the real cause of
-  // tiles crawling. Spreading across mirrors roughly triples our headroom and
-  // routes around whichever server is slow right now.
-  const url = OVERPASS_ENDPOINTS[_opIdx++ % OVERPASS_ENDPOINTS.length];
-  const ctrl  = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 30_000);
-  try {
-    const res = await fetch(url, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body:    'data=' + encodeURIComponent(query),
-      signal:  ctrl.signal,
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    // Overpass returns 200 OK even on server-side timeout/error — detect via remark
-    if (data.remark && /error|timeout/i.test(data.remark))
-      throw new Error(`Overpass: ${data.remark}`);
-    if (!Array.isArray(data.elements))
-      throw new Error('Overpass: malformed response (no elements array)');
-    cachePut(cacheKey, { ts: Date.now(), data });   // fire-and-forget; 3-day TTL
-    return data;
-  } finally {
-    clearTimeout(timer);
-  }
+  const data = await fetchOverpassRaced(query);
+  cachePut(cacheKey, { ts: Date.now(), data });   // fire-and-forget; 3-day TTL
+  return data;
 }
 
 // Separate lightweight query for named POIs only — fired in the background after
@@ -362,27 +399,9 @@ async function fetchOSMPOIs(bbox) {
     `node["office"]["name"](${south},${west},${north},${east});`,
     ');out body;',
   ].join('');
-  const url = OVERPASS_ENDPOINTS[_opIdx++ % OVERPASS_ENDPOINTS.length];
-  const ctrl  = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 30_000);
-  try {
-    const res = await fetch(url, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body:    'data=' + encodeURIComponent(query),
-      signal:  ctrl.signal,
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    if (data.remark && /error|timeout/i.test(data.remark))
-      throw new Error(`Overpass: ${data.remark}`);
-    if (!Array.isArray(data.elements))
-      throw new Error('Overpass: malformed response (no elements array)');
-    cachePut(cacheKey, { ts: Date.now(), data });
-    return data;
-  } finally {
-    clearTimeout(timer);
-  }
+  const data = await fetchOverpassRaced(query);
+  cachePut(cacheKey, { ts: Date.now(), data });
+  return data;
 }
 
 // ─── OSM parsing ─────────────────────────────────────────────────────────────
@@ -3023,7 +3042,7 @@ const MAJOR_CITIES = [
   ['Shenzhen', 22.5431, 114.0579, 'China'], ['Lahore', 31.5204, 74.3587, 'Pakistan'],
   ['Bangalore', 12.9716, 77.5946, 'India'], ['Paris', 48.8566, 2.3522, 'France'],
   ['Bogotá', 4.7110, -74.0721, 'Colombia'], ['Jakarta', -6.2088, 106.8456, 'Indonesia'],
-  ['Chennai', 13.0827, 80.2707, 'India'], ['Lima', -12.0764, -77.0428, 'Peru'],
+  ['Chennai', 13.0827, 80.2707, 'India'], ['Lima', -12.0864, -77.0428, 'Peru'],
   ['Bangkok', 13.7563, 100.5018, 'Thailand'], ['Seoul', 37.5665, 126.9780, 'South Korea'],
   ['Nagoya', 35.1815, 136.9066, 'Japan'], ['Hyderabad', 17.3850, 78.4867, 'India'],
   ['London', 51.5074, -0.1278, 'UK'], ['Tehran', 35.6892, 51.3890, 'Iran'],
@@ -3049,7 +3068,7 @@ const MAJOR_CITIES = [
   ['Yangon', 16.8409, 96.1735, 'Myanmar'], ['Alexandria', 31.2001, 29.9187, 'Egypt'],
   ['Jinan', 36.6512, 117.1201, 'China'], ['Guadalajara', 20.6597, -103.3496, 'Mexico'],
   ['Boston', 42.3601, -71.0589, 'USA'], ['Abidjan', 5.3600, -4.0083, 'Ivory Coast'],
-  ['Ankara', 39.9334, 32.8597, 'Turkey'], ['Phoenix', 33.4484, -112.0740, 'USA'],
+  ['Ankara', 39.9334, 32.8597, 'Turkey'], ['Phoenix', 33.4484, -112.0840, 'USA'],
   ['San Francisco', 37.7749, -122.4194, 'USA'], ['Berlin', 52.5200, 13.4050, 'Germany'],
   ['Sydney', -33.8688, 151.2093, 'Australia'], ['Melbourne', -37.8136, 144.9631, 'Australia'],
   ['Casablanca', 33.5731, -7.5898, 'Morocco'], ['Montréal', 45.5017, -73.5673, 'Canada'],
