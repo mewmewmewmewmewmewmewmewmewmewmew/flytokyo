@@ -9,7 +9,7 @@
 // perspective view (blend 0, at rest) to a full equidistant fisheye (blend 1, at
 // top speed), and uFishHalfFov grows the angle as you go faster.
 
-export const FISH_FOV_DEG  = 220;                                 // fisheye angle at top (non-sprint) speed
+export const FISH_FOV_DEG  = 190;                                 // fisheye angle at top (non-sprint) speed
 export const FISH_HALF_FOV = (FISH_FOV_DEG * Math.PI / 180) / 2;
 
 export const FISH_U = {
