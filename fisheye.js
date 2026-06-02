@@ -34,6 +34,13 @@ export function fishUniforms() {
 // At uFishBlend 0 it returns the plain perspective projection (identical to the
 // "fisheye off" default); at blend 1 it returns the full equidistant fisheye; in
 // between it lerps the two in NDC space so the warp eases in with speed.
+// Unified RADIAL projection. Both the flat (perspective) and the fisheye view are
+// expressed as a single radius R along the SAME phi ray, and morphing between them
+// just slides each vertex in/out along its own ray — so there is no sideways jump
+// and, crucially, no perspective-divide singularity (the old artifact source). The
+// perspective radius is reconstructed from the camera's own projectionMatrix so
+// blend=0 reproduces the standard view's framing exactly; the fisheye radius is the
+// equidistant r∝theta, which is finite and well-behaved at every angle out to 180°.
 export const FISH_PROJ_GLSL = /* glsl */`
   uniform float uFishBlend;
   uniform float uFishHalfFov;
@@ -42,50 +49,38 @@ export const FISH_PROJ_GLSL = /* glsl */`
   uniform float uFishFar;
   varying vec3  vFishView;
   vec4 projectVertex(vec4 mv) {
-    vec4 persp = projectionMatrix * mv;
-    if (uFishBlend < 0.001) return persp;                          // rest → plain perspective
-
     vec3  d     = mv.xyz;
     float len   = length(d);
-    float theta = acos(clamp(-d.z / max(len, 1e-4), -1.0, 1.0));   // angle off forward
+    float theta = acos(clamp(-d.z / max(len, 1e-4), -1.0, 1.0));   // 0 fwd … PI directly behind
     float phi   = atan(d.y, d.x);
-    float r     = theta / uFishHalfFov;                            // 0 centre … 1 at FOV edge
-    float a     = uFishAspect;
-    float s     = sqrt(1.0 + 1.0 / (a * a));                       // scale so corners are covered
-    vec2  xy    = s * r * vec2(cos(phi), a * sin(phi));            // circular in pixels, fills frame
-    float zc    = clamp((len - uFishNear) / (uFishFar - uFishNear), 0.0, 1.0) * 2.0 - 1.0;
-    vec4  fish  = vec4(xy, zc, 1.0);
 
-    if (uFishBlend > 0.999) return fish;                           // top speed → full fisheye
+    // Pull the exact vertical FOV + aspect from the live projection matrix so the
+    // flat end matches the perspective camera (and adapts on resize / FOV change).
+    float tanHalfP = 1.0 / projectionMatrix[1][1];
+    float aspect   = projectionMatrix[1][1] / projectionMatrix[0][0];
 
-    if (persp.w <= 0.0) {
-      // Behind-camera vertex. Only assign a fisheye position once the FOV is
-      // genuinely wide enough to show behind-camera geometry — that requires a
-      // total FOV > 180° (half-angle > PI/2 ≈ 1.5708). Below that threshold,
-      // return the raw perspective result so the GPU near-clips this vertex;
-      // the alternative (any positive wb at tiny blend) collapses the vertex to
-      // the full fisheye periphery regardless of blend, stretching huge grey
-      // triangles across the screen the instant you start moving.
-      if (uFishHalfFov <= 1.5708) return persp;
-      float wb = mix(persp.w, 1.0, uFishBlend);
-      if (wb <= 0.0) return persp;
-      return vec4(fish.xyz * wb, wb);
-    }
+    // Perspective radius (gnomonic, r ∝ tanθ) — clamp θ just under 90° so tan stays
+    // bounded; such verts land far off-screen and the GPU clips them, exactly as a
+    // normal perspective frustum would. Fisheye radius (equidistant, r ∝ θ); the
+    // sqrt(aspect²+1) factor reproduces the original fisheye's corner-fill framing
+    // (it matches the old s·a scaling) so the full-blend look is unchanged.
+    float Rp = tan(min(theta, 1.5533)) / tanHalfP;
+    float Rf = sqrt(aspect * aspect + 1.0) * theta / uFishHalfFov;
+    float R  = mix(Rp, Rf, uFishBlend);
+    vec2  ndc = vec2(R * cos(phi) / aspect, R * sin(phi));
 
-    // In front of the camera: blend the two projections in normalised device coords.
-    // The hazard is the perspective singularity: as a vertex's angle off-forward
-    // (theta) approaches 90°, persp.w → 0+ and the perspective divide explodes to
-    // hundreds, so a straight NDC mix stretches those corner/edge triangles across
-    // the screen mid-transition. Fix: bias vertices near that singularity toward the
-    // FISHEYE position (which is well-behaved at every angle) via wGuard, so they
-    // ride the fisheye curve to the frame edge instead of shooting off-screen. The
-    // clamp stays as a hard backstop for anything still extreme.
-    float wGuard = 1.0 - smoothstep(1.20, 1.5708, theta);  // 1 below ~69° … 0 at 90°
-    float b      = mix(1.0, uFishBlend, wGuard);            // near 90° → full fisheye
-    vec2  pxy    = clamp(persp.xy / persp.w, vec2(-5.0), vec2(5.0));
-    vec3  pndc   = vec3(pxy, persp.z / persp.w);
-    vec3  ndc    = mix(pndc, fish.xyz, b);
-    return vec4(ndc, 1.0);
+    // Keep the TRUE perspective depth wherever it's valid (in front of the camera)
+    // so z-fighting and the decal polygonOffset layering behave exactly as in the
+    // flat view; only behind-camera verts (visible at high blend) use linear depth.
+    vec4  pc  = projectionMatrix * mv;
+    float zc  = (pc.w > 0.0)
+              ? clamp(pc.z / pc.w, -1.0, 1.0)
+              : (clamp((len - uFishNear) / (uFishFar - uFishNear), 0.0, 1.0) * 2.0 - 1.0);
+
+    // w = 1 throughout: the GPU clips x/y/z in [-1,1] with no divide, so there is no
+    // singularity to blow up. Fine geometry is already tessellated, so dropping
+    // perspective-correct varying interpolation is imperceptible.
+    return vec4(ndc, zc, 1.0);
   }
 `;
 
@@ -101,19 +96,18 @@ export const FISH_FRAG_GLSL = /* glsl */`
   uniform float uFishHalfFov;
   varying vec3  vFishView;
   void fishClip() {
-    if (uFishBlend < 0.001) return;          // pure perspective: no clipping at all
     float L     = length(vFishView);
     float theta = acos(clamp(-vFishView.z / max(L, 1e-4), -1.0, 1.0));
     if (vFishView.z > 0.0) {
-      // Behind the camera plane (theta > 90°). During acceleration the FOV is
-      // still < 180° (half-FOV < 90°), so this whole hemisphere must be bounded
-      // by the TRUE FOV — otherwise huge flat triangles (the ground) stretch
-      // across the screen as grey smears. Only once the FOV opens past 180° does
-      // any of it legitimately appear as the fisheye periphery.
+      // Behind the camera plane (theta > 90°). Under the unified w=1 projection the
+      // GPU no longer near-plane clips these, so we must: bound them by the true FOV
+      // (half-FOV < 90° at low speed) so the ground hemisphere behind the camera
+      // can't smear across the frame edge. Only once the FOV opens past 180° does
+      // any of this hemisphere legitimately appear as the fisheye periphery.
       if (theta > uFishHalfFov) discard;
     } else {
-      // In front of the camera: widen the clip toward ~180° as blend → 0 so a
-      // near-perspective (low-speed) view is never cropped into a circle.
+      // In front of the camera: widen the clip toward ~180° as blend → 0 so the
+      // flat (low-speed) view is never cropped into a circle.
       float clipAng = mix(3.14159, uFishHalfFov, uFishBlend);
       if (theta > clipAng) discard;
     }

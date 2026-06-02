@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.23';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.23';
+import { TrainSystem } from './train.js?v=12.24';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.24';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2604,13 +2604,13 @@ function initScene(collision) {
         void main() {
           // Ground-specific fisheye clip. The ground is one flat colour, so its
           // in-front peripheral fragments can fill the frame edge with no visible
-          // smear — unlike detailed geometry. The shared fishClip() tightens its
-          // angle below 90° at speed and discards that wide-angle front ground,
-          // cutting a hard background seam across the bottom of the screen when
-          // flying low. Here we ONLY discard fragments behind the camera plane
-          // (vFishView.z > 0) past the FOV — those are the big flat triangles
-          // that genuinely smear. Everything in front fills the frame.
-          if (uFishBlend >= 0.001 && vFishView.z > 0.0) {
+          // smear — unlike detailed geometry. We ONLY discard fragments behind the
+          // camera plane (vFishView.z > 0) past the FOV — those are the big flat
+          // triangles that genuinely smear. Everything in front fills the frame.
+          // Runs at every blend (incl. rest): under the unified w=1 projection the
+          // GPU no longer near-plane clips behind-camera verts, so without this the
+          // ground hemisphere behind the camera would smear the frame edge at rest.
+          if (vFishView.z > 0.0) {
             float L = length(vFishView);
             float theta = acos(clamp(-vFishView.z / max(L, 1e-4), -1.0, 1.0));
             if (theta > uFishHalfFov) discard;
