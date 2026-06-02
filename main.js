@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.30';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.30';
+import { TrainSystem } from './train.js?v=12.31';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.31';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2136,9 +2136,9 @@ function createBirdControls(camera, domElement, collision) {
   // Speed-driven fisheye: the warp eases in from a normal view (rest) to a full
   // fisheye at top speed, and the angle grows wider the faster you go.
   const FOV_REST_DEG   = 120;  // angle the warp eases up from (barely visible at low speed)
-  const FOV_MAX_DEG    = 220;  // at top non-sprint speed
-  const FOV_SPRINT_DEG = 250;  // at top sprint speed
-  const FOV_DIVE_DEG   = 290;  // keeps widening past sprint speed while diving
+  const FOV_MAX_DEG    = 190;  // at top non-sprint speed (−30° to trim peripheral clipping)
+  const FOV_SPRINT_DEG = 220;  // at top sprint speed
+  const FOV_DIVE_DEG   = 260;  // keeps widening past sprint speed while diving
   // Radial zoom that ramps in with the warp. As the fisheye widens it also drags
   // in a broken outer ring (the ground depth saturates at grazing angles and
   // paints over the roads). Magnifying the view by this factor at full warp pushes
@@ -2958,6 +2958,9 @@ function initScene(collision) {
     birdMesh.position.copy(controls.birdPos);
     birdMesh.position.y += 0.1 * Math.sin(now * 0.002);   // gentle float bob
     birdMesh.rotation.set(controls.getPitch(), controls.getYaw(), controls.getRoll(), 'YXZ');
+    // Shrink the bird toward half its size as the fisheye zoom ramps in (blend
+    // 0→1), so the speed-up doesn't read as zoomed in as much. Base scale is 0.5.
+    birdMesh.scale.setScalar(0.5 * (1.0 - 0.5 * FISH_U.uFishBlend.value));
 
     // ── Wing flap ──────────────────────────────────────────────────────────
     // Occasional flapping bursts when cruising; while diving the wings stop
