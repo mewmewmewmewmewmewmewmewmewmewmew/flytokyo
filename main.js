@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.04';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.04';
+import { TrainSystem } from './train.js?v=12.05';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.05';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -3017,7 +3017,7 @@ const MAJOR_CITIES = [
   ['Shenzhen', 22.5431, 114.0579, 'China'], ['Lahore', 31.5204, 74.3587, 'Pakistan'],
   ['Bangalore', 12.9716, 77.5946, 'India'], ['Paris', 48.8566, 2.3522, 'France'],
   ['Bogotá', 4.7110, -74.0721, 'Colombia'], ['Jakarta', -6.2088, 106.8456, 'Indonesia'],
-  ['Chennai', 13.0827, 80.2707, 'India'], ['Lima', -12.0464, -77.0428, 'Peru'],
+  ['Chennai', 13.0827, 80.2707, 'India'], ['Lima', -12.0564, -77.0428, 'Peru'],
   ['Bangkok', 13.7563, 100.5018, 'Thailand'], ['Seoul', 37.5665, 126.9780, 'South Korea'],
   ['Nagoya', 35.1815, 136.9066, 'Japan'], ['Hyderabad', 17.3850, 78.4867, 'India'],
   ['London', 51.5074, -0.1278, 'UK'], ['Tehran', 35.6892, 51.3890, 'Iran'],
@@ -3115,9 +3115,11 @@ function makeQuizCity() {
 // place that geocodes successfully. Returns { lat, lon, label, shortLabel }.
 function promptLocation() {
   return new Promise(resolve => {
-    // "Play again" reloads the page with ?quiz=1 — auto-start a fresh quiz round
-    // and skip the menu entirely.
-    if (new URLSearchParams(location.search).get('quiz') === '1') {
+    // "Play again" reloads the page (staying on the root URL) and leaves a
+    // one-shot sessionStorage flag so this load auto-starts a fresh quiz round
+    // and skips the menu entirely.
+    if (sessionStorage.getItem('quiz') === '1') {
+      sessionStorage.removeItem('quiz');
       const ls = document.getElementById('load-search');
       const lt = document.getElementById('load-title');
       if (ls) ls.style.display = 'none';
@@ -3572,7 +3574,7 @@ async function main() {
         : `Not quite — you were in ${answer}.`;
       clear(actionsEl);
       const again = mkBtn('Play again', true);
-      again.addEventListener('click', () => { location.href = '?quiz=1'; });
+      again.addEventListener('click', () => { sessionStorage.setItem('quiz', '1'); location.reload(); });
       const more  = mkBtn('Explore more', false);
       more.addEventListener('click', exploreMore);
       actionsEl.appendChild(again);
