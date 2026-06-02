@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.29';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.29';
+import { TrainSystem } from './train.js?v=12.30';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.30';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2139,6 +2139,12 @@ function createBirdControls(camera, domElement, collision) {
   const FOV_MAX_DEG    = 220;  // at top non-sprint speed
   const FOV_SPRINT_DEG = 250;  // at top sprint speed
   const FOV_DIVE_DEG   = 290;  // keeps widening past sprint speed while diving
+  // Radial zoom that ramps in with the warp. As the fisheye widens it also drags
+  // in a broken outer ring (the ground depth saturates at grazing angles and
+  // paints over the roads). Magnifying the view by this factor at full warp pushes
+  // that ring — and the torn land beyond it — out past the frame edge, leaving the
+  // clean central cone. 1 = no zoom (rest); tune up if the ring still peeks in.
+  const FISH_ZOOM_MAX  = 1.5;
   const DIVE_BOOST     = MOVE_MAX * 2;  // extra top speed gained in a full vertical dive
 
   let lastTime    = performance.now();
@@ -2494,6 +2500,8 @@ function createBirdControls(camera, domElement, collision) {
       _czSmooth      += ((fisheyeMode ? cz : 0) - _czSmooth) * ease;
       FISH_U.uFishBlend.value   = _fishSmooth;
       FISH_U.uFishHalfFov.value = (fovDeg * Math.PI / 180) / 2;
+      // Zoom tracks the warp blend: 1 at rest, FISH_ZOOM_MAX at full fisheye.
+      FISH_U.uFishZoom.value    = 1 + (FISH_ZOOM_MAX - 1) * _fishSmooth;
 
       // Stay above the floor: terrain outside buildings, rooftop when over one
       // (so a dive lands the bird on the roof instead of sinking through it).
