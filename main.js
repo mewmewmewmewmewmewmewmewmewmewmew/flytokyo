@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.15';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.15';
+import { TrainSystem } from './train.js?v=12.16';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.16';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -3457,7 +3457,7 @@ async function main() {
     const skyEl     = document.getElementById('quiz-sky');
     const qEl       = document.getElementById('quiz-q');
     const EXPLORE_SECONDS = 20, FADE_AT = 18;
-    let selected = null, exploring = false, elapsed = 0, lastT = 0;
+    let selected = null, exploring = false, elapsed = 0, lastT = 0, moving = false;
 
     const clear = el => { while (el.firstChild) el.removeChild(el.firstChild); };
     const show  = on => quizEl.classList.toggle('hidden', !on);
@@ -3516,7 +3516,8 @@ async function main() {
       renderSky();
       show(false);
       setFrozen(false);
-      elapsed = 0; lastT = performance.now(); exploring = true;
+      elapsed = 0; lastT = performance.now(); exploring = true; moving = false;
+      timerEl.textContent = EXPLORE_SECONDS;   // park the clock at 20 until liftoff
       document.body.classList.add('quiz-exploring');
       requestAnimationFrame(tick);
     }
@@ -3524,7 +3525,10 @@ async function main() {
       if (!exploring) return;
       const now = performance.now();
       const dt = (now - lastT) / 1000; lastT = now;
-      if (!isPaused()) elapsed += dt;   // don't count time spent in the F1 menu
+      // The countdown is armed by flight, not by looking around: hold at 20 until
+      // the bird first actually moves (velocity > 0 from thrust), then it ticks.
+      if (!moving && controls.getSpeed() > 0.01) moving = true;
+      if (moving && !isPaused()) elapsed += dt;   // don't count time spent in the F1 menu
       const left = Math.max(0, EXPLORE_SECONDS - elapsed);
       timerEl.textContent = Math.ceil(left);
       fadeEl.style.opacity = String(Math.max(0, Math.min(1, (elapsed - FADE_AT) / (EXPLORE_SECONDS - FADE_AT))));
