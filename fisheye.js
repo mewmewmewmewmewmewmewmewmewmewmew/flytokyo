@@ -73,8 +73,15 @@ export const FISH_PROJ_GLSL = /* glsl */`
     }
 
     // In front of the camera: blend the two projections in normalised device coords.
-    vec3 pndc = persp.xyz / persp.w;
-    vec3 ndc  = mix(pndc, fish.xyz, uFishBlend);
+    // Clamp pndc.xy before mixing — vertices near the 90° horizon have persp.w → 0+,
+    // making the perspective divide blow up to hundreds. mix(500, 1.5, 0.1) = 450,
+    // so even a tiny blend weight leaves a huge coordinate that the GPU rasterizes
+    // as a triangle spanning the screen before fishClip() can discard the fragments.
+    // Clamping to ±5 keeps the triangle footprint bounded while fishClip() handles
+    // the actual discard — no visible geometry is ever legitimately beyond ±1 NDC.
+    vec2  pxy  = clamp(persp.xy / persp.w, vec2(-5.0), vec2(5.0));
+    vec3  pndc = vec3(pxy, persp.z / persp.w);
+    vec3  ndc  = mix(pndc, fish.xyz, uFishBlend);
     return vec4(ndc, 1.0);
   }
 `;
