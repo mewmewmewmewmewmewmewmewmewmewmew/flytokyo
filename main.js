@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.05';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.05';
+import { TrainSystem } from './train.js?v=12.06';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.06';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -288,13 +288,19 @@ async function pruneCache() {
 
 // ─── Overpass ────────────────────────────────────────────────────────────────
 
-// Known to send permissive CORS headers from the browser. de is the reliable
-// primary; kumi is a fast fallback used on retries.
+// Known to send permissive CORS headers from the browser. More mirrors = more
+// per-IP concurrency headroom; a rate-limited server is skipped on the next call.
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
 ];
-let _opIdx = 0;
+// Start at a RANDOM mirror each page load. "Play again" reloads the page, which
+// would otherwise reset this to 0 and make every consecutive quiz round hammer
+// overpass-api.de first — that server then rate-limits us (429) and the first
+// attempt fails with "Network busy — retrying". Randomising the start spreads
+// back-to-back loads across mirrors so the first attempt usually lands clean.
+let _opIdx = (Math.random() * OVERPASS_ENDPOINTS.length) | 0;
 
 async function fetchOSMBbox(bbox) {
   const { south, west, north, east } = bbox;
@@ -3017,7 +3023,7 @@ const MAJOR_CITIES = [
   ['Shenzhen', 22.5431, 114.0579, 'China'], ['Lahore', 31.5204, 74.3587, 'Pakistan'],
   ['Bangalore', 12.9716, 77.5946, 'India'], ['Paris', 48.8566, 2.3522, 'France'],
   ['Bogotá', 4.7110, -74.0721, 'Colombia'], ['Jakarta', -6.2088, 106.8456, 'Indonesia'],
-  ['Chennai', 13.0827, 80.2707, 'India'], ['Lima', -12.0564, -77.0428, 'Peru'],
+  ['Chennai', 13.0827, 80.2707, 'India'], ['Lima', -12.0664, -77.0428, 'Peru'],
   ['Bangkok', 13.7563, 100.5018, 'Thailand'], ['Seoul', 37.5665, 126.9780, 'South Korea'],
   ['Nagoya', 35.1815, 136.9066, 'Japan'], ['Hyderabad', 17.3850, 78.4867, 'India'],
   ['London', 51.5074, -0.1278, 'UK'], ['Tehran', 35.6892, 51.3890, 'Iran'],
