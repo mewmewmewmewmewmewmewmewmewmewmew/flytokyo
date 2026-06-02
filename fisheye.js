@@ -73,15 +73,18 @@ export const FISH_PROJ_GLSL = /* glsl */`
     }
 
     // In front of the camera: blend the two projections in normalised device coords.
-    // Clamp pndc.xy before mixing — vertices near the 90° horizon have persp.w → 0+,
-    // making the perspective divide blow up to hundreds. mix(500, 1.5, 0.1) = 450,
-    // so even a tiny blend weight leaves a huge coordinate that the GPU rasterizes
-    // as a triangle spanning the screen before fishClip() can discard the fragments.
-    // Clamping to ±5 keeps the triangle footprint bounded while fishClip() handles
-    // the actual discard — no visible geometry is ever legitimately beyond ±1 NDC.
-    vec2  pxy  = clamp(persp.xy / persp.w, vec2(-5.0), vec2(5.0));
-    vec3  pndc = vec3(pxy, persp.z / persp.w);
-    vec3  ndc  = mix(pndc, fish.xyz, uFishBlend);
+    // The hazard is the perspective singularity: as a vertex's angle off-forward
+    // (theta) approaches 90°, persp.w → 0+ and the perspective divide explodes to
+    // hundreds, so a straight NDC mix stretches those corner/edge triangles across
+    // the screen mid-transition. Fix: bias vertices near that singularity toward the
+    // FISHEYE position (which is well-behaved at every angle) via wGuard, so they
+    // ride the fisheye curve to the frame edge instead of shooting off-screen. The
+    // clamp stays as a hard backstop for anything still extreme.
+    float wGuard = 1.0 - smoothstep(1.20, 1.5708, theta);  // 1 below ~69° … 0 at 90°
+    float b      = mix(1.0, uFishBlend, wGuard);            // near 90° → full fisheye
+    vec2  pxy    = clamp(persp.xy / persp.w, vec2(-5.0), vec2(5.0));
+    vec3  pndc   = vec3(pxy, persp.z / persp.w);
+    vec3  ndc    = mix(pndc, fish.xyz, b);
     return vec4(ndc, 1.0);
   }
 `;
