@@ -401,102 +401,142 @@ function createBirdController(mesh) {
 }
 
 // ─── Anime girl (F3) ─────────────────────────────────────────────────────────
+// Built in Y-up upright space so she reads as a real 3D person:
+//   poseGroup.rotation.x = 0      → upright float (rest), arms out to both sides
+//   poseGroup.rotation.x = -PI/2  → horizontal flight (head at -Z, feet at +Z)
+// Hair flows downward (-Y) in rest; after -PI/2 tilt it trails behind (+Z) naturally.
 function buildGirlMesh(applyFisheye) {
   const group   = new THREE.Group();
   const matLine = applyFisheye(new THREE.LineBasicMaterial({ color: 0x9966dd }));
   const matHair = applyFisheye(new THREE.LineBasicMaterial({ color: 0x221133 }));
 
-  // All geometry in poseGroup so it tilts as one unit:
-  //   rotation.x = 0      → lying flat (flying)
-  //   rotation.x = +PI/2  → standing upright (floating at rest)
   const pose = new THREE.Group();
   group.add(pose);
   group.userData.pose = pose;
 
-  function addOvalLine(rx, rz, cx, cy, cz, n) {
-    const v = [];
-    for (let i = 0; i < n; i++) {
-      const a0 = i / n * Math.PI * 2, a1 = (i + 1) / n * Math.PI * 2;
-      v.push(cx + rx * Math.cos(a0), cy, cz + rz * Math.sin(a0),
-             cx + rx * Math.cos(a1), cy, cz + rz * Math.sin(a1));
-    }
+  // ── Geometry helpers ──────────────────────────────────────────────────
+  function segs(v) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
     pose.add(new THREE.LineSegments(g, matLine));
   }
-
-  function addOvalFill(rx, rz, cx, cy, cz, n, color, opacity) {
-    const pos = [cx, cy, cz];
+  // Ring in the XZ plane (horizontal cross-section)
+  function ringXZ(cx, cy, cz, rx, rz, n) {
+    const v = [];
     for (let i = 0; i < n; i++) {
-      const a = i / n * Math.PI * 2;
-      pos.push(cx + rx * Math.cos(a), cy, cz + rz * Math.sin(a));
+      const a0 = i/n*Math.PI*2, a1=(i+1)/n*Math.PI*2;
+      v.push(cx+rx*Math.cos(a0), cy, cz+rz*Math.sin(a0),
+             cx+rx*Math.cos(a1), cy, cz+rz*Math.sin(a1));
     }
-    const idx = [];
-    for (let i = 1; i <= n; i++) idx.push(0, i, i === n ? 1 : i + 1);
+    segs(v);
+  }
+  // Circle in the XY plane (visible from front)
+  function circleXY(cx, cy, cz, r, n) {
+    const v = [];
+    for (let i = 0; i < n; i++) {
+      const a0 = i/n*Math.PI*2, a1=(i+1)/n*Math.PI*2;
+      v.push(cx+r*Math.cos(a0), cy+r*Math.sin(a0), cz,
+             cx+r*Math.cos(a1), cy+r*Math.sin(a1), cz);
+    }
+    segs(v);
+  }
+  // Quad-strip between two XZ rings (fills the tapered tube between them)
+  function ringStrip(y0, rx0, rz0, y1, rx1, rz1, n, color, opacity) {
+    const pos = [], idx = [];
+    for (let i = 0; i <= n; i++) {
+      const a = i/n*Math.PI*2;
+      pos.push(rx0*Math.cos(a), y0, rz0*Math.sin(a));
+      pos.push(rx1*Math.cos(a), y1, rz1*Math.sin(a));
+    }
+    for (let i = 0; i < n; i++) {
+      const b = i*2;
+      idx.push(b, b+1, b+2,  b+1, b+3, b+2);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setIndex(idx);
+    const m = new THREE.Mesh(g, applyFisheye(new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide,
+    })));
+    pose.add(m);
+    return { mesh: m, pos };
+  }
+
+  // ── HEAD ────────────────────────────────────────────────────────────────
+  // Two great circles (XY front + XZ equator) give a globe-like 3D read.
+  const HY = 0.80, HR = 0.26;
+  // Skin fill disc (front-facing XY, added before outlines so lines render on top)
+  {
+    const n = 14, pos = [0, HY, 0], idx = [];
+    for (let i = 0; i < n; i++) {
+      const a = i/n*Math.PI*2;
+      pos.push(HR*Math.cos(a), HY+HR*Math.sin(a), 0);
+    }
+    for (let i = 1; i <= n; i++) idx.push(0, i, i===n?1:i+1);
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.setIndex(idx);
     pose.add(new THREE.Mesh(g, applyFisheye(new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide,
+      color: 0xffccaa, transparent: true, opacity: 0.90, depthWrite: false, side: THREE.DoubleSide,
     }))));
   }
+  circleXY(0, HY, 0, HR, 14);      // front circle outline
+  ringXZ(0, HY, 0, HR, HR, 12);    // equatorial ring
 
-  // Head (face up in XZ plane, centered at z = −0.50)
-  addOvalFill(0.12, 0.10, 0, 0, -0.50, 12, 0xffccaa, 0.92);
-  addOvalLine(0.12, 0.10, 0, 0, -0.50, 12);
+  // ── TORSO ───────────────────────────────────────────────────────────────
+  const SY = 0.48, SRX = 0.44, SRZ = 0.30;   // shoulder ring: Y, rx, rz
+  const WY = 0.00, WRX = 0.26, WRZ = 0.20;   // waist ring
+  // Fill strip from shoulders to waist
+  ringStrip(SY, SRX, SRZ, WY, WRX, WRZ, 12, 0xddeeff, 0.70);
+  ringXZ(0, SY, 0, SRX, SRZ, 12);   // shoulder ring outline
+  ringXZ(0, WY, 0, WRX, WRZ, 12);   // waist ring outline
+  // Front-view side silhouette lines (XY plane) + shoulder cross-bar
+  segs([
+     SRX, SY, 0,   WRX+0.04, WY, 0,    // right torso edge
+    -SRX, SY, 0,  -WRX-0.04, WY, 0,    // left torso edge
+    -SRX, SY, 0,   SRX,      SY, 0,    // shoulder line
+  ]);
 
-  // Torso / dress body (shoulders → hips)
-  addOvalFill(0.13, 0.24, 0, 0, -0.08, 14, 0xddeeff, 0.80);
-  addOvalLine(0.13, 0.24, 0, 0, -0.08, 14);
-
-  // Skirt hem: triangle fan from hip centre out behind the body
-  const HEM = [
-    [ 0.10,  0.16],  // right hip
-    [ 0.38,  0.32],  // right outer
-    [ 0.44,  0.52],  // right hem tip
-    [ 0.14,  0.62],  // right back
-    [ 0.00,  0.66],  // centre back
-    [-0.14,  0.62],  // left back
-    [-0.44,  0.52],  // left hem tip
-    [-0.38,  0.32],  // left outer
-    [-0.10,  0.16],  // left hip
-  ];
+  // ── SKIRT ───────────────────────────────────────────────────────────────
+  const HIPY = -0.32, HIPRX = 0.34, HIPRZ = 0.28;
+  const HEMY = -1.30, HEMRX = 0.56, HEMRZ = 0.44;
+  // Skirt fill (deformable for hem flutter)
+  const { mesh: skirtFill, pos: skirtPos } = ringStrip(HIPY, HIPRX, HIPRZ, HEMY, HEMRX, HEMRZ, 14, 0xddeeff, 0.62);
+  skirtFill.userData.rest = Float32Array.from(skirtPos);
+  group.userData.skirtFill = skirtFill;
+  ringXZ(0, HIPY, 0, HIPRX, HIPRZ, 12);   // hip ring outline
+  ringXZ(0, HEMY, 0, HEMRX, HEMRZ, 14);   // hem ring outline
+  // Vertical skirt ribs
   {
-    const pos = [0, 0, 0.16];   // fan centre at hip midpoint (index 0)
-    HEM.forEach(([x, z]) => pos.push(x, 0, z));
-    const idx = [];
-    for (let i = 1; i < HEM.length; i++) idx.push(0, i, i + 1);
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    g.setIndex(idx);
-    const skirtFill = new THREE.Mesh(g, applyFisheye(new THREE.MeshBasicMaterial({
-      color: 0xddeeff, transparent: true, opacity: 0.65, depthWrite: false, side: THREE.DoubleSide,
-    })));
-    skirtFill.userData.rest = Float32Array.from(pos);
-    pose.add(skirtFill);
-    group.userData.skirtFill = skirtFill;
-  }
-  // Hem outline
-  {
-    const v = [];
-    for (let i = 0; i < HEM.length - 1; i++)
-      v.push(HEM[i][0], 0, HEM[i][1], HEM[i + 1][0], 0, HEM[i + 1][1]);
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
-    pose.add(new THREE.LineSegments(g, matLine));
+    const n = 12, v = [];
+    for (let i = 0; i < n; i++) {
+      const a = i/n*Math.PI*2;
+      v.push(HIPRX*Math.cos(a), HIPY, HIPRZ*Math.sin(a),
+             HEMRX*Math.cos(a), HEMY, HEMRZ*Math.sin(a));
+    }
+    segs(v);
   }
 
-  // Arms: sub-groups so the controller can rotate them for pose transitions
+  // ── ARMS (vertex-morphed between rest and flight positions) ─────────────
+  // rest: arms spread perfectly horizontal to ±X (outstretched hands)
+  // fly:  arms hang close alongside body (parallel to -Y)
   function buildArm(sx) {
     const g = new THREE.Group();
-    g.position.set(sx * 0.13, 0, -0.25);    // shoulder joint
-    const v = [
-      0,           0, 0,      sx * 0.22,  0,  0.13,   // upper arm
-      sx * 0.22,   0, 0.13,   sx * 0.18,  0,  0.32,   // forearm
-    ];
+    g.position.set(sx * SRX, SY, 0);    // pivot at shoulder
+    // rest pose: straight out along ±X
+    const R = new Float32Array([
+      0,       0, 0,   sx*0.26,  0,    0,   // upper arm
+      sx*0.26, 0, 0,   sx*0.50,  0,    0,   // forearm (outstretched)
+    ]);
+    // flight pose: alongside body, pointing down (-Y), slightly behind (+Z)
+    const F = new Float32Array([
+      0,       0,    0,   sx*0.04, -0.44, 0.06,   // upper arm
+      sx*0.04, -0.44, 0.06,  sx*0.06, -0.80, 0.10,  // forearm
+    ]);
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(R.slice(), 3));
     g.add(new THREE.LineSegments(geo, matLine));
+    g.userData = { rest: R, fly: F, geo };
     return g;
   }
   const armR = buildArm( 1);
@@ -505,39 +545,50 @@ function buildGirlMesh(applyFisheye) {
   group.userData.armR = armR;
   group.userData.armL = armL;
 
-  // Legs: sub-groups for pose animation
-  function buildLeg(sx) {
+  // ── LEGS ────────────────────────────────────────────────────────────────
+  // rest: one leg slightly kicked forward (semi-folded at rest)
+  // fly:  legs straight and together
+  function buildLeg(sx, kickZ) {
     const g = new THREE.Group();
-    g.position.set(sx * 0.07, 0, 0.17);     // hip joint
-    const v = [
-      0,           0, 0,      sx * 0.04,  0,  0.28,   // thigh
-      sx * 0.04,   0, 0.28,   sx * 0.06,  0,  0.50,   // shin
-    ];
+    g.position.set(sx * 0.16, HIPY, 0);    // pivot at hip
+    const R = new Float32Array([
+      0,       0,    0,       sx*0.02, -0.72, kickZ,       // thigh
+      sx*0.02, -0.72, kickZ,  sx*0.02, -1.28, kickZ*0.4,  // shin
+    ]);
+    const F = new Float32Array([
+      0,       0, 0,      sx*0.02, -0.72, 0,    // thigh straight
+      sx*0.02, -0.72, 0,  sx*0.02, -1.28, 0,   // shin straight
+    ]);
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(R.slice(), 3));
     g.add(new THREE.LineSegments(geo, matLine));
+    g.userData = { rest: R, fly: F, geo };
     return g;
   }
-  const legR = buildLeg( 1);
-  const legL = buildLeg(-1);
+  const legR = buildLeg( 1, -0.20);   // right leg: knee slightly forward at rest
+  const legL = buildLeg(-1,  0.00);   // left leg: straight
   pose.add(legR, legL);
   group.userData.legR = legR;
   group.userData.legL = legL;
 
-  // Hair: 9 strands flowing from the back of the head toward +Z (trailing when flying)
+  // ── HAIR ────────────────────────────────────────────────────────────────
+  // 9 strands from the crown/back of head, flowing straight down (-Y).
+  // When poseGroup tilts -90° for flight, -Y → +Z so they trail behind naturally.
   const NHAIR = 9;
   const hairStrands = [];
   for (let h = 0; h < NHAIR; h++) {
-    const lat = (h / (NHAIR - 1)) - 0.5;            // −0.5 (left) … +0.5 (right)
-    const xS  = lat * 0.20;
-    const zS  = -0.42;                               // back of head
-    const xE  = lat * 0.38;
-    const zE  = zS + 0.68 + Math.abs(lat) * 0.10;   // side strands slightly shorter
+    const lat = (h / (NHAIR - 1)) - 0.5;               // −0.5 … +0.5
+    const xS  = lat * 0.22;
+    const yS  = HY - 0.04;                              // near crown
+    const zS  = 0.20;                                    // behind head
+    const xE  = lat * 0.48;
+    const yE  = -0.76 - Math.abs(lat) * 0.16;           // centre strands longest
+    const zE  = 0.48 + Math.abs(lat) * 0.08;
     const pts  = new Float32Array([
-      xS,                   0, zS,
-      xS * 0.6 + xE * 0.4,  0, zS + 0.22,
-      xS * 0.1 + xE * 0.9,  0, zS + 0.48,
-      xE,                   0, zE,
+      xS,                  yS,              zS,
+      xS*0.7 + xE*0.3,  yS*0.65+yE*0.35,  zS+0.08,
+      xS*0.2 + xE*0.8,  yS*0.25+yE*0.75,  zS+0.18,
+      xE,                  yE,              zE,
     ]);
     const geo    = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pts.slice(), 3));
@@ -558,54 +609,61 @@ function createGirlController(mesh) {
   const armR        = mesh.userData.armR;
   const armL        = mesh.userData.armL;
   const legR        = mesh.userData.legR;
+  const legL        = mesh.userData.legL;
   const hairStrands = mesh.userData.hairStrands;
   const skirtFill   = mesh.userData.skirtFill;
 
-  let poseT = 0;   // 0 = upright float (rest), 1 = flat flight
+  let poseT = 0;   // 0 = upright rest, 1 = horizontal flight
 
   return {
     update(dt, now, ctx) {
-      const speed = ctx.speed || 0;         // per-frame units from controls.getSpeed()
+      const speed = ctx.speed || 0;
       poseT += ((speed > 0.15 ? 1 : 0) - poseT) * Math.min(dt * 2.5, 1);
 
-      // Tilt the whole pose group between lying flat and standing upright
-      pose.rotation.x = (Math.PI / 2) * (1 - poseT);
+      // Tilt from upright (rest) to horizontal (flight) around X
+      pose.rotation.x = -(Math.PI / 2) * poseT;
 
-      // Arms: alongside body while flying → spread outward at rest
-      const spread = (1 - poseT) * Math.PI * 0.40;
-      armR.rotation.z = -spread;
-      armL.rotation.z =  spread;
+      // Morph limb vertices between rest and flight configurations
+      for (const limb of [armR, armL, legR, legL]) {
+        const arr  = limb.userData.geo.attributes.position.array;
+        const rest = limb.userData.rest;
+        const fly  = limb.userData.fly;
+        for (let k = 0; k < arr.length; k++) arr[k] = rest[k] + (fly[k] - rest[k]) * poseT;
+        limb.userData.geo.attributes.position.needsUpdate = true;
+      }
 
-      // Right leg semi-folded at rest (kick forward), straight in flight
-      legR.rotation.x = -(1 - poseT) * Math.PI / 4;
-
-      // Hair wind ripple — travelling wave from root toward tip
+      // Hair wind ripple — travelling wave from crown (high Y) toward tips (low Y)
       const t   = now * 0.001;
-      const amp = 0.020 + 0.032 * poseT;
+      const amp = 0.028 + 0.044 * poseT;
       for (const s of hairStrands) {
         const arr  = s.geometry.attributes.position.array;
         const rest = s.userData.rest;
         const lat  = s.userData.lat;
+        const yTop = rest[1];                       // Y of root (crown)
+        const yBot = rest[rest.length - 2];         // Y of tip
         for (let k = 0; k < arr.length; k += 3) {
-          const zr   = rest[k + 2];
-          const frac = Math.max(0, (zr - rest[2]) / 0.60);   // 0 at root, 1 at tip
-          const ph   = t * 4.2 + zr * 2.1;
-          arr[k]     = rest[k]     + Math.sin(ph)         * amp * frac * (0.5 + Math.abs(lat));
-          arr[k + 1] = rest[k + 1] + Math.sin(ph + 1.1)  * amp * frac * 0.35;
-          arr[k + 2] = rest[k + 2] + Math.sin(ph * 0.65) * amp * frac * 0.15;
+          const yr   = rest[k + 1];
+          const frac = Math.max(0, (yTop - yr) / (yTop - yBot));  // 0 at root, 1 at tip
+          const ph   = t * 4.0 + yr * 3.5;
+          arr[k]     = rest[k]     + Math.sin(ph)        * amp * frac * (0.5 + Math.abs(lat));
+          arr[k + 1] = rest[k + 1] + Math.sin(ph + 0.9) * amp * frac * 0.28;
+          arr[k + 2] = rest[k + 2] + Math.sin(ph * 0.6) * amp * frac * 0.22;
         }
         s.geometry.attributes.position.needsUpdate = true;
       }
 
-      // Skirt hem ripple
+      // Skirt hem flutter — only the lower (hem) vertices ripple
       if (skirtFill) {
         const arr  = skirtFill.geometry.attributes.position.array;
         const rest = skirtFill.userData.rest;
-        const sa   = 0.010 + 0.018 * poseT;
+        const sa   = 0.010 + 0.016 * poseT;
         for (let k = 0; k < arr.length; k += 3) {
-          const zr = rest[k + 2];
-          arr[k]     = rest[k]     + Math.sin(t * 3.6 + zr * 1.9) * sa;
-          arr[k + 2] = rest[k + 2] + Math.sin(t * 2.8 + zr * 2.4) * sa * 0.5;
+          const yr = rest[k + 1];
+          const xr = rest[k], zr = rest[k + 2];
+          // hemFrac: 0 at hip (HIPY = −0.32), 1 at hem (HEMY = −1.30)
+          const hemFrac = Math.max(0, Math.min(1, (yr - (-0.32)) / (-0.98)));
+          arr[k]     = xr + Math.sin(t * 3.4 + zr * 2.0) * sa * hemFrac;
+          arr[k + 2] = zr + Math.sin(t * 2.7 + xr * 2.5) * sa * hemFrac * 0.5;
         }
         skirtFill.geometry.attributes.position.needsUpdate = true;
       }

@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.40';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.40';
-import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.40';
+import { TrainSystem } from './train.js?v=12.41';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.41';
+import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.41';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
