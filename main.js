@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.33';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.33';
+import { TrainSystem } from './train.js?v=12.34';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.34';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2139,10 +2139,9 @@ function createBirdControls(camera, domElement, collision) {
   const FOV_MAX_DEG    = 220;  // at top non-sprint speed
   const FOV_SPRINT_DEG = 250;  // at top sprint speed
   const FOV_DIVE_DEG   = 290;  // keeps widening past sprint speed while diving
-  // Radial zoom that ramps in with the warp. Was a stopgap to push the periphery
-  // ring off-screen; the ring is now fixed at the source (linear depth), so this
-  // is back to 1 (no zoom) for the full wide fisheye. Raise it for a tighter look.
-  const FISH_ZOOM_MAX  = 1.0;
+  // Radial zoom that ramps in with the warp: 1 at rest → this at full fisheye. A
+  // gentle magnification tightens the view a touch as you speed up.
+  const FISH_ZOOM_MAX  = 1.2;
   const DIVE_BOOST     = MOVE_MAX * 2;  // extra top speed gained in a full vertical dive
 
   let lastTime    = performance.now();
@@ -2956,9 +2955,6 @@ function initScene(collision) {
     birdMesh.position.copy(controls.birdPos);
     birdMesh.position.y += 0.1 * Math.sin(now * 0.002);   // gentle float bob
     birdMesh.rotation.set(controls.getPitch(), controls.getYaw(), controls.getRoll(), 'YXZ');
-    // Shrink the bird toward half its size as the fisheye zoom ramps in (blend
-    // 0→1), so the speed-up doesn't read as zoomed in as much. Base scale is 0.5.
-    birdMesh.scale.setScalar(0.5 * (1.0 - 0.5 * FISH_U.uFishBlend.value));
 
     // ── Wing flap ──────────────────────────────────────────────────────────
     // Occasional flapping bursts when cruising; while diving the wings stop
