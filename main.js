@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.27';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.27';
+import { TrainSystem } from './train.js?v=12.28';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.28';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -24,8 +24,15 @@ const TILE_LAT    = 0.005;
 const TILE_LON    = 0.006;
 const LOAD_RADIUS = 2;
 
-const FADE_NEAR   = 120;
+// Buildings/roads/water fade out over FADE_NEAR…FADE_FAR. FADE_NEAR matches the
+// ground plane's own fade onset (FADE_FAR*0.5) on purpose: if the city started
+// fading sooner than the ground, there'd be a mid-distance annulus where the
+// ground is still opaque but the buildings have already vanished — which reads
+// as a concentric "ring" of bare ground/road at the wide fisheye periphery.
+// Keeping the onsets equal makes city and ground fade in lockstep (equal alpha
+// at every distance), so the periphery is uniform with no ring.
 const FADE_FAR    = 900;
+const FADE_NEAR   = FADE_FAR * 0.5;   // 450 — aligned with the ground fade onset
 const METRO_DEPTH   = -7;
 const EYE_HEIGHT    = 1.6;
 // Sink the ground mesh this far below true terrain so its coarse triangles can
@@ -2665,9 +2672,8 @@ function initScene(collision) {
   const LABEL_DIST = 250;
   let fisheyeActive = true;   // speed-driven fisheye on by default; F3 toggles it off
   let lastTime = performance.now();
-  const speedEl      = document.getElementById('speed');
-  const vignetteEl   = document.getElementById('fisheye-vignette');
-  const compassEl    = document.getElementById('compass');
+  const speedEl    = document.getElementById('speed');
+  const compassEl  = document.getElementById('compass');
   const compassCtx = compassEl ? compassEl.getContext('2d') : null;
   // Compass sizing: set inline styles + bitmap directly from JS so we're not
   // fighting the global `canvas { inset:0 }` cascade. Mobile = full-width 32 px
@@ -3001,9 +3007,6 @@ function initScene(collision) {
     }
     // Outline ribbons need the aspect every frame regardless of fisheye state.
     FISH_U.uFishAspect.value = camera.aspect;
-    // Lens vignette tracks the (smoothed) fisheye blend — darkens the periphery
-    // as the warp eases in, hiding the sparse outer ring beyond render distance.
-    if (vignetteEl) vignetteEl.style.opacity = FISH_U.uFishBlend.value.toFixed(3);
     if (fisheyeActive) {
       // Newly streamed-in tiles must also skip frustum culling (they'd otherwise
       // pop at the periphery). Cheap: a handful of merged meshes per tile.

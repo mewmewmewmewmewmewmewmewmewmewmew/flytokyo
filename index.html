@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v12.27 -->
+  <meta charset="UTF-8"><!-- v12.28 -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -59,23 +59,6 @@
       z-index: 6;           /* sit above the WebGL canvas (appended later in the DOM) */
       pointer-events: none;
       user-select: none;
-    }
-
-    /* Fisheye lens vignette — dark radial fade that grows with the warp blend.
-       Hides the sparse outer ring (beyond the render/tile distance) that appears
-       at the periphery of a wide fisheye FOV, and gives the lens a natural look. */
-    #fisheye-vignette {
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      z-index: 5;
-      background: radial-gradient(ellipse at center,
-        transparent 45%,
-        rgba(0,0,0,0.20) 65%,
-        rgba(0,0,0,0.72) 84%,
-        rgba(0,0,0,0.92) 100%
-      );
-      opacity: 0;
     }
 
     /* Toggled by hotkey 1 — hides all the HUD chrome (text + compass). */
@@ -483,16 +466,15 @@
     <div id="search-msg"></div>
     <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
     <div id="load-msg"></div>
-    <div id="load-version">v12.27</div>
+    <div id="load-version">v12.28</div>
   </div>
 
-  <div id="fisheye-vignette"></div>
   <div id="overlay">
     <h1>Tokyo · Shibuya</h1>
     <div id="status"></div>
   </div>
 
-  <div id="version">v12.27</div>
+  <div id="version">v12.28</div>
   <div id="speed"></div>
   <canvas id="compass" width="360" height="48"></canvas>
 
@@ -545,6 +527,6 @@
     }
   }
   </script>
-  <script type="module" src="main.js?v=12.27"></script>
+  <script type="module" src="main.js?v=12.28"></script>
 </body>
 </html>
