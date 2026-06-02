@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.36';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.36';
+import { TrainSystem } from './train.js?v=12.37';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.37';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2136,9 +2136,9 @@ function createBirdControls(camera, domElement, collision) {
   // Speed-driven fisheye: the warp eases in from a normal view (rest) to a full
   // fisheye at top speed, and the angle grows wider the faster you go.
   const FOV_REST_DEG   = 120;  // angle the warp eases up from (barely visible at low speed)
-  const FOV_MAX_DEG    = 220;  // at top non-sprint speed
-  const FOV_SPRINT_DEG = 250;  // at top sprint speed
-  const FOV_DIVE_DEG   = 290;  // keeps widening past sprint speed while diving
+  const FOV_MAX_DEG    = 250;  // at top non-sprint speed (+30°)
+  const FOV_SPRINT_DEG = 280;  // at top sprint speed
+  const FOV_DIVE_DEG   = 320;  // keeps widening past sprint speed while diving
   // Radial zoom that ramps in with the warp: 1 at rest → this at full fisheye. A
   // gentle magnification tightens the view a touch as you speed up.
   const FISH_ZOOM_MAX  = 1.3;
