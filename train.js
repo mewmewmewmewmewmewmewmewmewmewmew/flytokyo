@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.21';
+import { fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.22';
 
 // ─── Car dimensions (metres) ──────────────────────────────────────────────────
 const CAR_L    = 20;
