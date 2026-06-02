@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.34';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.34';
+import { TrainSystem } from './train.js?v=12.35';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.35';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2141,7 +2141,7 @@ function createBirdControls(camera, domElement, collision) {
   const FOV_DIVE_DEG   = 290;  // keeps widening past sprint speed while diving
   // Radial zoom that ramps in with the warp: 1 at rest → this at full fisheye. A
   // gentle magnification tightens the view a touch as you speed up.
-  const FISH_ZOOM_MAX  = 1.2;
+  const FISH_ZOOM_MAX  = 1.3;
   const DIVE_BOOST     = MOVE_MAX * 2;  // extra top speed gained in a full vertical dive
 
   let lastTime    = performance.now();
@@ -2731,6 +2731,23 @@ function initScene(collision) {
     compassCtx.beginPath();
     compassCtx.roundRect(PX, PY, W - PX * 2, H - PY * 2, _cFlush ? 0 : 6);
     compassCtx.fill();
+
+    // Desktop: fade the grey background out to 0 opacity at the left/right edges.
+    // destination-in multiplies existing alpha by this horizontal mask — and since
+    // only the background has been drawn so far, the ticks/labels (drawn next) are
+    // untouched. Solid plateau in the middle, easing to transparent at each edge.
+    if (!_cFlush) {
+      const edge = compassCtx.createLinearGradient(0, 0, W, 0);
+      edge.addColorStop(0.00, 'rgba(0,0,0,0)');
+      edge.addColorStop(0.30, 'rgba(0,0,0,1)');
+      edge.addColorStop(0.70, 'rgba(0,0,0,1)');
+      edge.addColorStop(1.00, 'rgba(0,0,0,0)');
+      compassCtx.save();
+      compassCtx.globalCompositeOperation = 'destination-in';
+      compassCtx.fillStyle = edge;
+      compassCtx.fillRect(0, 0, W, H);
+      compassCtx.restore();
+    }
 
     // Cardinal labels and tick marks. Iterate over the MARK degrees themselves
     // (every 10°) and place each at its signed offset from the current heading,
