@@ -85,13 +85,15 @@ export const FISH_PROJ_GLSL = /* glsl */`
     // central cone fills the screen. uFishZoom = 1 at rest leaves framing intact.
     vec2  ndc = vec2(R * cos(phi) / aspect, R * sin(phi)) * uFishZoom;
 
-    // Keep the TRUE perspective depth wherever it's valid (in front of the camera)
-    // so z-fighting and the decal polygonOffset layering behave exactly as in the
-    // flat view; only behind-camera verts (visible at high blend) use linear depth.
-    vec4  pc  = projectionMatrix * mv;
-    float zc  = (pc.w > 0.0)
-              ? clamp(pc.z / pc.w, -1.0, 1.0)
-              : (clamp((len - uFishNear) / (uFishFar - uFishNear), 0.0, 1.0) * 2.0 - 1.0);
+    // LINEAR depth by true view distance — monotonic with uniform precision across
+    // the whole frame. Perspective depth (pc.z/pc.w) crushes far-away depth gaps to
+    // nothing, so at the grazing angles of the fisheye periphery the thin ~0.6 m
+    // ground↓/road↑ gap collapsed to a tie and the ground (drawn first) out-sorted
+    // the road/river decals into a constant-radius ring. With linear depth that gap
+    // stays resolvable at EVERY distance, so the ground can never paint over the
+    // roads — at the periphery or anywhere. Behind-camera verts fall through the
+    // same formula cleanly (no perspective-divide branch needed).
+    float zc = clamp((len - uFishNear) / (uFishFar - uFishNear), 0.0, 1.0) * 2.0 - 1.0;
 
     // w = 1 throughout: the GPU clips x/y/z in [-1,1] with no divide, so there is no
     // singularity to blow up. Fine geometry is already tessellated, so dropping
