@@ -19,6 +19,7 @@ export const FISH_U = {
   uFishAspect:  { value: 1 },        // viewport width / height
   uFishNear:    { value: 0.15 },
   uFishFar:     { value: 2000 },
+  uFishZoom:    { value: 1 },        // radial magnification: 1 = none (rest) … >1 = zoomed in
 };
 
 // Return the SAME shared {value} objects so all materials stay in sync.
@@ -26,6 +27,7 @@ export function fishUniforms() {
   return {
     uFishOn: FISH_U.uFishOn, uFishBlend: FISH_U.uFishBlend, uFishHalfFov: FISH_U.uFishHalfFov,
     uFishAspect: FISH_U.uFishAspect, uFishNear: FISH_U.uFishNear, uFishFar: FISH_U.uFishFar,
+    uFishZoom: FISH_U.uFishZoom,
   };
 }
 
@@ -47,6 +49,7 @@ export const FISH_PROJ_GLSL = /* glsl */`
   uniform float uFishAspect;
   uniform float uFishNear;
   uniform float uFishFar;
+  uniform float uFishZoom;
   varying vec3  vFishView;
   vec4 projectVertex(vec4 mv) {
     vec3  d     = mv.xyz;
@@ -76,7 +79,11 @@ export const FISH_PROJ_GLSL = /* glsl */`
     float Rp = tan(min(theta, TC)) / tanHalfP;
     float Rf = sqrt(aspect * aspect + 1.0) * theta / uFishHalfFov;
     float R  = mix(Rp, Rf, b);
-    vec2  ndc = vec2(R * cos(phi) / aspect, R * sin(phi));
+    // Radial magnification: as the fisheye widens with speed the broken outer
+    // periphery (where the ground depth saturates and paints over the roads in a
+    // ring) is scaled OUT past the frame edge and clipped away, so only the clean
+    // central cone fills the screen. uFishZoom = 1 at rest leaves framing intact.
+    vec2  ndc = vec2(R * cos(phi) / aspect, R * sin(phi)) * uFishZoom;
 
     // Keep the TRUE perspective depth wherever it's valid (in front of the camera)
     // so z-fighting and the decal polygonOffset layering behave exactly as in the
