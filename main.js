@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.16';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.16';
+import { TrainSystem } from './train.js?v=12.17';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.17';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -3456,7 +3456,7 @@ async function main() {
     const timerEl   = document.getElementById('quiz-timer');
     const skyEl     = document.getElementById('quiz-sky');
     const qEl       = document.getElementById('quiz-q');
-    const EXPLORE_SECONDS = 20, FADE_AT = 18;
+    const EXPLORE_SECONDS = 20, FADE_AT = 16;
     let selected = null, exploring = false, elapsed = 0, lastT = 0, moving = false;
 
     const clear = el => { while (el.firstChild) el.removeChild(el.firstChild); };
@@ -3531,7 +3531,10 @@ async function main() {
       if (moving && !isPaused()) elapsed += dt;   // don't count time spent in the F1 menu
       const left = Math.max(0, EXPLORE_SECONDS - elapsed);
       timerEl.textContent = Math.ceil(left);
-      fadeEl.style.opacity = String(Math.max(0, Math.min(1, (elapsed - FADE_AT) / (EXPLORE_SECONDS - FADE_AT))));
+      // Ease-in the white wash: linear progress through the fade window, then
+      // raised to a power so it starts gently and accelerates toward 20 s.
+      const fadeT = Math.max(0, Math.min(1, (elapsed - FADE_AT) / (EXPLORE_SECONDS - FADE_AT)));
+      fadeEl.style.opacity = String(fadeT * fadeT * fadeT);
       if (left <= 0) { endExplore(); return; }
       requestAnimationFrame(tick);
     }
