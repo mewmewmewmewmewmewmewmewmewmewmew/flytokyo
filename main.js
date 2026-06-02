@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.41';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.41';
-import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.41';
+import { TrainSystem } from './train.js?v=12.42';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.42';
+import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.42';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2406,6 +2406,8 @@ function initScene(collision) {
   sunLight.position.set(60, 150, 80);
   scene.add(sunLight);
 
+  const mapsLinkEl = document.getElementById('maps-link');
+
   // Bird mesh — player avatar for third-person view
   const character = CHARACTERS[DEFAULT_CHARACTER];
   let birdMesh = character.build(applyFisheye);
@@ -2664,6 +2666,10 @@ function initScene(collision) {
     // the true clockwise-from-North bearing is -θ, so negate getYaw() here.
     drawCompass(((-controls.getYaw() * 180 / Math.PI) % 360 + 360) % 360);
     updateAreaName(controls.birdPos.x, controls.birdPos.z);
+    if (mapsLinkEl) {
+      const { lat: _ml, lon: _mo } = worldToGeo(controls.birdPos.x, controls.birdPos.z);
+      mapsLinkEl.href = `https://www.google.com/maps/@${_ml.toFixed(6)},${_mo.toFixed(6)},17z`;
+    }
     // Sync bird mesh: position + flight orientation (yaw, nose pitch, bank roll)
     birdMesh.position.copy(controls.birdPos);
     birdMesh.position.y += 0.1 * Math.sin(now * 0.002);   // gentle float bob
@@ -2934,10 +2940,10 @@ function promptLocation() {
 
 function setPlaceLabel(name) {
   document.title = `${name} · 3D`;
-  const lt = document.getElementById('load-title');
-  const h1 = document.querySelector('#overlay h1');
-  if (lt) lt.textContent = name;
-  if (h1) h1.textContent = name;
+  const lt   = document.getElementById('load-title');
+  const span = document.getElementById('place-name');
+  if (lt)   lt.textContent   = name;
+  if (span) span.textContent = name;
 }
 
 // Per-tile area names. Each tile (the same ~550 m grid the city geometry
