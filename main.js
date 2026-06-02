@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.19';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.19';
+import { TrainSystem } from './train.js?v=12.20';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.20';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2463,16 +2463,21 @@ function createBirdControls(camera, domElement, collision) {
       // band, then 220°→250° through the sprint band.
       const tt    = _vel.length() / MOVE_MAX;
       const e     = Math.min(tt, 1);
-      const blend = Math.pow(e, 6.2);  // 5% at tt≈0.62 (140 km/h), 100% at top
+      // Warp blend is a smoothstep across the upper speed band (50%→100%): it eases
+      // in gradually and — crucially — arrives with ZERO slope at top speed, so the
+      // lens stops slamming in near the top the way the old pow(e,6.2) curve did.
+      const bt    = Math.max(0, (e - 0.5) / 0.5);
+      const blend = bt * bt * (3 - 2 * bt);
       // FOV widens with speed: rest→max over band 0-1, max→sprint over 1-2, then
       // keeps opening sprint→dive over 2-4 as a dive pushes past top speed.
       let fovDeg;
       if (tt <= 1)      fovDeg = FOV_REST_DEG   + (FOV_MAX_DEG    - FOV_REST_DEG)   * tt;
       else if (tt <= 2) fovDeg = FOV_MAX_DEG    + (FOV_SPRINT_DEG - FOV_MAX_DEG)    * (tt - 1);
       else              fovDeg = FOV_SPRINT_DEG + (FOV_DIVE_DEG   - FOV_SPRINT_DEG) * Math.min((tt - 2) / 2, 1);
-      // Ease blend and camera zoom toward their targets so both the speed ramp and
-      // the toggle (backtick) transition smoothly instead of snapping.
-      const ease      = Math.min(1, dt * 4.0);
+      // Light temporal smoothing on top of the eased curve handles the backtick
+      // toggle and any residual jitter. The curve already eases its own ends, so a
+      // gentler lag here keeps the warp from feeling like it trails the speed.
+      const ease      = Math.min(1, dt * 6.0);
       _fishSmooth    += ((fisheyeMode ? blend : 0) - _fishSmooth) * ease;
       _czSmooth      += ((fisheyeMode ? e * e * (3 - 2 * e) : 0) - _czSmooth) * ease;
       FISH_U.uFishBlend.value   = _fishSmooth;
