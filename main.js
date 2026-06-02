@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.35';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.35';
+import { TrainSystem } from './train.js?v=12.36';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.36';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2676,6 +2676,7 @@ function initScene(collision) {
   const labelsRef = { bldgGroup: null, poiGroup: null };
   const LABEL_DIST = 250;
   let fisheyeActive = true;   // speed-driven fisheye on by default; F3 toggles it off
+  FISH_U.uFishOn.value = fisheyeActive ? 1 : 0;   // sync the shader gate to the default
   let lastTime = performance.now();
   const speedEl    = document.getElementById('speed');
   const compassEl  = document.getElementById('compass');
