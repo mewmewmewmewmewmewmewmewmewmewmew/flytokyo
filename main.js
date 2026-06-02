@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.24';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.24';
+import { TrainSystem } from './train.js?v=12.25';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.25';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2487,6 +2487,7 @@ function createBirdControls(camera, domElement, collision) {
       _czSmooth      += ((fisheyeMode ? cz : 0) - _czSmooth) * ease;
       FISH_U.uFishBlend.value   = _fishSmooth;
       FISH_U.uFishHalfFov.value = (fovDeg * Math.PI / 180) / 2;
+      if (vignetteEl) vignetteEl.style.opacity = _fishSmooth.toFixed(3);
 
       // Stay above the floor: terrain outside buildings, rooftop when over one
       // (so a dive lands the bird on the roof instead of sinking through it).
@@ -2665,8 +2666,9 @@ function initScene(collision) {
   const LABEL_DIST = 250;
   let fisheyeActive = true;   // speed-driven fisheye on by default; F3 toggles it off
   let lastTime = performance.now();
-  const speedEl    = document.getElementById('speed');
-  const compassEl  = document.getElementById('compass');
+  const speedEl      = document.getElementById('speed');
+  const vignetteEl   = document.getElementById('fisheye-vignette');
+  const compassEl    = document.getElementById('compass');
   const compassCtx = compassEl ? compassEl.getContext('2d') : null;
   // Compass sizing: set inline styles + bitmap directly from JS so we're not
   // fighting the global `canvas { inset:0 }` cascade. Mobile = full-width 32 px
