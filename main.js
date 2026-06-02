@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.32';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.32';
+import { TrainSystem } from './train.js?v=12.33';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.33';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2136,15 +2136,13 @@ function createBirdControls(camera, domElement, collision) {
   // Speed-driven fisheye: the warp eases in from a normal view (rest) to a full
   // fisheye at top speed, and the angle grows wider the faster you go.
   const FOV_REST_DEG   = 120;  // angle the warp eases up from (barely visible at low speed)
-  const FOV_MAX_DEG    = 190;  // at top non-sprint speed (−30° to trim peripheral clipping)
-  const FOV_SPRINT_DEG = 220;  // at top sprint speed
-  const FOV_DIVE_DEG   = 260;  // keeps widening past sprint speed while diving
-  // Radial zoom that ramps in with the warp. As the fisheye widens it also drags
-  // in a broken outer ring (the ground depth saturates at grazing angles and
-  // paints over the roads). Magnifying the view by this factor at full warp pushes
-  // that ring — and the torn land beyond it — out past the frame edge, leaving the
-  // clean central cone. 1 = no zoom (rest); tune up if the ring still peeks in.
-  const FISH_ZOOM_MAX  = 1.5;
+  const FOV_MAX_DEG    = 220;  // at top non-sprint speed
+  const FOV_SPRINT_DEG = 250;  // at top sprint speed
+  const FOV_DIVE_DEG   = 290;  // keeps widening past sprint speed while diving
+  // Radial zoom that ramps in with the warp. Was a stopgap to push the periphery
+  // ring off-screen; the ring is now fixed at the source (linear depth), so this
+  // is back to 1 (no zoom) for the full wide fisheye. Raise it for a tighter look.
+  const FISH_ZOOM_MAX  = 1.0;
   const DIVE_BOOST     = MOVE_MAX * 2;  // extra top speed gained in a full vertical dive
 
   let lastTime    = performance.now();
