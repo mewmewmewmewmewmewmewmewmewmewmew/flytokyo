@@ -44,6 +44,7 @@ export function fishUniforms() {
 // blend=0 reproduces the standard view's framing exactly; the fisheye radius is the
 // equidistant r∝theta, which is finite and well-behaved at every angle out to 180°.
 export const FISH_PROJ_GLSL = /* glsl */`
+  uniform float uFishOn;
   uniform float uFishBlend;
   uniform float uFishHalfFov;
   uniform float uFishAspect;
@@ -72,7 +73,10 @@ export const FISH_PROJ_GLSL = /* glsl */`
     // all the way to 180° — no fold). The ramp band (74°–89°) is off-screen in the
     // resting perspective view, so blend≈0 still frames exactly like the flat cam.
     const float TC = 1.5533;                          // ~89°, just under tan()'s blow-up
-    float horizonFish = smoothstep(1.30, TC, theta);  // 0 below ~74° … 1 by ~89°
+    // Gate the horizon ramp by the master enable: with the effect OFF (uFishOn 0)
+    // it must contribute nothing so the projection is plain perspective everywhere
+    // (no residual edge warp). With the effect ON it's ×1 — identical to before.
+    float horizonFish = smoothstep(1.30, TC, theta) * uFishOn;  // 0 below ~74° … 1 by ~89°
     float b  = max(uFishBlend, horizonFish);
     // The sqrt(aspect²+1) factor reproduces the original fisheye's corner-fill
     // framing (matches the old s·a scaling) so the full-blend look is unchanged.
