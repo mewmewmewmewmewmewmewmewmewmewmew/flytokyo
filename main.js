@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.37';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.37';
+import { TrainSystem } from './train.js?v=12.38';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.38';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2727,21 +2727,25 @@ function initScene(collision) {
     bgR.addColorStop(0,   'rgba(10,12,24,0.55)');
     bgR.addColorStop(1,   'rgba(10,12,24,0.30)');
     compassCtx.fillStyle = bgR;
-    // Flush (mobile): edge-to-edge bar, no padding/rounding. Desktop: inset pill.
+    // Flush (mobile): edge-to-edge bar. Desktop: full-WIDTH band inset only top/
+    // bottom (PY). Full width matters so the horizontal edge-fade below reaches a
+    // true 0 right at the canvas edge — an inset pill would leave a hard vertical
+    // border the canvas-relative gradient can't fully erase. Ticks still use PX.
     const PX = _cFlush ? 0 : 18, PY = _cFlush ? 0 : 6;
     compassCtx.beginPath();
-    compassCtx.roundRect(PX, PY, W - PX * 2, H - PY * 2, _cFlush ? 0 : 6);
+    compassCtx.roundRect(0, PY, W, H - PY * 2, _cFlush ? 0 : 6);
     compassCtx.fill();
 
     // Desktop: fade the grey background out to 0 opacity at the left/right edges.
     // destination-in multiplies existing alpha by this horizontal mask — and since
     // only the background has been drawn so far, the ticks/labels (drawn next) are
-    // untouched. Solid plateau in the middle, easing to transparent at each edge.
+    // untouched. Solid through the middle, then ease to transparent across the
+    // outer 15% on each side, hitting exactly 0 at the edge so no edge is visible.
     if (!_cFlush) {
       const edge = compassCtx.createLinearGradient(0, 0, W, 0);
       edge.addColorStop(0.00, 'rgba(0,0,0,0)');
-      edge.addColorStop(0.30, 'rgba(0,0,0,1)');
-      edge.addColorStop(0.70, 'rgba(0,0,0,1)');
+      edge.addColorStop(0.15, 'rgba(0,0,0,1)');
+      edge.addColorStop(0.85, 'rgba(0,0,0,1)');
       edge.addColorStop(1.00, 'rgba(0,0,0,0)');
       compassCtx.save();
       compassCtx.globalCompositeOperation = 'destination-in';
