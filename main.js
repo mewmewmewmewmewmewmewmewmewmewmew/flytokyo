@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.39';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.39';
-import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.39';
+import { TrainSystem } from './train.js?v=12.40';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.40';
+import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.40';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2408,7 +2408,7 @@ function initScene(collision) {
 
   // Bird mesh — player avatar for third-person view
   const character = CHARACTERS[DEFAULT_CHARACTER];
-  const birdMesh = character.build(applyFisheye);
+  let birdMesh = character.build(applyFisheye);
   birdMesh.position.set(0, BIRD_HEIGHT, 0);
   scene.add(birdMesh);
 
@@ -2628,7 +2628,25 @@ function initScene(collision) {
 
   // Character animation (wing flap, tail flutter) lives in the character
   // controller; main.js just positions the group each frame (below).
-  const charController = character.createController(birdMesh);
+  let activeCharId   = DEFAULT_CHARACTER;
+  let charController = character.createController(birdMesh);
+
+  // Swap to a different character at runtime (F2 = bird, F3 = girl).
+  function switchCharacter(id) {
+    if (id === activeCharId || !CHARACTERS[id]) return;
+    scene.remove(birdMesh);
+    birdMesh = CHARACTERS[id].build(applyFisheye);
+    birdMesh.position.copy(controls.birdPos);
+    scene.add(birdMesh);
+    charController = CHARACTERS[id].createController(birdMesh);
+    activeCharId = id;
+  }
+
+  window.addEventListener('keydown', e => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+    if (e.code === 'F2') { e.preventDefault(); switchCharacter('bird'); }
+    if (e.code === 'F3') { e.preventDefault(); switchCharacter('girl'); }
+  });
 
   (function animate() {
     requestAnimationFrame(animate);
@@ -2655,7 +2673,7 @@ function initScene(collision) {
     // Occasional flapping bursts when cruising; while diving the wings stop
     // flapping and raise into a swept-back V, slanted up to 45° in proportion
     // to how steep the dive is (nose-down pitch from ~11° toward vertical).
-    charController.update(dt, now, { pitch: controls.getPitch() });
+    charController.update(dt, now, { pitch: controls.getPitch(), speed: controls.getSpeed() });
     if (trainRef.system) trainRef.system.update(dt);
     // Declutter: only keep labels near the camera visible. Labels stay on even
     // under the speed warp (the user toggles them on deliberately) — they're
