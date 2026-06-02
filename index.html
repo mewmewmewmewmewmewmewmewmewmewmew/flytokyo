@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v12.41 -->
+  <meta charset="UTF-8"><!-- v12.42 -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -42,6 +42,19 @@
       text-transform: uppercase;
       opacity: 0.9;
     }
+    #maps-link {
+      pointer-events: auto;
+      display: inline-flex;
+      align-items: center;
+      vertical-align: middle;
+      margin-left: 7px;
+      opacity: 0.45;
+      color: inherit;
+      text-decoration: none;
+      transition: opacity 0.15s;
+      cursor: pointer;
+    }
+    #maps-link:hover { opacity: 1; }
     #status {
       font-size: 12px;
       margin-top: 5px;
@@ -466,15 +479,15 @@
     <div id="search-msg"></div>
     <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
     <div id="load-msg"></div>
-    <div id="load-version">v12.41</div>
+    <div id="load-version">v12.42</div>
   </div>
 
   <div id="overlay">
-    <h1>Tokyo · Shibuya</h1>
+    <h1><span id="place-name">Tokyo · Shibuya</span><a id="maps-link" href="#" target="_blank" rel="noopener noreferrer" title="Open in Google Maps" aria-label="Open in Google Maps"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="14" viewBox="0 0 10 13" fill="currentColor"><path d="M5 0C2.24 0 0 2.24 0 5c0 3.75 5 8 5 8s5-4.25 5-8C10 2.24 7.76 0 5 0zm0 7a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg></a></h1>
     <div id="status"></div>
   </div>
 
-  <div id="version">v12.41</div>
+  <div id="version">v12.42</div>
   <div id="speed"></div>
   <canvas id="compass" width="360" height="48"></canvas>
 
