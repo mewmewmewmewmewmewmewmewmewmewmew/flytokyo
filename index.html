@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><!-- v12.11 -->
+  <meta charset="UTF-8"><!-- v12.12 -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -180,7 +180,8 @@
     }
     #place-random:hover, #place-quiz:hover { background: #fff; border-color: #4455aa; }
     #place-random:disabled, #place-quiz:disabled { opacity: 0.5; cursor: default; }
-    /* Left-aligned, flush under the search field. */
+    /* Left-aligned, flush under the search field. Negative margin collapses
+       most of the flex gap so it reads as one grouped block. */
     #place-me {
       width: 320px;
       max-width: 80vw;
@@ -193,6 +194,7 @@
       cursor: pointer;
       opacity: 0.8;
       padding: 2px;
+      margin-top: -10px;
     }
     #place-me:hover { opacity: 1; text-decoration: underline; }
     #place-me:disabled { opacity: 0.4; cursor: default; text-decoration: none; }
@@ -462,7 +464,7 @@
     <div id="search-msg"></div>
     <div id="pbar-bg" style="display:none"><div id="pbar"></div></div>
     <div id="load-msg"></div>
-    <div id="load-version">v12.11</div>
+    <div id="load-version">v12.12</div>
   </div>
 
   <div id="overlay">
@@ -470,7 +472,7 @@
     <div id="status"></div>
   </div>
 
-  <div id="version">v12.11</div>
+  <div id="version">v12.12</div>
   <div id="speed"></div>
   <canvas id="compass" width="360" height="48"></canvas>
 
@@ -523,6 +525,6 @@
     }
   }
   </script>
-  <script type="module" src="main.js?v=12.11"></script>
+  <script type="module" src="main.js?v=12.12"></script>
 </body>
 </html>
