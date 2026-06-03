@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.49';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.49';
-import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.49';
+import { TrainSystem } from './train.js?v=12.50';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.50';
+import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.50';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2790,7 +2790,7 @@ const MAJOR_CITIES = [
   ['Sydney', -33.8688, 151.2093, 'Australia'], ['Melbourne', -37.8136, 144.9631, 'Australia'],
   ['Casablanca', 33.5731, -7.5898, 'Morocco'], ['Montréal', 45.5017, -73.5673, 'Canada'],
   ['Nairobi', -1.2864, 36.8172, 'Kenya'], ['Cape Town', -33.9249, 18.4241, 'South Africa'],
-  ['Rome', 41.9028, 12.4964, 'Italy'], ['Caracas', 10.4806, -66.9036, 'Venezuela'],
+  ['Rome', 41.9028, 12.5064, 'Italy'], ['Caracas', 10.4806, -66.9036, 'Venezuela'],
   ['Addis Ababa', 9.0250, 38.7469, 'Ethiopia'], ['Detroit', 42.3314, -83.0458, 'USA'],
   ['Seattle', 47.6062, -122.3321, 'USA'], ['Kabul', 34.5553, 69.2075, 'Afghanistan'],
   ['Pyongyang', 39.0392, 125.7625, 'North Korea'], ['Accra', 5.6037, -0.1870, 'Ghana'],
@@ -3341,7 +3341,6 @@ async function main() {
     elev.needsUpdate = true;
     ground.geometry.computeVertexNormals();
     ground.material.uniforms.uSeaOn.value = 1.0;   // terrain is in → enable the sea
-    controls.init(0, terrain.sample(0, 0) + BIRD_HEIGHT, 0);
   }
 
   // Build the whole region synchronously while still behind the loading screen
@@ -3349,6 +3348,29 @@ async function main() {
   if (regionOsm) { setLoad('Building the city…', 0.88); await sleep(0); }
   manager._settleRegion(region.keys, regionOsm);
   syncTrains();
+
+  // Spawn the bird at a point guaranteed to be outside any building footprint.
+  // Spiral outward from the world origin until collision.fn gives the all-clear,
+  // using a 3 m probe radius so we don't land flush against a wall.
+  const spawnXZ = (() => {
+    const clear = (x, z) => {
+      const y = (terrain ? terrain.sample(x, z) : 0) + BIRD_HEIGHT;
+      return !collision.fn || !collision.fn(x, z, y, 3.0);
+    };
+    if (clear(0, 0)) return { x: 0, z: 0 };
+    for (let r = 6; r <= 120; r += 6) {
+      const n = Math.max(8, Math.ceil((2 * Math.PI * r) / 4));
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2;
+        const x = r * Math.cos(a), z = r * Math.sin(a);
+        if (clear(x, z)) return { x, z };
+      }
+    }
+    return { x: 0, z: 0 };
+  })();
+  const spawnGround = terrain ? terrain.sample(spawnXZ.x, spawnXZ.z) : 0;
+  // Quiz mode starts 5× higher so players get a wide aerial view of the city.
+  controls.init(spawnXZ.x, spawnGround + (quizActive ? BIRD_HEIGHT * 5 : BIRD_HEIGHT), spawnXZ.z);
 
   // Warm-up: compile all shaders and force GPU buffer uploads before the
   // overlay lifts so the bird is genuinely movable the instant it appears.
