@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.44';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.44';
-import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.44';
+import { TrainSystem } from './train.js?v=12.45';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.45';
+import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.45';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2648,6 +2648,7 @@ function initScene(collision) {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
     if (e.code === 'F2') { e.preventDefault(); switchCharacter('bird'); }
     if (e.code === 'F3') { e.preventDefault(); switchCharacter('girl'); }
+    if (e.code === 'KeyM' && mapsLinkEl) { e.preventDefault(); window.open(mapsLinkEl.href, '_blank', 'noopener,noreferrer'); }
   });
 
   (function animate() {
@@ -2668,8 +2669,9 @@ function initScene(collision) {
     updateAreaName(controls.birdPos.x, controls.birdPos.z);
     if (mapsLinkEl) {
       const { lat: _ml, lon: _mo } = worldToGeo(controls.birdPos.x, controls.birdPos.z);
-      // log₂ scale × 1.5: y≈4m → zoom 20; y≈50m → zoom 20; y≈500m → zoom 17; y≈2000m → zoom 14.
-      const _mz = Math.round(Math.max(8, Math.min(20, (20 - Math.log2(Math.max(1, controls.birdPos.y))) * 1.5)));
+      // log₂ scale: each doubling of height loses one zoom level.
+      // y≈4m (default) → zoom 18; y≈50m → zoom 15; y≈500m → zoom 11.
+      const _mz = Math.round(Math.max(8, Math.min(20, 20 - Math.log2(Math.max(1, controls.birdPos.y)))));
       mapsLinkEl.href = `https://www.google.com/maps/@${_ml.toFixed(6)},${_mo.toFixed(6)},${_mz}z`;
     }
     // Sync bird mesh: position + flight orientation (yaw, nose pitch, bank roll)
