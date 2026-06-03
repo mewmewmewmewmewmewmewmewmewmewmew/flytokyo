@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.50';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.50';
-import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.50';
+import { TrainSystem } from './train.js?v=12.51';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.51';
+import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.51';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2790,7 +2790,7 @@ const MAJOR_CITIES = [
   ['Sydney', -33.8688, 151.2093, 'Australia'], ['Melbourne', -37.8136, 144.9631, 'Australia'],
   ['Casablanca', 33.5731, -7.5898, 'Morocco'], ['Montréal', 45.5017, -73.5673, 'Canada'],
   ['Nairobi', -1.2864, 36.8172, 'Kenya'], ['Cape Town', -33.9249, 18.4241, 'South Africa'],
-  ['Rome', 41.9028, 12.5064, 'Italy'], ['Caracas', 10.4806, -66.9036, 'Venezuela'],
+  ['Rome', 41.9028, 12.5164, 'Italy'], ['Caracas', 10.4806, -66.9036, 'Venezuela'],
   ['Addis Ababa', 9.0250, 38.7469, 'Ethiopia'], ['Detroit', 42.3314, -83.0458, 'USA'],
   ['Seattle', 47.6062, -122.3321, 'USA'], ['Kabul', 34.5553, 69.2075, 'Afghanistan'],
   ['Pyongyang', 39.0392, 125.7625, 'North Korea'], ['Accra', 5.6037, -0.1870, 'Ghana'],
@@ -3370,7 +3370,7 @@ async function main() {
   })();
   const spawnGround = terrain ? terrain.sample(spawnXZ.x, spawnXZ.z) : 0;
   // Quiz mode starts 5× higher so players get a wide aerial view of the city.
-  controls.init(spawnXZ.x, spawnGround + (quizActive ? BIRD_HEIGHT * 5 : BIRD_HEIGHT), spawnXZ.z);
+  controls.init(spawnXZ.x, spawnGround + (quizActive ? BIRD_HEIGHT * 10 : BIRD_HEIGHT * 2), spawnXZ.z);
 
   // Warm-up: compile all shaders and force GPU buffer uploads before the
   // overlay lifts so the bird is genuinely movable the instant it appears.
