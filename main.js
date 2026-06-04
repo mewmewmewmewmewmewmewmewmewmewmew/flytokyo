@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.51';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.51';
-import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.51';
+import { TrainSystem } from './train.js?v=12.52';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.52';
+import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.52';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -306,8 +306,14 @@ const OVERPASS_ENDPOINTS = [
 ];
 // Rotate which endpoint leads each call (random start per page load) so
 // back-to-back loads — e.g. the quiz "Play again" reload — don't always lead
-// with the same server and trip its per-IP rate limit.
-let _opIdx = (Math.random() * OVERPASS_ENDPOINTS.length) | 0;
+// with the same server and trip its per-IP rate limit.  On quiz replay the
+// previous _opIdx is persisted in sessionStorage so we advance by exactly one
+// slot rather than re-randomising (which could collide with the prior load).
+const _savedEp = sessionStorage.getItem('_opIdx');
+sessionStorage.removeItem('_opIdx');
+let _opIdx = _savedEp !== null
+  ? (parseInt(_savedEp, 10) + 1) % OVERPASS_ENDPOINTS.length
+  : (Math.random() * OVERPASS_ENDPOINTS.length) | 0;
 function orderedEndpoints() {
   const n = OVERPASS_ENDPOINTS.length;
   const s = _opIdx++ % n;
@@ -2790,7 +2796,7 @@ const MAJOR_CITIES = [
   ['Sydney', -33.8688, 151.2093, 'Australia'], ['Melbourne', -37.8136, 144.9631, 'Australia'],
   ['Casablanca', 33.5731, -7.5898, 'Morocco'], ['Montréal', 45.5017, -73.5673, 'Canada'],
   ['Nairobi', -1.2864, 36.8172, 'Kenya'], ['Cape Town', -33.9249, 18.4241, 'South Africa'],
-  ['Rome', 41.9028, 12.5164, 'Italy'], ['Caracas', 10.4806, -66.9036, 'Venezuela'],
+  ['Rome', 41.9028, 12.5264, 'Italy'], ['Caracas', 10.4806, -66.9036, 'Venezuela'],
   ['Addis Ababa', 9.0250, 38.7469, 'Ethiopia'], ['Detroit', 42.3314, -83.0458, 'USA'],
   ['Seattle', 47.6062, -122.3321, 'USA'], ['Kabul', 34.5553, 69.2075, 'Afghanistan'],
   ['Pyongyang', 39.0392, 125.7625, 'North Korea'], ['Accra', 5.6037, -0.1870, 'Ghana'],
@@ -3290,7 +3296,13 @@ async function main() {
         : `Not quite — you were in ${answer}.`;
       clear(actionsEl);
       const again = mkBtn('Play again', true);
-      again.addEventListener('click', () => { sessionStorage.setItem('quiz', '1'); location.reload(); });
+      again.addEventListener('click', () => {
+        sessionStorage.setItem('quiz',  '1');
+        sessionStorage.setItem('_opIdx', String(_opIdx));  // advance endpoint on next load
+        // Brief pause so the browser can abort in-flight Overpass requests before
+        // the new page fires its own — prevents the server seeing two rapid bursts.
+        setTimeout(() => location.reload(), 1200);
+      });
       const more  = mkBtn('Explore more', false);
       more.addEventListener('click', exploreMore);
       actionsEl.appendChild(again);
