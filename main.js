@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.53';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.53';
-import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.53';
+import { TrainSystem } from './train.js?v=12.54';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.54';
+import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.54';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -322,12 +322,16 @@ function orderedEndpoints() {
 
 const OP_HEDGE_MS = 1400;   // head start for the lead mirror before fanning out
 
-// One POST to a single Overpass mirror, validated. 30 s hard timeout.
-// cancelSignal lets the caller abort this request once another mirror wins.
+// One POST to a single Overpass mirror, validated. 65 s hard timeout (must be
+// > the 60 s query timeout so the server can return a remark instead of us
+// killing the connection first). cancelSignal lets the caller abort this
+// request once another mirror wins the race.
 async function overpassOnce(url, query, cancelSignal) {
+  const short = url.replace(/^https?:\/\//, '').split('/')[0];  // hostname only
   const ctrl  = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 30_000);
+  const timer = setTimeout(() => ctrl.abort(), 65_000);
   if (cancelSignal) cancelSignal.addEventListener('abort', () => { clearTimeout(timer); ctrl.abort(); });
+  const t0 = Date.now();
   try {
     const res = await fetch(url, {
       method:  'POST',
@@ -335,14 +339,21 @@ async function overpassOnce(url, query, cancelSignal) {
       body:    'data=' + encodeURIComponent(query),
       signal:  ctrl.signal,
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status} @ ${url}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status} @ ${short}`);
     const data = await res.json();
     // Overpass returns 200 OK even on server-side timeout/error — detect via remark.
     if (data.remark && /error|timeout/i.test(data.remark))
-      throw new Error(`Overpass: ${data.remark}`);
+      throw new Error(`Overpass remark @ ${short}: ${data.remark}`);
     if (!Array.isArray(data.elements))
-      throw new Error('Overpass: malformed response (no elements array)');
+      throw new Error(`Overpass malformed @ ${short}`);
+    _logNetErr(`ok ${short} ${Date.now()-t0}ms ${data.elements.length} el`);
     return data;
+  } catch (err) {
+    const reason = ctrl.signal.aborted
+      ? (cancelSignal?.aborted ? 'cancelled (loser)' : 'client timeout 65s')
+      : err.message;
+    _logNetErr(`fail ${short} ${Date.now()-t0}ms: ${reason}`);
+    throw err;
   } finally {
     clearTimeout(timer);
   }
@@ -407,7 +418,7 @@ async function fetchOSMBbox(bbox) {
   if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.data;
 
   const query = [
-    '[out:json][timeout:25];(',
+    '[out:json][timeout:60];(',
     `way["building"](${south},${west},${north},${east});`,
     `way["highway"](${south},${west},${north},${east});`,
     `way["railway"](${south},${west},${north},${east});`,
@@ -430,7 +441,7 @@ async function fetchOSMPOIs(bbox) {
   if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.data;
 
   const query = [
-    '[out:json][timeout:25];(',
+    '[out:json][timeout:60];(',
     `node["shop"]["name"](${south},${west},${north},${east});`,
     `node["amenity"]["name"](${south},${west},${north},${east});`,
     `node["tourism"]["name"](${south},${west},${north},${east});`,
@@ -2822,7 +2833,7 @@ const MAJOR_CITIES = [
   ['Sydney', -33.8688, 151.2093, 'Australia'], ['Melbourne', -37.8136, 144.9631, 'Australia'],
   ['Casablanca', 33.5731, -7.5898, 'Morocco'], ['Montréal', 45.5017, -73.5673, 'Canada'],
   ['Nairobi', -1.2864, 36.8172, 'Kenya'], ['Cape Town', -33.9249, 18.4241, 'South Africa'],
-  ['Rome', 41.9028, 12.5364, 'Italy'], ['Caracas', 10.4806, -66.9036, 'Venezuela'],
+  ['Rome', 41.9028, 12.5464, 'Italy'], ['Caracas', 10.4806, -66.9036, 'Venezuela'],
   ['Addis Ababa', 9.0250, 38.7469, 'Ethiopia'], ['Detroit', 42.3314, -83.0458, 'USA'],
   ['Seattle', 47.6062, -122.3321, 'USA'], ['Kabul', 34.5553, 69.2075, 'Afghanistan'],
   ['Pyongyang', 39.0392, 125.7625, 'North Korea'], ['Accra', 5.6037, -0.1870, 'Ghana'],
