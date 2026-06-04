@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.52';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.52';
-import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.52';
+import { TrainSystem } from './train.js?v=12.53';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.53';
+import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.53';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -323,9 +323,11 @@ function orderedEndpoints() {
 const OP_HEDGE_MS = 1400;   // head start for the lead mirror before fanning out
 
 // One POST to a single Overpass mirror, validated. 30 s hard timeout.
-async function overpassOnce(url, query) {
+// cancelSignal lets the caller abort this request once another mirror wins.
+async function overpassOnce(url, query, cancelSignal) {
   const ctrl  = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 30_000);
+  if (cancelSignal) cancelSignal.addEventListener('abort', () => { clearTimeout(timer); ctrl.abort(); });
   try {
     const res = await fetch(url, {
       method:  'POST',
@@ -352,28 +354,50 @@ async function overpassOnce(url, query) {
 // when EVERY mirror fails at once (rare), instead of any time one flaky mirror
 // happens to be first in a round-robin. A healthy lead mirror still answers
 // alone, so we stay gentle on the free servers in the common case.
+// Debug capture: open DevTools console and type __netErrors to inspect failures.
+window.__netErrors = [];
+function _logNetErr(msg) {
+  const entry = { t: new Date().toISOString(), msg };
+  window.__netErrors.push(entry);
+  if (window.__netErrors.length > 40) window.__netErrors.shift();
+  console.warn('[net]', msg);
+}
+
 const _HEDGE = Symbol('hedge');
 async function fetchOverpassRaced(query) {
   const eps = orderedEndpoints();
+  // Shared cancel: once any mirror wins, abort all remaining in-flight requests
+  // so they don't keep consuming Overpass rate-limit quota in the background.
+  const cancel = new AbortController();
   const inflight = [];
-  const fire = url => { const p = overpassOnce(url, query); inflight.push(p); return p; };
+  const fire = url => {
+    const p = overpassOnce(url, query, cancel.signal);
+    inflight.push(p);
+    return p;
+  };
 
   const lead = fire(eps[0]);
   const winner = await Promise.race([
     lead.then(d => ({ ok: d }), e => ({ err: e })),
     sleep(OP_HEDGE_MS).then(() => _HEDGE),
   ]);
-  if (winner !== _HEDGE && winner.ok) return winner.ok;   // lead won outright
+  if (winner !== _HEDGE && winner.ok) { cancel.abort(); return winner.ok; }
+  if (winner !== _HEDGE && winner.err)
+    _logNetErr(`lead failed fast: ${winner.err.message}`);
 
   // Lead is slow (hedge elapsed) or already failed → bring up the backups and
   // race everything still in flight. Promise.any ignores the rejected ones.
   for (let i = 1; i < eps.length; i++) fire(eps[i]);
+  let result;
   try {
-    return await Promise.any(inflight);
+    result = await Promise.any(inflight);
   } catch (agg) {
     const msgs = (agg && agg.errors || []).map(e => e.message).join(' · ');
+    _logNetErr(`all mirrors failed: ${msgs}`);
     throw new Error(`all Overpass mirrors failed${msgs ? ': ' + msgs : ''}`);
   }
+  cancel.abort();   // kill any still-running losers
+  return result;
 }
 
 async function fetchOSMBbox(bbox) {
@@ -1594,14 +1618,16 @@ class TileManager {
   // on retries/failures (not the initial attempt) so it can run in parallel with
   // terrain loading without overwriting the caller's status message.
   async _fetchWithRetry(bbox, label, onStatus = () => {}) {
+    let lastMsg = '';
     for (let attempt = 0; ; attempt++) {
       try {
-        if (attempt > 0) onStatus(`Network busy — retrying (${attempt}/6)…`, 0.45);
+        if (attempt > 0) onStatus(`Network busy — retrying (${attempt}/6)… [${lastMsg}]`, 0.45);
         return await fetchOSMBbox(bbox);
       } catch (err) {
-        console.warn(`Region ${label}:`, err.message);
+        lastMsg = err.message.slice(0, 60);
+        _logNetErr(`region ${label} attempt ${attempt}: ${err.message}`);
         if (attempt < 6) { await sleep([800, 1500, 3000, 5000, 8000, 8000][attempt]); continue; }
-        onStatus('Map data unavailable — starting with what loaded.', 1);
+        onStatus(`Map data unavailable — ${lastMsg}`, 1);
         return null;
       }
     }
@@ -2796,7 +2822,7 @@ const MAJOR_CITIES = [
   ['Sydney', -33.8688, 151.2093, 'Australia'], ['Melbourne', -37.8136, 144.9631, 'Australia'],
   ['Casablanca', 33.5731, -7.5898, 'Morocco'], ['Montréal', 45.5017, -73.5673, 'Canada'],
   ['Nairobi', -1.2864, 36.8172, 'Kenya'], ['Cape Town', -33.9249, 18.4241, 'South Africa'],
-  ['Rome', 41.9028, 12.5264, 'Italy'], ['Caracas', 10.4806, -66.9036, 'Venezuela'],
+  ['Rome', 41.9028, 12.5364, 'Italy'], ['Caracas', 10.4806, -66.9036, 'Venezuela'],
   ['Addis Ababa', 9.0250, 38.7469, 'Ethiopia'], ['Detroit', 42.3314, -83.0458, 'USA'],
   ['Seattle', 47.6062, -122.3321, 'USA'], ['Kabul', 34.5553, 69.2075, 'Afghanistan'],
   ['Pyongyang', 39.0392, 125.7625, 'North Korea'], ['Accra', 5.6037, -0.1870, 'Ghana'],
