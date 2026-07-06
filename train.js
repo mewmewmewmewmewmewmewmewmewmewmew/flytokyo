@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.55';
+import { fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.56';
 
 // ─── Car dimensions (metres) ──────────────────────────────────────────────────
 const CAR_L    = 20;
@@ -12,6 +12,12 @@ const TRAIN_SPEED   = 15;   // m/s
 const MIN_CURVE_LEN = 25;   // metres
 const TRAIN_LEN     = NUM_CARS * (CAR_L + COUPLER);  // ~170 m
 const TRAIN_SPACING = TRAIN_LEN * 4;                  // 1 train + 3 gap ≈ 678 m
+
+// Trains farther than this from the bird are frozen and hidden: the car shader
+// fades everything past uFar (900 m) to invisible anyway, so animating and
+// drawing them is pure waste. Slightly beyond uFar so the fade-out completes.
+const TRAIN_CULL_DIST = 1000;
+const TRAIN_CULL_D2   = TRAIN_CULL_DIST * TRAIN_CULL_DIST;
 
 // ─── Car shader ───────────────────────────────────────────────────────────────
 const CAR_VERT = /* glsl */`
@@ -120,11 +126,12 @@ function buildCar(isUnderground) {
 // ─── Train ────────────────────────────────────────────────────────────────────
 class Train {
   constructor(scene, curve, phaseOffset) {
-    this.curve  = curve;
-    this.length = curve.getLength();
-    this.t      = phaseOffset;
-    this.cars   = [];
-    this.mats   = [];  // all materials across all cars in this train
+    this.curve   = curve;
+    this.length  = curve.getLength();
+    this.t       = phaseOffset;
+    this.cars    = [];
+    this.mats    = [];  // all materials across all cars in this train
+    this.visible = true;
 
     const isUG = curve.points.length > 0 && curve.points[0].y < -1;
     const count = Math.max(1, Math.min(NUM_CARS,
@@ -136,9 +143,24 @@ class Train {
       this.cars.push(group);
       this.mats.push(...mats);
     }
+    this.update(0);   // place the cars now so distance culling sees a real position
   }
 
-  update(dt) {
+  update(dt, center) {
+    // Distance cull: freeze + hide when far from the bird. The check uses the
+    // lead car's (possibly stale) position — once the player flies back within
+    // range the train wakes and resumes from where it froze.
+    if (center) {
+      const p  = this.cars[0].position;
+      const dx = p.x - center.x, dz = p.z - center.z;
+      const vis = dx * dx + dz * dz < TRAIN_CULL_D2;
+      if (vis !== this.visible) {
+        this.visible = vis;
+        for (const car of this.cars) car.visible = vis;
+      }
+      if (!vis) return;
+    }
+
     this.t = (this.t + dt * TRAIN_SPEED / this.length) % 1;
     const spacing = (CAR_L + COUPLER) / this.length;
 
@@ -203,7 +225,7 @@ export class TrainSystem {
     for (const train of this.trains) this._applyXray(train);
   }
 
-  update(dt) {
-    for (const t of this.trains) t.update(dt);
+  update(dt, center) {
+    for (const t of this.trains) t.update(dt, center);
   }
 }

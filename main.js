@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.54';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.54';
-import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.54';
+import { TrainSystem } from './train.js?v=12.56';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.56';
+import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.56';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1441,10 +1441,21 @@ function pointInPolygon(px, pz, ring) {
   return inside;
 }
 
+// Spatial hash cell size (metres) for building footprints. Collision runs up to
+// ~9 queries per frame; hashing means each one touches only the few buildings
+// in the cell(s) under the probe instead of every footprint in the region.
+const FP_CELL = 50;
+
 // ─── Tile manager ────────────────────────────────────────────────────────────
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const nextFrame = () => new Promise(r => requestAnimationFrame(() => r()));
+
+// Set whenever objects are added to the scene (tiles, labels, trains, character
+// swaps) so the fisheye cull pass re-traverses only when there's something new —
+// not every frame. Starts true so the first frame marks the initial scene.
+let _cullDirty = true;
+const markCullDirty = () => { _cullDirty = true; };
 
 class TileManager {
   constructor(scene, mats, statusEl) {
@@ -1459,6 +1470,7 @@ class TileManager {
     this.rails      = 0;
     this.busy       = false;
     this.footprints = [];   // { ring, minX, maxX, minZ, maxZ }
+    this.fpGrid     = new Map();   // 'gx,gz' → footprints overlapping that FP_CELL cell
     this.tilesTotal   = 0;
     this.tilesLoaded  = 0;
     this._retries     = new Map(); // k → retry count
@@ -1547,12 +1559,14 @@ class TileManager {
       const { ring, height, name } = bldgs[bi];
       const xs = ring.map(p => p[0]), zs = ring.map(p => p[1]);
       const { topY: bTop } = bldgTInfo[bi];
-      this.footprints.push({
+      const fp = {
         ring, height,
         topY: bTop,
         minX: Math.min(...xs), maxX: Math.max(...xs),
         minZ: Math.min(...zs), maxZ: Math.max(...zs),
-      });
+      };
+      this.footprints.push(fp);
+      this._gridAdd(fp);
       if (name) {
         const label = makeBuildingLabel(ring, bTop, truncateLabel(name));
         if (label) this.buildingLabelGroup.add(label);
@@ -1607,6 +1621,7 @@ class TileManager {
     }
 
     this.scene.add(group);
+    markCullDirty();
     this._updateStatus();
   }
 
@@ -1672,6 +1687,7 @@ class TileManager {
         .filter(p => { if (this.seenIds.has(p.id)) return false; this.seenIds.add(p.id); return true; });
       for (const p of pois)
         this.poiLabelGroup.add(makePoiLabel(p.x, p.z, truncateLabel(p.name), this.footprints));
+      markCullDirty();
     } catch (err) {
       console.warn('POI load failed:', err.message);
     }
@@ -1702,16 +1718,38 @@ class TileManager {
     this.settled.add(k); // done, or gave up after exhausting retries
   }
 
-  isInBuilding(x, z, playerY, R = 0.8) {
-    for (const fp of this.footprints) {
-      if (fp.height < playerY) continue; // eye level above roof = can pass over
-      if (x + R < fp.minX || x - R > fp.maxX || z + R < fp.minZ || z - R > fp.maxZ) continue;
-      if (pointInPolygon(x, z, fp.ring)) return true;
-      for (let i = 0; i < 8; i++) {
-        const a = i * Math.PI / 4;
-        if (pointInPolygon(x + R * Math.cos(a), z + R * Math.sin(a), fp.ring)) return true;
+  // Insert a footprint into every FP_CELL grid cell its bbox overlaps. A building
+  // spanning several cells appears in each; queries that straddle cells may test
+  // it twice, which is harmless (boolean early-out / idempotent max).
+  _gridAdd(fp) {
+    const x0 = Math.floor(fp.minX / FP_CELL), x1 = Math.floor(fp.maxX / FP_CELL);
+    const z0 = Math.floor(fp.minZ / FP_CELL), z1 = Math.floor(fp.maxZ / FP_CELL);
+    for (let gx = x0; gx <= x1; gx++)
+      for (let gz = z0; gz <= z1; gz++) {
+        const k = gx + ',' + gz;
+        let cell = this.fpGrid.get(k);
+        if (!cell) this.fpGrid.set(k, cell = []);
+        cell.push(fp);
       }
-    }
+  }
+
+  isInBuilding(x, z, playerY, R = 0.8) {
+    const x0 = Math.floor((x - R) / FP_CELL), x1 = Math.floor((x + R) / FP_CELL);
+    const z0 = Math.floor((z - R) / FP_CELL), z1 = Math.floor((z + R) / FP_CELL);
+    for (let gx = x0; gx <= x1; gx++)
+      for (let gz = z0; gz <= z1; gz++) {
+        const cell = this.fpGrid.get(gx + ',' + gz);
+        if (!cell) continue;
+        for (const fp of cell) {
+          if (fp.height < playerY) continue; // eye level above roof = can pass over
+          if (x + R < fp.minX || x - R > fp.maxX || z + R < fp.minZ || z - R > fp.maxZ) continue;
+          if (pointInPolygon(x, z, fp.ring)) return true;
+          for (let i = 0; i < 8; i++) {
+            const a = i * Math.PI / 4;
+            if (pointInPolygon(x + R * Math.cos(a), z + R * Math.sin(a), fp.ring)) return true;
+          }
+        }
+      }
     return false;
   }
 
@@ -1720,7 +1758,8 @@ class TileManager {
   getFloorHeight(x, z) {
     const groundY = terrain ? terrain.sample(x, z) : 0;
     let maxH = groundY;
-    for (const fp of this.footprints) {
+    const cell = this.fpGrid.get(Math.floor(x / FP_CELL) + ',' + Math.floor(z / FP_CELL));
+    if (cell) for (const fp of cell) {
       if (x < fp.minX || x > fp.maxX || z < fp.minZ || z > fp.maxZ) continue;
       if (!pointInPolygon(x, z, fp.ring)) continue;
       if (fp.topY > maxH) maxH = fp.topY;
@@ -2623,6 +2662,7 @@ function initScene(collision) {
       if (o.userData._fc === undefined) o.userData._fc = o.frustumCulled;
       o.frustumCulled = false;
     });
+    _cullDirty = false;   // traversal is up to date until something new is added
   }
   function fishCullExit() {
     scene.traverse(o => {
@@ -2683,6 +2723,7 @@ function initScene(collision) {
     birdMesh = CHARACTERS[id].build(applyFisheye);
     birdMesh.position.copy(controls.birdPos);
     scene.add(birdMesh);
+    markCullDirty();
     charController = CHARACTERS[id].createController(birdMesh);
     activeCharId = id;
   }
@@ -2726,7 +2767,7 @@ function initScene(collision) {
     // flapping and raise into a swept-back V, slanted up to 45° in proportion
     // to how steep the dive is (nose-down pitch from ~11° toward vertical).
     charController.update(dt, now, { pitch: controls.getPitch(), speed: controls.getSpeed() });
-    if (trainRef.system) trainRef.system.update(dt);
+    if (trainRef.system) trainRef.system.update(dt, controls.birdPos);
     // Declutter: only keep labels near the camera visible. Labels stay on even
     // under the speed warp (the user toggles them on deliberately) — they're
     // camera-facing billboards, so they ride along near their world anchor.
@@ -2738,9 +2779,10 @@ function initScene(collision) {
     }
     // Outline ribbons need the aspect every frame regardless of fisheye state.
     FISH_U.uFishAspect.value = camera.aspect;
-    if (fisheyeActive) {
+    if (fisheyeActive && _cullDirty) {
       // Newly streamed-in tiles must also skip frustum culling (they'd otherwise
-      // pop at the periphery). Cheap: a handful of merged meshes per tile.
+      // pop at the periphery). Only re-traverse when something was actually added
+      // — a full scene.traverse every frame is not cheap once labels exist.
       fishCullEnter();
     }
     renderer.render(scene, camera);
@@ -3188,6 +3230,7 @@ async function main() {
     const cleaned = stitchMetroCurves(manager.metroCurves).flatMap(splitAtSharpTurns);
     if (trainRef.system) for (const t of trainRef.system.trains) t.dispose(scene);
     trainRef.system = new TrainSystem(scene, cleaned);
+    markCullDirty();   // new car meshes need the fisheye cull pass
   }
 
   function reveal() {
