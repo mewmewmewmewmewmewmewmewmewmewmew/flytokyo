@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import earcut from 'earcut';
-import { TrainSystem } from './train.js?v=12.56';
-import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.56';
-import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.56';
+import { TrainSystem } from './train.js?v=12.57';
+import { FISH_U, fishUniforms, FISH_PROJ_GLSL, FISH_FRAG_GLSL, TOON_GLSL } from './fisheye.js?v=12.57';
+import { CHARACTERS, DEFAULT_CHARACTER } from './characters.js?v=12.57';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -375,8 +375,14 @@ function _logNetErr(msg) {
 }
 
 const _HEDGE = Symbol('hedge');
-async function fetchOverpassRaced(query) {
-  const eps = orderedEndpoints();
+// opts.hedgeMs: how long the lead mirror runs alone before backups fire. Big
+// region queries take 10-60 s server-side, so a short hedge just runs the same
+// heavy query on every mirror at once — pass a longer hedge for those.
+// opts.mirrors: cap on how many mirrors may be used (lead + backups). Tile-sized
+// queries use 2 so a burst of tiles can't fan out to every mirror and trip
+// per-IP rate limits across all of them simultaneously.
+async function fetchOverpassRaced(query, { hedgeMs = OP_HEDGE_MS, mirrors = OVERPASS_ENDPOINTS.length } = {}) {
+  const eps = orderedEndpoints().slice(0, Math.max(1, mirrors));
   // Shared cancel: once any mirror wins, abort all remaining in-flight requests
   // so they don't keep consuming Overpass rate-limit quota in the background.
   const cancel = new AbortController();
@@ -390,7 +396,7 @@ async function fetchOverpassRaced(query) {
   const lead = fire(eps[0]);
   const winner = await Promise.race([
     lead.then(d => ({ ok: d }), e => ({ err: e })),
-    sleep(OP_HEDGE_MS).then(() => _HEDGE),
+    sleep(hedgeMs).then(() => _HEDGE),
   ]);
   if (winner !== _HEDGE && winner.ok) { cancel.abort(); return winner.ok; }
   if (winner !== _HEDGE && winner.err)
@@ -411,7 +417,7 @@ async function fetchOverpassRaced(query) {
   return result;
 }
 
-async function fetchOSMBbox(bbox) {
+async function fetchOSMBbox(bbox, opts) {
   const { south, west, north, east } = bbox;
   const cacheKey = `${QUERY_VERSION}:${south.toFixed(6)},${west.toFixed(6)},${north.toFixed(6)},${east.toFixed(6)}`;
   const cached = await cacheGet(cacheKey);
@@ -427,7 +433,7 @@ async function fetchOSMBbox(bbox) {
     `way["landuse"="reservoir"](${south},${west},${north},${east});`,
     ');out body;>;out skel qt;',
   ].join('');
-  const data = await fetchOverpassRaced(query);
+  const data = await fetchOverpassRaced(query, opts);
   cachePut(cacheKey, { ts: Date.now(), data });   // fire-and-forget; 3-day TTL
   return data;
 }
@@ -448,7 +454,7 @@ async function fetchOSMPOIs(bbox) {
     `node["office"]["name"](${south},${west},${north},${east});`,
     ');out body;',
   ].join('');
-  const data = await fetchOverpassRaced(query);
+  const data = await fetchOverpassRaced(query, { mirrors: 2 });   // background load — stay light
   cachePut(cacheKey, { ts: Date.now(), data });
   return data;
 }
@@ -1446,6 +1452,11 @@ function pointInPolygon(px, pz, ring) {
 // in the cell(s) under the probe instead of every footprint in the region.
 const FP_CELL = 50;
 
+// A tile that exhausted its retries becomes eligible to load again this long
+// after giving up. Rate limits are minute-scale and transient — without this,
+// a burst of failures left permanent holes in the map for the whole session.
+const TILE_FAIL_COOLDOWN = 45_000;
+
 // ─── Tile manager ────────────────────────────────────────────────────────────
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -1474,6 +1485,7 @@ class TileManager {
     this.tilesTotal   = 0;
     this.tilesLoaded  = 0;
     this._retries     = new Map(); // k → retry count
+    this._failedAt    = new Map(); // k → time the tile exhausted its retries
     this.settled      = new Set(); // tile keys that reached a terminal state (done or gave up)
     this.metroCurves        = [];   // CatmullRomCurve3 paths collected as tiles load
     this.buildingLabelGroup = new THREE.Group();   // building names — toggled with F1
@@ -1488,7 +1500,15 @@ class TileManager {
 
   request(tx, ty) {
     const k = this.key(tx, ty);
-    if (this.tiles.has(k)) return;
+    const state = this.tiles.get(k);
+    if (state !== undefined) {
+      // Failed tiles get another chance once the cooldown passes, instead of
+      // staying permanent holes for the rest of the session.
+      if (state !== 'failed' ||
+          Date.now() - (this._failedAt.get(k) || 0) < TILE_FAIL_COOLDOWN) return;
+      this._retries.delete(k);
+      this._failedAt.delete(k);
+    }
     this.tiles.set(k, 'queued');
     this.queue.push({ tx, ty, k });
   }
@@ -1515,11 +1535,20 @@ class TileManager {
 
     // Two workers pull from the shared queue — fast enough to load the whole radius
     // grid quickly while staying within Overpass's per-IP concurrency limit.
+    // Each pull grabs a contiguous same-row strip of queued tiles and fetches it
+    // as ONE query: entering fresh territory queues whole rings at once, and
+    // firing a request per tile tripped per-IP rate limits, which cascaded into
+    // failed tiles and visible holes.
     const worker = async () => {
       while (this.queue.length) {
-        const { tx, ty, k } = this.queue.shift();
-        this.tiles.set(k, 'loading');
-        await this._loadTile(tx, ty, k);
+        const batch = this._nextBatch();
+        if (batch.length === 1) {
+          const { tx, ty, k } = batch[0];
+          this.tiles.set(k, 'loading');
+          await this._loadTile(tx, ty, k);
+        } else {
+          await this._loadStrip(batch);
+        }
         if (this.queue.length) await sleep(150);
       }
     };
@@ -1643,12 +1672,12 @@ class TileManager {
   // Fetch with retry, returning OSM data or null on give-up. Only fires onStatus
   // on retries/failures (not the initial attempt) so it can run in parallel with
   // terrain loading without overwriting the caller's status message.
-  async _fetchWithRetry(bbox, label, onStatus = () => {}) {
+  async _fetchWithRetry(bbox, label, onStatus = () => {}, opts) {
     let lastMsg = '';
     for (let attempt = 0; ; attempt++) {
       try {
         if (attempt > 0) onStatus(`Network busy — retrying (${attempt}/6)… [${lastMsg}]`, 0.45);
-        return await fetchOSMBbox(bbox);
+        return await fetchOSMBbox(bbox, opts);
       } catch (err) {
         lastMsg = err.message.slice(0, 60);
         _logNetErr(`region ${label} attempt ${attempt}: ${err.message}`);
@@ -1665,6 +1694,9 @@ class TileManager {
     if (osm) this._ingest(osm);
     for (const k of keys) {
       this.tiles.set(k, osm ? 'done' : 'failed');
+      // Timestamp failures so request()'s cooldown revival can heal the start
+      // region via per-tile streaming instead of leaving it empty forever.
+      if (!osm) this._failedAt.set(k, Date.now());
       if (!this.settled.has(k)) { this.settled.add(k); this.tilesLoaded++; }
     }
   }
@@ -1693,29 +1725,91 @@ class TileManager {
     }
   }
 
-  async _loadTile(tx, ty, k) {
-    try {
-      this._ingest(await fetchOSMBbox(tileToBBox(tx, ty)));
-      this.tiles.set(k, 'done');
-    } catch (err) {
-      console.warn(`Tile ${tx},${ty}:`, err.message);
-      this.tiles.set(k, 'failed');
-      // Retry up to 6× with short back-off — each retry hits a different mirror,
-      // so a quick retry usually lands on a server that isn't rate-limiting us.
-      const attempt = this._retries.get(k) || 0;
-      if (attempt < 6) {
-        this._retries.set(k, attempt + 1);
-        const delay = [800, 1500, 3000, 5000, 8000, 8000][attempt];
-        setTimeout(() => {
-          this.tiles.delete(k);
-          this.request(tx, ty);
-          if (!this.busy) this._process();
-        }, delay);
-        return; // don't count as done yet — retry is in flight
+  // Pull the next queued tile plus any queued neighbours in the same row, so a
+  // fresh ring loads as a few strip queries instead of one request per tile.
+  _nextBatch(max = 5) {
+    const batch = [this.queue.shift()];
+    let grew = true;
+    while (grew && batch.length < max) {
+      grew = false;
+      let lo = Infinity, hi = -Infinity;
+      for (const { tx } of batch) { if (tx < lo) lo = tx; if (tx > hi) hi = tx; }
+      for (let i = 0; i < this.queue.length; i++) {
+        const t = this.queue[i];
+        if (t.ty === batch[0].ty && (t.tx === lo - 1 || t.tx === hi + 1)) {
+          batch.push(t);
+          this.queue.splice(i, 1);
+          grew = true;
+          break;
+        }
       }
     }
-    this.tilesLoaded++;
-    this.settled.add(k); // done, or gave up after exhausting retries
+    return batch;
+  }
+
+  // Fetch a contiguous same-row run of tiles as a single Overpass query, then
+  // settle them all. On failure each tile drops into the per-tile retry ladder
+  // so they can heal independently.
+  async _loadStrip(batch) {
+    for (const { k } of batch) this.tiles.set(k, 'loading');
+    let txMin = Infinity, txMax = -Infinity;
+    for (const { tx } of batch) { if (tx < txMin) txMin = tx; if (tx > txMax) txMax = tx; }
+    const ty = batch[0].ty;
+    const bbox = {
+      south: ty * TILE_LAT,     north: (ty + 1) * TILE_LAT,
+      west:  txMin * TILE_LON,  east:  (txMax + 1) * TILE_LON,
+    };
+    try {
+      const osm = await fetchOSMBbox(bbox, { mirrors: 2 });
+      this._ingest(osm);
+      for (const { k } of batch) {
+        this.tiles.set(k, 'done');
+        if (!this.settled.has(k)) { this.settled.add(k); this.tilesLoaded++; }
+      }
+    } catch (err) {
+      for (const { tx, ty: bty, k } of batch) {
+        if (this._failTile(tx, bty, k, err) && !this.settled.has(k)) {
+          this.settled.add(k);
+          this.tilesLoaded++;
+        }
+      }
+    }
+  }
+
+  // Shared failure path: schedule a backoff retry, or — once retries are spent —
+  // park the tile as 'failed' with a timestamp so request() can revive it after
+  // TILE_FAIL_COOLDOWN. Returns true when the tile reached that parked state.
+  _failTile(tx, ty, k, err) {
+    console.warn(`Tile ${tx},${ty}:`, err.message);
+    this.tiles.set(k, 'failed');
+    // Retry up to 6× with short back-off — each retry hits a different mirror,
+    // so a quick retry usually lands on a server that isn't rate-limiting us.
+    const attempt = this._retries.get(k) || 0;
+    if (attempt < 6) {
+      this._retries.set(k, attempt + 1);
+      const delay = [800, 1500, 3000, 5000, 8000, 8000][attempt];
+      setTimeout(() => {
+        this.tiles.delete(k);
+        this.request(tx, ty);
+        if (!this.busy) this._process();
+      }, delay);
+      return false; // retry is in flight — not settled yet
+    }
+    this._failedAt.set(k, Date.now());
+    return true;
+  }
+
+  async _loadTile(tx, ty, k) {
+    try {
+      this._ingest(await fetchOSMBbox(tileToBBox(tx, ty), { mirrors: 2 }));
+      this.tiles.set(k, 'done');
+    } catch (err) {
+      if (!this._failTile(tx, ty, k, err)) return;
+    }
+    if (!this.settled.has(k)) {
+      this.settled.add(k);   // done, or gave up after exhausting retries
+      this.tilesLoaded++;
+    }
   }
 
   // Insert a footprint into every FP_CELL grid cell its bbox overlaps. A building
@@ -3415,7 +3509,10 @@ async function main() {
   setLoad('Loading terrain & map data…', 0.2);
   const [terrainResult, regionOsm] = await Promise.all([
     loadTerrain(),
-    manager._fetchWithRetry(region.bbox, 'region', setLoad),
+    // The region query runs 10-60 s server-side in dense cities: give the lead
+    // mirror 8 s alone before fanning out, so a normal load doesn't run the
+    // same heavy query on every mirror at once (rate-limit fuel).
+    manager._fetchWithRetry(region.bbox, 'region', setLoad, { hedgeMs: 8000 }),
   ]);
 
   terrain = terrainResult;
